@@ -208,6 +208,18 @@ export interface ObservationRuntime {
   metrics(): ObservationRuntimeMetrics;
   /** Latest allowed observation, content-free. `null` before the first one. */
   lastObservation(): ScreenObservationMetadata | null;
+  /**
+   * Latest *refused* observation, content-free (runbook follow-up 43).
+   *
+   * The sibling of {@link lastObservation}, and it exists for the same reason
+   * the demos print `lastError`: PR-021's design reports a refusal to the model
+   * rather than to the user, so a run where `observe_screen` was called and
+   * refused looks — from the panel, from the transcript, from the answer —
+   * exactly like a run where the model chose not to look. The rule and step
+   * that fired are the only things that tell the two apart, and a walkthrough
+   * that cannot print them cannot diagnose itself.
+   */
+  lastRefusal(): ScreenObservationRefusal | null;
   /** Pushes the interaction controller's view state into the §10 conditions. */
   noteViewState(view: PilotViewState): void;
   /** Pushes the permission gate's snapshot into the §10 conditions. */
@@ -397,6 +409,7 @@ export function createObservationRuntime(options: ObservationRuntimeOptions): Ob
   });
 
   let lastObservation: ScreenObservationMetadata | null = null;
+  let lastRefusal: ScreenObservationRefusal | null = null;
   const onObservation = (metadata: ScreenObservationMetadata): void => {
     lastObservation = metadata;
     // §17's three capture-side numbers, which PR-010 deliberately left to this
@@ -422,6 +435,7 @@ export function createObservationRuntime(options: ObservationRuntimeOptions): Ob
     });
   };
   const onRefusal = (refusal: ScreenObservationRefusal): void => {
+    lastRefusal = refusal;
     telemetry?.failure(refusal.error.code);
     logger.warn('observation refused', {
       rule: refusal.rule,
@@ -727,6 +741,7 @@ export function createObservationRuntime(options: ObservationRuntimeOptions): Ob
       };
     },
     lastObservation: () => lastObservation,
+    lastRefusal: () => lastRefusal,
     noteViewState: (next: PilotViewState) => {
       view = next;
       applyConditions();

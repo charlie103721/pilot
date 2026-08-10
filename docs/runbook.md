@@ -729,6 +729,17 @@ construction (see the row below).
    looked, not afterwards, or the invariant reads as a failure when it is the
    bound working.
 
+   **A third, added by PR-042, and it is the one the ring-duration note above
+   sent two PRs chasing the wrong bound.** A walkthrough that owns the ring —
+   `capturePollIntervalMs: 3_600_000`, one hand-pushed screenshot — must push
+   that screenshot **before** the `samplePointer()` that will anchor the
+   question, not merely inside the 3 000 ms window. `moment: 'question'` selects
+   `at-or-before` the anchor, and the anchor is a *pointer sample's* timestamp;
+   a frame stamped one millisecond later is filtered out however young it is.
+   Real Pilot never notices, because 3 FPS capture guarantees a frame within
+   ~333 ms before any 30 Hz pointer sample. **Order the pushes as the pollers
+   would: frame, then pointer, then the key.**
+
 17. **A run that is interrupted mid-tool-call ends in `run-failed`, and that row
    is not harmless.** Found by PR-035. With a real `PiAgentSession`, aborting a
    run whose `observe_screen` call is in flight makes Pi report the turn as a
@@ -983,6 +994,35 @@ construction (see the row below).
    to push the frame after the key is released and immediately before the run
    needs it, which is a change to PR-037's walkthrough — follow-up 43.
 
+   **CLOSED by PR-042, and the diagnosis above is wrong.** It is not the ring's
+   age bound, it is not load, and it is not really about time at all. `moment:
+   'question'` asks the ring for the newest frame **at or before the question
+   anchor** (`policy-enforcer.ts` step 2, `direction: 'at-or-before'`), and the
+   anchor is the timestamp of a *pointer sample* — `resolveQuestionAnchor`
+   selects the last sample at or before the utterance end, and `anchor.at` is
+   that sample's own clock reading, not the key release. §5 sampled the pointer
+   three times and pushed its one screenshot **after** the third sample, so the
+   frame was stamped 0–1 ms *newer* than the anchor and was filtered out as
+   `frame-available (no-frame-in-direction)` — with a ring that still held it,
+   0 frames evicted by age, and 2.4 s of the 3 000 ms budget unspent. The demo
+   passed only when `Date.now()` returned the same millisecond for the pointer
+   sample and for the frame, which is a coin flip any load perturbs: hence
+   "one run in three", hence "passes alone", and hence why saturating the CPU
+   with busy loops did not reproduce it — CPU pressure does not make two
+   adjacent statements land in the same millisecond, it makes them land further
+   apart. Measured, not inferred: `anchorAt = t₀ − 1 ms`, `frameCapturedAt =
+   t₀`, `evictedByAge = 0`, `frameCount = 1`, tool call at `t₀ + 542 ms`.
+   Three things to take from it. **A refusal that is reported to the model is
+   invisible to every other observer** — PR-021's design, correct and by
+   intent — so `observe_screen calls: 0` on its own cannot distinguish "called
+   and refused" from "never called", and a walkthrough that does not print the
+   rule cannot diagnose itself; §5 now prints `observations refused:` and the
+   chosen frame's `skewMs` on every run, and the test asserts both.
+   **A wall-clock bound is the loud hypothesis and an ordering bound is the
+   quiet one**: everything about the symptom (load-dependent, intermittent,
+   a 3 000 ms constant in view) pointed at age, and the one number nobody had
+   printed was the sign of the skew. **Print the sign, not the magnitude.**
+
 ### Pending cross-lane follow-ups
 
 Open items a later PR must close. Each was raised by the lane that found it.
@@ -1038,7 +1078,7 @@ Open items a later PR must close. Each was raised by the lane that found it.
 | 39 | **There is no model picker, and three lanes each have a reason for that** (PR-037). The Codex profile chooses `gpt-5.5` (then the rest of the vision catalogue in a recorded order) and `PILOT_CODEX_MODEL` overrides it; there is no UI. PR-038 and PR-039 both need provider/model selection UI, and building a third one here while both were in flight would have collided in `ipc/schemas.ts`, `main/shell.ts` and `renderer/App.tsx` three ways. **The PR that lands last should build one picker for all three profiles**, over `ModelProfileStore` (which PR-020 already wrote and nothing yet persists to a file). | PR-038 / PR-039, whichever lands last |
 | 40 | **`ModelProfileStore` is still unwired** (PR-020, restated by PR-037). PR-020 built a provider-neutral profile store with a plaintext-secret guard, a `ProfileStorage` seam and a selection pointer. Nothing in `apps/desktop` uses it: the Codex profile is selected by an environment variable and its capability provenance is recomputed at every launch. That is correct for one profile and wrong for three. **The last provider PR should wire it**, with a file-backed `ProfileStorage` under `userData` — and note that the credential itself stays where PR-037 put it (`credentials/model-credentials.json`), because the store persists *references*, never secrets. | PR-038 / PR-039, whichever lands last |
 | 42 | **The log redactor cannot see a secret in a value, and three shapes are known to pass through it** (PR-041). `redactValue` matches on the *key name*, so `{ endpoint: 'https://user:token@host/v1' }`, `{ line: '… with key sk-live-…' }` and `{ cause: 'HTTP 400 … data:image/png;base64,iVBOR…' }` are all emitted verbatim — the first two are too short and not whole-string base64, and `DATA_URI_PATTERN` is anchored with `^` so a payload in the *middle* of a sentence is invisible. PR-041 fixed the one live instance at the source (`scrubUrlCredentials`, applied to every place a base URL is formatted for a human **and** to the library error text that quotes it back) rather than widening a pattern, because widening `IMAGE_KEY_PATTERN` is how cross-lane issue 25 keeps happening. The general fix is a **value-shaped** pass beside the name-shaped one: an unanchored data-URI search and an unanchored URL-userinfo search over every string, with `onViolation: 'throw'` in tests so a new call site fails loudly. It is a `packages/shared` contract change with every logger in the product downstream of it, which is why PR-041 did not make it. Until it lands, **anything that formats an address, a URL, or a library's own error text must scrub it at the call site**, and `pnpm demo:privacy` claim L2 prints the current answer on every run. | a focused `@pilot/shared` PR |
-| 43 | **`pnpm demo:codex` §5 races the 3 000 ms frame ring** (PR-041, cross-lane issue 27). It pushes its screenshot before `releaseKey()` and then waits out a whole scripted run, so under concurrent load the frame ages out and the demo reports `observe_screen calls: 0` / `frame-unavailable`. It fails about one full-suite run in three, on `main` as well as on any branch, and passes in isolation. The fix is to push the frame *after* the key is released and immediately before the run needs it — which is what `flow-demo.ts` already does — not to lengthen the ring or loosen the assertion. One or two lines in `apps/desktop/src/codex/codex-demo.ts`. | a focused PR, or PR-043 |
+| 43 | ~~**`pnpm demo:codex` §5 races the 3 000 ms frame ring**…~~ **CLOSED by PR-042, and the recorded diagnosis was wrong — see hazard 27 for the correction.** The ring's age bound was never reached: §5 pushed its one screenshot *after* the last `samplePointer()`, and that sample **is** the question anchor, so the frame was 0–1 ms too new for `moment: 'question'`'s `at-or-before` selection and was refused `frame-available (no-frame-in-direction)` with the frame still in the ring. The fix is one moved line — the push now sits *between* the second and third pointer samples, which is the order the real pollers produce (capture at 3 FPS, pointer at 30 Hz, so a frame always precedes the sample that grounds the question) and the order `ask-demo.ts` §2 already documents and every other walkthrough that pushes frames already writes. Nothing was lengthened and no assertion was loosened; two were *added* (`observations refused: (none)` and `at or before the anchor: true`). Also wrong in the row above: `flow-demo.ts` does not push after the key is released — it pushes before the key goes *down*, which is on the correct side of the anchor for the same reason. Six full-suite runs after the fix, one of them under eight busy loops: 2187/2187 each time. | ~~PR-042~~ |
 | 44 | **The `shutdown` retention clear is not awaited** (PR-041). `main/index.ts`'s `before-quit` handler starts the teardown chain with `void quitting.then(…)` and returns; `observation.dispose()` — which is where the §13 `shutdown` occasion is cleared, with the scene lineage — sits four links down that chain. Nothing is *retained* if Electron exits first (the buffers are process memory and go with it), so this is not a leak; what is lost is the **retention log entry that says so**, which is exactly the evidence `docs/handoff.md` §1 step 21 (g) asks the user to read, and it is the same shape as follow-up 37. Making `before-quit` await the chain risks a hung quit, which is worse; the honest fix is probably to clear the buffers *synchronously* at the top of the handler and let the rest of the teardown drain as it does now. **Say which you want** — it is a privacy-visible ordering choice. | PR-042, or a focused PR |
 
 
