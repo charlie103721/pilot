@@ -385,6 +385,28 @@ function buildNotice(notice: ObservationNotice | null): ObservationNoticeView | 
         at: notice.at,
         windowLabel: label,
       };
+    // PR-040. Both of these are the panel's half of a failure the conversation
+    // banner may not have been able to show: a capture stream that ends while a
+    // question is in flight must not abort the answer, so the banner is left to
+    // the answer and the prompt for a new selection lands here — which is where
+    // §16 asks for it, and which survives the panel being shut and reopened.
+    case 'capture-unavailable':
+      return {
+        reason: notice.reason,
+        headline: 'Pilot stopped watching',
+        message: `${named} stopped giving Pilot a picture — either it blocks screen capture or the capture failed. Choose another window; what Pilot had buffered was cleared.`,
+        at: notice.at,
+        windowLabel: label,
+      };
+    case 'helper-unavailable':
+      return {
+        reason: notice.reason,
+        headline: 'Pilot lost its macOS helper',
+        message:
+          'Pilot’s macOS helper stopped unexpectedly, so it cannot see the screen for a moment. Typing still works. If watching does not come back by itself, quit Pilot and open it again.',
+        at: notice.at,
+        windowLabel: label,
+      };
   }
 }
 

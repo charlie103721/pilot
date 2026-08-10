@@ -194,6 +194,26 @@ export class WindowGate {
     };
   }
 
+  /**
+   * Posts the §16 prompt for a reason this gate cannot see (PR-040).
+   *
+   * The gate owns the notice because the notice outlives the panel; it does not
+   * own the capture stream or the helper supervisor, and both of those can end
+   * the watching. `main/lifecycle-runtime.ts` calls this so there is still
+   * exactly one place a "Pilot stopped watching, choose another window" prompt
+   * is produced, whichever subsystem discovered it.
+   */
+  noteObservationStopped(
+    reason: ObservationNoticeReason,
+    window: ObservedWindow | null,
+    wasObserving: boolean,
+  ): void {
+    if (this.#disposed) {
+      return;
+    }
+    this.#noteStop(reason, window, wasObserving);
+  }
+
   /** True when permissions currently allow Pilot to observe at all (PR-008). */
   allowsObservation(): boolean {
     return permissionsAllowObservation(buildPermissionOnboardingView(this.#permissions.snapshot()));
@@ -363,6 +383,22 @@ export class WindowGate {
   }
 
   #enforcePermissions(): void {
+    // A permission that is being **re-read** is not a permission that was
+    // withdrawn (PR-040).
+    //
+    // `PermissionGate.refresh()` marks every kind pending and publishes *before*
+    // it asks the platform, and `permissionsAllowObservation` reports `false`
+    // for `readiness: 'checking'` — correctly, because "may Pilot start
+    // watching" has no answer yet. Read as "the permission is gone" it made
+    // every refresh stop an observation that was running and post the §16
+    // notice saying Screen Recording had been withdrawn. `DesktopShell.reveal()`
+    // refreshes on every panel open, which is precisely when a user who had
+    // just gone to System Settings comes back — so the message was not only
+    // wrong, it arrived at the moment it was most likely to be believed.
+    const state = this.#permissions.snapshot();
+    if (state.snapshot === null || state.pending.length > 0) {
+      return;
+    }
     if (this.allowsObservation()) {
       return;
     }

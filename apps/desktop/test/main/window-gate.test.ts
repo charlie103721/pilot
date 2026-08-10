@@ -230,6 +230,23 @@ describe('permissions gate the main process too, not only the panel', () => {
     expect(notice?.wasObserving).toBe(true);
   });
 
+  it('does not mistake a permission being re-read for one withdrawn', async () => {
+    // PR-040. `PermissionGate.refresh()` marks every kind pending and publishes
+    // *before* it asks the platform, and `permissionsAllowObservation` answers
+    // `false` for `readiness: 'checking'` — so the gate used to stop an
+    // observation that was running and tell the user Screen Recording had been
+    // withdrawn, every time anything refreshed. `DesktopShell.reveal()`
+    // refreshes on every panel open, which is exactly when someone who had just
+    // been to System Settings comes back.
+    await test.gate.act({ type: 'select', windowId: FIXTURE_WINDOW_RETINA.windowId });
+    await test.gate.act({ type: 'start' });
+
+    await test.permissions.gate.refresh();
+
+    expect(test.controller.snapshot().observationEnabled).toBe(true);
+    expect(test.gate.snapshot().notice).toBeNull();
+  });
+
   it('does not raise a notice when nothing was at stake', async () => {
     test.permissions.adapter.setSnapshot(FIXTURE_PERMISSIONS_SCREEN_DENIED);
 

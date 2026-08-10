@@ -34,6 +34,7 @@
     "demo:interrupt-flow": "pnpm --filter @pilot/desktop run demo:interrupt-flow",
     "demo:memory": "pnpm --filter @pilot/desktop run demo:memory",
     "demo:local": "pnpm --filter @pilot/desktop run demo:local",
+    "demo:failure": "pnpm --filter @pilot/desktop run demo:failure",
     "demo:voice": "pnpm build && pnpm --filter @pilot/interaction run demo:voice",
     "demo:response": "pnpm build && pnpm --filter @pilot/interaction run demo:response",
     "demo:interrupt": "pnpm build && pnpm --filter @pilot/interaction run demo:interrupt",

@@ -2,6 +2,7 @@ import type { InteractionState, SerializedPilotError, UtteranceId } from '@pilot
 import type { InteractionCommand, PilotViewState } from '@pilot/platform';
 import { isTextFallbackAvailable, lookupRule } from '@pilot/interaction';
 import { MAX_SUBMITTED_TEXT_LENGTH, type ConversationGateState } from '../ipc/schemas.js';
+import { readLifecycleGuidance, type LifecycleGuidanceView } from '../lifecycle/guidance.js';
 import {
   readObservationFailure,
   type ObservationFailureView,
@@ -408,6 +409,13 @@ export interface ConversationView {
    * failure, so the panel never claims a broken run was a screen problem.
    */
   readonly observationFailure: ObservationFailureView | null;
+  /**
+   * What to do about {@link lastError}, and which of the two endings it was
+   * (PR-040). Never null when there is an error: `readLifecycleGuidance` is
+   * total over the error taxonomy, so every failure the panel shows carries an
+   * actionable sentence rather than a code and a shrug.
+   */
+  readonly recovery: LifecycleGuidanceView | null;
   /** True while the developer diagnostics surface is open. */
   readonly diagnosticsVisible: boolean;
 }
@@ -485,6 +493,7 @@ export function buildConversationView(input: ConversationViewInput): Conversatio
     disclosure: buildDisclosure(input),
     lastError: input.view.lastError,
     observationFailure: readObservationFailure(input.view.lastError),
+    recovery: readLifecycleGuidance(input.view.lastError),
     diagnosticsVisible: input.gate.diagnosticsVisible,
   };
 }

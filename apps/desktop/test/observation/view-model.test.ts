@@ -385,4 +385,24 @@ describe('the §16 prompt', () => {
     expect(view.notice?.message).toContain('Screen Recording is no longer allowed');
     expect(view.capturing).toBe(false);
   });
+
+  it('explains a window that blocks capture without blaming the permission', () => {
+    // PR-040. The permission is intact and the window is still open; only the
+    // pixels are unavailable, and telling the user to visit System Settings
+    // would send them somewhere that cannot help.
+    const view = buildObservationView(
+      input({ gate: gateState({ notice: notice({ reason: 'capture-unavailable' }) }) }),
+    );
+    expect(view.notice?.headline).toBe('Pilot stopped watching');
+    expect(view.notice?.message).toContain('blocks screen capture');
+    expect(view.notice?.message).not.toContain('Screen Recording');
+  });
+
+  it('explains a helper that died as something that may fix itself', () => {
+    const view = buildObservationView(
+      input({ gate: gateState({ notice: notice({ reason: 'helper-unavailable' }) }) }),
+    );
+    expect(view.notice?.headline).toBe('Pilot lost its macOS helper');
+    expect(view.notice?.message).toContain('Typing still works');
+  });
 });

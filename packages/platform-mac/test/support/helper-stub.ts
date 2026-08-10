@@ -20,6 +20,8 @@
  * variable, a JSON object matching {@link StubConfig}.
  */
 
+import { existsSync, writeFileSync } from 'node:fs';
+
 // ---------------------------------------------------------------------------
 // PR-011 shapes
 //
@@ -207,6 +209,18 @@ export interface StubConfig {
   crashAfterRequests?: number;
   /** Exit without answering when one of these operations is requested. */
   crashOnOps?: string[];
+  /**
+   * Crash **once**, whatever `crashAfterRequests`/`crashOnOps` would repeat
+   * (PR-040).
+   *
+   * The path of a marker file. The stub creates it as it dies and never crashes
+   * again while it exists, so a restarted process — which reads the same
+   * `PILOT_HELPER_STUB`, because the supervisor re-spawns with the same
+   * environment — comes back up and stays up. Without it, "the helper crashed
+   * and Pilot recovered" cannot be told apart from "the helper crash-loops
+   * until the restart budget is spent", and both are cases worth having.
+   */
+  crashOncePath?: string;
   /** Exit immediately, before reading anything. */
   crashOnStart?: boolean;
   /** Exit code used by the crash options. Default 9. */
@@ -255,6 +269,16 @@ export interface StubConfig {
   openSettingsFails?: boolean;
   /** Evidence returned by `permissions.attribution`. Defaults to a correctly attributed bundle. */
   attribution?: Partial<StubAttributionEvidence>;
+
+  /**
+   * Successive permission snapshots (PR-040). Call *n* of
+   * `permissions.snapshot` answers with entry *n* merged over the base
+   * `permissions`, and the last entry repeats — the same scripted-sequence
+   * device `desktopScript` uses, and for the same reason: a permission revoked
+   * *while Pilot is watching* is a lifecycle event, and driving it from a timer
+   * would make the walkthrough race itself.
+   */
+  permissionsScript?: Array<Partial<Record<StubPermissionKind, StubPermissionState>>>;
 
   /** The desktop reported by the first `windows.list`. */
   desktop?: StubDesktop;
@@ -580,6 +604,8 @@ const DEFAULT_ATTRIBUTION: StubAttributionEvidence = {
 class StubPermissionTable {
   private readonly states = new Map<StubPermissionKind, StubPermissionState>();
   private readonly config: StubConfig;
+  /** Snapshots answered so far; the cursor into `permissionsScript`. */
+  private snapshots = 0;
 
   // Parameter properties are not supported by Node's type stripping, so the
   // assignments here are written out. Same in `StubDesktopScript` below.
@@ -620,6 +646,19 @@ class StubPermissionTable {
   }
 
   snapshot(): StubPermissionProbe[] {
+    // PR-040: advance the scripted revocation before answering, so the *n*th
+    // read of the snapshot is the *n*th state of the world.
+    const script = this.config.permissionsScript ?? [];
+    if (script.length > 0) {
+      const frame = script[Math.min(this.snapshots, script.length - 1)] ?? {};
+      for (const kind of PERMISSION_KINDS) {
+        const next = frame[kind];
+        if (next !== undefined) {
+          this.states.set(kind, next);
+        }
+      }
+      this.snapshots += 1;
+    }
     const omitted = new Set(this.config.omitPermissionsFromSnapshot ?? []);
     return PERMISSION_KINDS.filter((kind) => !omitted.has(kind)).map((kind) => this.probe(kind));
   }
@@ -1278,6 +1317,24 @@ function hitTest(
 function main(): void {
   const config = readConfig();
   const exitCode = config.exitCode ?? 9;
+  /**
+   * Whether this process is still allowed to crash (PR-040).
+   *
+   * With `crashOncePath` set, the first crash writes the marker and every later
+   * process finds it and stays up. The check is synchronous and the write is
+   * synchronous, because the very next statement is `process.exit`.
+   */
+  const mayCrash = (): boolean => {
+    const marker = config.crashOncePath;
+    if (marker === undefined) {
+      return true;
+    }
+    if (existsSync(marker)) {
+      return false;
+    }
+    writeFileSync(marker, `crashed at ${String(Date.now())}\n`);
+    return true;
+  };
   const startedAt = Date.now();
   const helperVersion = config.helperVersion ?? '0.0.0-stub';
   const echoBinary = config.echoBinary ?? true;
@@ -1299,7 +1356,7 @@ function main(): void {
     process.stderr.write(`${config.stderrLine}\n`);
   }
 
-  if (config.crashOnStart === true) {
+  if (config.crashOnStart === true && mayCrash()) {
     process.exit(exitCode);
   }
 
@@ -1641,7 +1698,11 @@ function main(): void {
     playHotkeyScript(pendingHotkeyScript);
 
     answered += 1;
-    if (config.crashAfterRequests !== undefined && answered >= config.crashAfterRequests) {
+    if (
+      config.crashAfterRequests !== undefined &&
+      answered >= config.crashAfterRequests &&
+      mayCrash()
+    ) {
       process.exit(exitCode);
     }
   };
@@ -1662,7 +1723,7 @@ function main(): void {
         if (request.kind !== 'request') {
           continue;
         }
-        if ((config.crashOnOps ?? []).includes(request.op)) {
+        if ((config.crashOnOps ?? []).includes(request.op) && mayCrash()) {
           process.stderr.write(`stub: crashing on "${request.op}"\n`);
           process.exit(exitCode);
         }

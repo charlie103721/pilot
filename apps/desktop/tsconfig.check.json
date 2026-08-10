@@ -22,12 +22,14 @@
     "src/permissions/**/*.ts",
     "src/observation/**/*.ts",
     "src/conversation/**/*.ts",
+    "src/lifecycle/**/*.ts",
     "src/diagnostics/**/*.ts",
     "test/main/**/*.ts",
     "test/build/**/*.ts",
     "test/permissions/**/*.ts",
     "test/observation/**/*.ts",
     "test/conversation/**/*.ts",
+    "test/lifecycle/**/*.ts",
     "test/diagnostics/**/*.ts",
     "electron.vite.config.ts"
   ]
