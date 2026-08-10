@@ -442,3 +442,83 @@ Click path — no source edits, and it exercises everything in this PR:
    and still runs. Blocked and degraded are different states, per §16.
 9. **Fake window events → restore all windows** puts the list back so the walk
    can be repeated.
+
+## Demo (PR-010 — conversation and diagnostics panel)
+
+```sh
+pnpm demo:conversation                      # headless walkthrough, no display needed
+```
+
+The walkthrough drives the real conversation gate, the real fixture replay and
+the real view models. It prints, in order: every interaction state with its
+label, tone, activity and — the column that matters — whether the text box is
+available in it; a spoken question answered in streamed chunks; the same
+question typed; an answer interrupted mid-flight; the recogniser failing; the
+same panel with no usable push-to-talk shortcut and a disclosure that the audio
+would leave the machine; the ring buffer; and a privacy check that searches
+every measured value for every word that was said.
+
+### The interaction states
+
+Ten states, ten labels, ten sentences. The five this PR names are additionally
+given pairwise-distinct `tone` and `activity`, so they are told apart by colour
+and pulse rather than by reading:
+
+| State | Tone | Activity | Text box |
+| --- | --- | --- | --- |
+| `listening` | `listening` | `hearing` | available |
+| `thinking` | `working` | `thinking` | available |
+| `observing` | `ready` | `waiting` | available |
+| `speaking` | `speaking` | `answering` | available |
+| `error` | `error` | `failed` | **available** |
+
+`error` is the row that matters. system-design §16 says "STT fails → … then
+offer text input", and PR-025 made `error + submit-text` legal for exactly that.
+The panel asks `isTextFallbackAvailable(state)` from `@pilot/interaction` rather
+than deciding for itself, so the affordance and the machine cannot disagree.
+Every other control asks the same transition table through `lookupRule`.
+
+### Developer diagnostics
+
+`Show developer diagnostics` opens a ring buffer of the system-design §17
+metrics: capture-to-observation latency, STT duration, time to first token, time
+to first spoken sentence, observation calls per question, image bytes, active
+image count, and abort and failure categories.
+
+**It records timings and counts, not content** (§13, §17). That is enforced by
+shape, not by convention: a telemetry sample is five numbers plus one field from
+a closed vocabulary, `TelemetryRing` has no recording method that accepts a
+string, and the panel re-checks every sample against that vocabulary and
+withholds anything that does not fit. There is no path by which a transcript, a
+window title or an image could reach the surface.
+
+In the app:
+
+```sh
+pnpm dev
+PILOT_HOTKEY_FIXTURE=permission-missing pnpm dev   # no way to speak at all
+PILOT_SPEECH_DISCLOSURE=remote pnpm dev            # audio would leave the Mac
+```
+
+Click path — no source edits:
+
+1. **Fake permissions → `granted`**, then **Replay → spoken question**. The
+   transcript fills in, the answer arrives in chunks, and the state badge walks
+   listening → transcribing → thinking → looking at the screen → speaking.
+2. **Show developer diagnostics** → speech-to-text, time to first token, time to
+   first spoken sentence, observation calls, image bytes and the active image
+   count all read as measured. The two compaction counters read `—`, because
+   nothing has compacted: "not measured" and "measured as zero" are different
+   facts.
+3. **Replay → interrupt mid-answer** → the partial answer stays on screen badged
+   *interrupted*, and the diagnostics gain one abort under `user-interrupted`.
+4. **Replay → speech recognition fails** → the state badge reads *Something went
+   wrong*, the failure is shown with its code, and the **text box is still
+   live**, with "Pilot could not finish the last question. Type it instead."
+   Typing a question there is accepted.
+5. Start again with `PILOT_HOTKEY_FIXTURE=permission-missing pnpm dev` → *Hold
+   to talk* is disabled with the Accessibility reason beside it, and the text box
+   is marked as the only way to ask.
+6. Start again with `PILOT_SPEECH_DISCLOSURE=remote pnpm dev` → a banner says
+   what you say would be sent to Apple to be transcribed, and names the service.
+7. **Clear telemetry** empties the ring; the metrics go back to `—`.

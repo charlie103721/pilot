@@ -44,6 +44,13 @@ const workspaceAliases = [
     replacement: fromApp('../../packages/platform/src/fakes/index.ts'),
   },
   { find: '@pilot/platform', replacement: fromApp('../../packages/platform/src/index.ts') },
+  {
+    // PR-010: the renderer asks the transition table whether a command is
+    // accepted, rather than deciding for itself. Pure TypeScript with no Node
+    // built-ins, so it bundles into a Chromium renderer unchanged.
+    find: '@pilot/interaction',
+    replacement: fromApp('../../packages/interaction/src/index.ts'),
+  },
   { find: '@pilot/shared', replacement: fromApp('../../packages/shared/src/index.ts') },
 ];
 

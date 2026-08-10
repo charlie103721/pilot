@@ -5,8 +5,10 @@ import {
   permissionKindSchema,
   permissionSnapshotSchema,
   serializedPilotErrorSchema,
+  speechRecognitionDisclosureSchema,
   utteranceIdSchema,
   windowIdSchema,
+  PILOT_ERROR_CODES,
 } from '@pilot/shared';
 import type { InteractionCommand, PilotViewState, TranscriptEntry } from '@pilot/platform';
 import { z } from 'zod';
@@ -344,3 +346,259 @@ export const WINDOW_DEMO_EVENTS = [
 export type WindowDemoEvent = (typeof WINDOW_DEMO_EVENTS)[number];
 
 export const windowDemoEventSchema = z.enum(WINDOW_DEMO_EVENTS);
+
+// ---------------------------------------------------------------------------
+// Conversation and developer diagnostics (PR-010)
+// ---------------------------------------------------------------------------
+
+/**
+ * DEVELOPER DIAGNOSTICS ARE TIMINGS AND COUNTS. NOTHING ELSE.
+ *
+ * `docs/system-design.md` §17 lists exactly what may be measured, and §13
+ * lists what is never logged: base64 images, raw audio, and prompts containing
+ * screen text. A diagnostics panel is the obvious place for that rule to be
+ * broken by accident — one `details` field of type `unknown`, one "just the
+ * first 40 characters of the answer", and every other lane's care is undone.
+ *
+ * So the rule is enforced by the *shape* rather than by review: a
+ * {@link TelemetrySample} has five numeric fields and one field drawn from a
+ * closed vocabulary, and there is no member of this schema into which a
+ * transcript, a window title, a file path or an image can be put. Making the
+ * panel show content would require changing this type, which is a visible
+ * contract change rather than a quiet one.
+ */
+
+/** How a metric's `value` is to be read. */
+export const TELEMETRY_UNITS = ['ms', 'count', 'bytes'] as const;
+
+export type TelemetryUnit = (typeof TELEMETRY_UNITS)[number];
+
+/**
+ * The measurable quantities of system-design §17, one name each.
+ *
+ * The first seven are §17's list verbatim (the "abort and failure categories"
+ * row becomes two metrics whose `category` carries the class). The last two
+ * are the compaction counters of §11, which the panel surfaces so a compacted
+ * conversation is visible as numbers — the `context-compacted` event itself
+ * carries the summary *text*, which is content and is therefore not recorded.
+ */
+export const TELEMETRY_METRICS = [
+  'capture-to-observation',
+  'stt-duration',
+  'time-to-first-token',
+  'time-to-first-sentence',
+  'observation-calls',
+  'image-bytes',
+  'active-images',
+  'abort',
+  'failure',
+  'context-tokens-before',
+  'context-tokens-after',
+] as const;
+
+export type TelemetryMetric = (typeof TELEMETRY_METRICS)[number];
+
+export const telemetryMetricSchema = z.enum(TELEMETRY_METRICS);
+
+export const TELEMETRY_METRIC_UNITS: Readonly<Record<TelemetryMetric, TelemetryUnit>> = {
+  'capture-to-observation': 'ms',
+  'stt-duration': 'ms',
+  'time-to-first-token': 'ms',
+  'time-to-first-sentence': 'ms',
+  'observation-calls': 'count',
+  'image-bytes': 'bytes',
+  'active-images': 'count',
+  abort: 'count',
+  failure: 'count',
+  'context-tokens-before': 'count',
+  'context-tokens-after': 'count',
+};
+
+/**
+ * Why Pilot stopped waiting for something. §17's "abort category".
+ *
+ * A closed vocabulary rather than free text, for the reason given above: an
+ * abort reason written by hand at the call site is a place a question could be
+ * quoted into the diagnostics surface.
+ */
+export const ABORT_CATEGORIES = [
+  /** The user interrupted an answer in progress. */
+  'user-interrupted',
+  /** A new question replaced the one in flight. */
+  'new-question',
+  /** Speech was stopped without abandoning the answer. */
+  'stopped-speaking',
+  /** The conversation was cleared. */
+  'conversation-cleared',
+  /** The observed window changed, so the answer in flight was about the old one. */
+  'window-changed',
+  /** Observation stopped: paused, permission withdrawn, or the window closed. */
+  'observation-stopped',
+  /** Pilot is shutting down. */
+  'shutdown',
+] as const;
+
+export type AbortCategory = (typeof ABORT_CATEGORIES)[number];
+
+/**
+ * The `category` vocabulary: an abort reason, or a `PilotErrorCode`.
+ *
+ * `PilotErrorCode` is already the product's closed failure taxonomy — UI code
+ * switches on it and never on a message — so "failure category" needs no second
+ * enumeration. Note what is *not* here: `SerializedPilotError.userMessage` and
+ * `details`, either of which could carry a window title.
+ */
+export const telemetryCategorySchema = z.union([
+  z.enum(ABORT_CATEGORIES),
+  z.enum(PILOT_ERROR_CODES),
+]);
+
+export type TelemetryCategory = z.infer<typeof telemetryCategorySchema>;
+
+export const telemetrySampleSchema = z.strictObject({
+  /** Monotonic within one run, so the panel can order and de-duplicate. */
+  seq: z.number().int().nonnegative(),
+  at: z.number().int().nonnegative(),
+  /** Which question this belongs to, 1-based. `0` means "not part of a turn". */
+  turn: z.number().int().nonnegative(),
+  metric: telemetryMetricSchema,
+  /** Milliseconds, bytes or a count — read through {@link TELEMETRY_METRIC_UNITS}. */
+  value: z.number().nonnegative().finite(),
+  /** Non-null exactly for `abort` and `failure`. */
+  category: telemetryCategorySchema.nullable(),
+});
+
+export type TelemetrySample = z.infer<typeof telemetrySampleSchema>;
+
+/**
+ * The ring buffer as the panel sees it.
+ *
+ * `recorded` and `dropped` are carried because a ring that silently forgets is
+ * indistinguishable from one that was never written to, and "the numbers you
+ * are reading are the last 200 of 4,000" changes how they should be read.
+ */
+export const telemetryBufferSchema = z.strictObject({
+  samples: z.array(telemetrySampleSchema).readonly(),
+  capacity: z.number().int().positive(),
+  recorded: z.number().int().nonnegative(),
+  dropped: z.number().int().nonnegative(),
+});
+
+/**
+ * Default ring capacity: enough to cover several questions without becoming a
+ * memory story of its own. Declared here rather than in the main process so the
+ * renderer's pre-connection placeholder does not have to invent a number.
+ */
+export const DEFAULT_TELEMETRY_CAPACITY = 200;
+
+export type TelemetryBuffer = z.infer<typeof telemetryBufferSchema>;
+
+/**
+ * Push-to-talk, as the panel needs it.
+ *
+ * Deliberately the *result* of `isHotkeyUsable`, `hotkeyUnavailableMessage` and
+ * `hotkeyBlockingPermission` rather than the raw `HotkeyAvailability`: those
+ * three functions live beside the type in `@pilot/platform` precisely so every
+ * shell says the same thing, and evaluating them once in the main process is
+ * what makes that true here. `status` is carried as well so the diagnostics
+ * surface can show the state without re-deriving the words.
+ */
+export const pushToTalkSchema = z.strictObject({
+  usable: z.boolean(),
+  status: z.enum(['active', 'stopped', 'unavailable']),
+  /** Non-null exactly when `usable` is false. */
+  message: z.string().nullable(),
+  /** The permission that would fix it, when granting one would. */
+  blockingPermission: permissionKindSchema.nullable(),
+  /** The shortcut in the user's words, e.g. `"Right Option"`. */
+  label: z.string(),
+});
+
+export type PushToTalk = z.infer<typeof pushToTalkSchema>;
+
+/**
+ * Fixture conversations a reviewer can replay at runtime.
+ *
+ * `docs/implementation.md` requires PR-010 to demo "a fixture-driven
+ * conversation and ring-buffer telemetry", and nothing in this build can
+ * *cause* a conversation: there is no recogniser (PR-014), no agent (PR-029)
+ * and no capture (PR-028). These names are the vocabulary for driving one
+ * anyway, validated like any other renderer input and refused outright by a
+ * build with no fixture driver behind it.
+ */
+export const CONVERSATION_FIXTURES = [
+  /** Held the key, asked, Pilot looked, answered aloud in chunks. */
+  'spoken-question',
+  /** Typed the same question. No microphone involved. */
+  'typed-question',
+  /** An answer interrupted halfway through being spoken. */
+  'interrupted-answer',
+  /** The recogniser fails: `error`, where typing is the documented way out. */
+  'stt-failure',
+  /** Back to an empty conversation with an empty ring buffer. */
+  'reset',
+] as const;
+
+export type ConversationFixtureName = (typeof CONVERSATION_FIXTURES)[number];
+
+export const conversationFixtureSchema = z.enum(CONVERSATION_FIXTURES);
+
+/**
+ * Everything the conversation panel needs that `PilotViewState` does not carry.
+ *
+ * The transcript, the streamed answer and the interaction state are *not* here:
+ * `PilotViewState` is the one answer to those, exactly as
+ * `PilotViewState.selectedWindow` is the one answer to what Pilot is watching
+ * (PR-009). This carries the developer telemetry, the two voice facts the
+ * renderer cannot know (whether the shortcut works, and what the recogniser
+ * would do with the audio), and the demo switches.
+ */
+export const conversationGateStateSchema = z.strictObject({
+  telemetry: telemetryBufferSchema,
+  /** Whether the developer diagnostics surface is open. Off by default. */
+  diagnosticsVisible: z.boolean(),
+  /** Null when this build has no hotkey adapter at all. */
+  pushToTalk: pushToTalkSchema.nullable(),
+  /**
+   * What the recogniser would do with the microphone audio (PR-014), or null
+   * when no speech adapter has said. Routed here because nothing else surfaces
+   * it: a Mac that cannot recognise the user's language on device otherwise
+   * refuses to listen with a message nobody ever sees.
+   */
+  disclosure: speechRecognitionDisclosureSchema.nullable(),
+  /** The fixture conversation currently loaded, or null. */
+  fixture: conversationFixtureSchema.nullable(),
+  /** True when this build can replay fixture conversations from the panel. */
+  demoFixtures: z.boolean(),
+});
+
+export type ConversationGateState = z.infer<typeof conversationGateStateSchema>;
+
+export const CONVERSATION_ACTIONS = [
+  'refresh',
+  'clear-telemetry',
+  'set-diagnostics-visible',
+] as const;
+
+export type ConversationActionType = (typeof CONVERSATION_ACTIONS)[number];
+
+/**
+ * Everything the conversation panel can ask the main process for that is not a
+ * command to the interaction controller, as one validated discriminated union —
+ * the same shape permission and window actions use, for the same reason.
+ */
+export type ConversationAction =
+  /** Re-read the telemetry buffer and the voice facts. */
+  | { readonly type: 'refresh' }
+  /** Empty the ring buffer. */
+  | { readonly type: 'clear-telemetry' }
+  | { readonly type: 'set-diagnostics-visible'; readonly visible: boolean };
+
+export const conversationActionSchema: z.ZodType<ConversationAction> = z.discriminatedUnion(
+  'type',
+  [
+    z.strictObject({ type: z.literal('refresh') }),
+    z.strictObject({ type: z.literal('clear-telemetry') }),
+    z.strictObject({ type: z.literal('set-diagnostics-visible'), visible: z.boolean() }),
+  ],
+);
