@@ -30,7 +30,9 @@ describe('scripted fake flow', () => {
     const result = await runInteractionDemo();
 
     expect(result.rejections).toEqual([
-      'speech-stopped in listening: stale-speech',
+      // The `stopped` callback for speech Pilot itself stopped no longer
+      // reaches the machine at all: PR-026's output binding recognises its own
+      // teardown and reports it as a diagnostic instead of a stale rejection.
       'run-text-delta in listening: stale-run',
       'speech-finished in listening: stale-speech',
       'run-aborted in observing: stale-run',

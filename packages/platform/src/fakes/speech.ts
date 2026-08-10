@@ -212,6 +212,29 @@ export class FakeSpeechOutputAdapter implements SpeechOutputAdapter {
     this.#emitter.emit({ type: 'finished', speechId });
   }
 
+  /**
+   * Test control: report completion for *any* identifier.
+   *
+   * A real synthesiser is not obliged to be well behaved — PR-026 has to cope
+   * with a completion that arrives twice, or for an utterance that already
+   * ended, without cutting the answer short. The symmetric input control is
+   * `FakeSpeechInputAdapter.emitLateFinal`.
+   */
+  emitFinished(speechId: SpeechId): void {
+    if (this.#active === speechId) {
+      this.#active = null;
+    }
+    this.#emitter.emit({ type: 'finished', speechId });
+  }
+
+  /** Test control: fail one utterance mid-flight (system-design §16, "TTS fails"). */
+  emitError(speechId: SpeechId, message: string): void {
+    if (this.#active === speechId) {
+      this.#active = null;
+    }
+    this.#emitter.emit({ type: 'error', speechId, error: new Error(message) });
+  }
+
   get activeSpeechId(): SpeechId | null {
     return this.#active;
   }

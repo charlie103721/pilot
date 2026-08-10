@@ -1,6 +1,12 @@
 import { type InteractionState, type UtteranceId } from '@pilot/shared';
 import type { SpeechInputAdapter, SpeechInputEvent, Unsubscribe } from '@pilot/platform';
 import { lookupRule } from './table.js';
+import {
+  DEFAULT_DIAGNOSTIC_LIMIT,
+  type SpeechCallIgnoredReason,
+  type SpeechDiscardReason,
+  type VoiceDiagnostic,
+} from './voice-diagnostics.js';
 
 /**
  * PR-025 — the speech-input binding.
@@ -37,39 +43,6 @@ import { lookupRule } from './table.js';
  * driven entirely by the calls and callbacks it is given.
  */
 
-/** Why an adapter event never reached the state machine. */
-export type SpeechDiscardReason =
-  /** No utterance is live; the adapter spoke about a question that is over. */
-  | 'no-live-utterance'
-  /** A different utterance is live now — a new push-to-talk superseded this one. */
-  | 'superseded'
-  /** The utterance was cancelled; system-design §15 says its results are discarded. */
-  | 'cancelled'
-  /** A transcript was already accepted for this utterance. */
-  | 'already-finalized'
-  /** The utterance already failed; a later result cannot revive it. */
-  | 'already-failed'
-  /** The binding never started this utterance. */
-  | 'unknown-utterance';
-
-/** Why an adapter call was not forwarded. */
-export type SpeechCallIgnoredReason =
-  'no-live-utterance' | 'superseded' | 'already-closed' | 'already-listening' | 'unknown-utterance';
-
-export type VoiceDiagnostic =
-  | {
-      readonly kind: 'discarded-event';
-      readonly event: SpeechInputEvent['type'];
-      readonly utteranceId: UtteranceId;
-      readonly reason: SpeechDiscardReason;
-    }
-  | {
-      readonly kind: 'ignored-call';
-      readonly call: 'start' | 'stop' | 'cancel';
-      readonly utteranceId: UtteranceId;
-      readonly reason: SpeechCallIgnoredReason;
-    };
-
 export interface SpeechInputBindingOptions {
   readonly speechInput: SpeechInputAdapter;
   /** Accepted events, already proven to belong to the live utterance. */
@@ -82,8 +55,6 @@ export interface SpeechInputBindingOptions {
   /** Most recent diagnostics retained for inspection. */
   readonly diagnosticLimit?: number;
 }
-
-export const DEFAULT_DIAGNOSTIC_LIMIT = 64;
 
 /** How far an utterance has got, from the binding's point of view. */
 type UtterancePhase =

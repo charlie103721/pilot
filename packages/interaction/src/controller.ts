@@ -9,6 +9,7 @@ import {
   type ObservedWindow,
   type PermissionKind,
   type PermissionSnapshot,
+  type SpeechId,
   type UtteranceId,
 } from '@pilot/shared';
 import type {
@@ -26,7 +27,9 @@ import type { InteractionInput } from './inputs.js';
 import { InteractionMachine, type Clock, type TransitionOutcome } from './machine.js';
 import { rejectionError, type InteractionRejection } from './rejection.js';
 import type { ObservationControlPort, QuestionEnvelopeFactory } from './ports.js';
-import { SpeechInputBinding, type VoiceDiagnostic } from './speech-binding.js';
+import { SpeechInputBinding } from './speech-binding.js';
+import { SpeechOutputBinding } from './speech-output-binding.js';
+import type { VoiceDiagnostic } from './voice-diagnostics.js';
 
 /**
  * The `InteractionController` implementation.
@@ -93,6 +96,10 @@ export interface PilotInteractionControllerOptions {
   /** Refuse to record unless recognition runs on device (system-design §11). */
   readonly requireOnDeviceSpeech?: boolean;
   readonly speechLocale?: string;
+  /** PR-026: how long an unterminated fragment waits before it is spoken. */
+  readonly phraseTimeoutMs?: number;
+  readonly voice?: string;
+  readonly speechRate?: number;
 }
 
 export class PilotInteractionController implements InteractionController {
@@ -103,7 +110,7 @@ export class PilotInteractionController implements InteractionController {
   readonly #unsubscribes: Unsubscribe[] = [];
 
   readonly #speech: SpeechInputBinding;
-  readonly #speechOutput: SpeechOutputAdapter;
+  readonly #speechOut: SpeechOutputBinding;
   readonly #agent: AgentSession;
   readonly #envelopes: QuestionEnvelopeFactory;
   readonly #observation: ObservationControlPort | undefined;
@@ -124,8 +131,10 @@ export class PilotInteractionController implements InteractionController {
       ...(options.requiredPermissions === undefined
         ? {}
         : { requiredPermissions: options.requiredPermissions }),
+      ...(options.phraseTimeoutMs === undefined
+        ? {}
+        : { phraseTimeoutMs: options.phraseTimeoutMs }),
     });
-    this.#speechOutput = options.speechOutput;
     this.#agent = options.agent;
     this.#envelopes = options.envelopes;
     this.#observation = options.observation;
@@ -169,8 +178,19 @@ export class PilotInteractionController implements InteractionController {
       },
     });
 
-    this.#unsubscribes.push(
-      this.#speechOutput.subscribe((event) => {
+    // PR-026: the symmetric output side. The machine emits `speak` per finished
+    // sentence, all under one stream id; the binding owns the queue, the
+    // ordering, and the difference between "this chunk finished" and "the
+    // answer finished". Events reaching `onEvent` are stream-level and already
+    // proved to belong to the live stream.
+    this.#speechOut = new SpeechOutputBinding({
+      speechOutput: options.speechOutput,
+      ...(options.voice === undefined ? {} : { voice: options.voice }),
+      ...(options.speechRate === undefined ? {} : { rate: options.speechRate }),
+      onDiagnostic: (diagnostic) => {
+        this.#diagnostics.emit(diagnostic);
+      },
+      onEvent: (event) => {
         switch (event.type) {
           case 'started':
             this.send({ type: 'speech-started', speechId: event.speechId });
@@ -189,7 +209,10 @@ export class PilotInteractionController implements InteractionController {
             });
             return;
         }
-      }),
+      },
+    });
+
+    this.#unsubscribes.push(
       this.#agent.subscribe((event) => {
         switch (event.type) {
           case 'run-started':
@@ -257,12 +280,22 @@ export class PilotInteractionController implements InteractionController {
 
   /** Everything {@link subscribeVoiceDiagnostics} has reported, bounded. */
   get voiceDiagnostics(): readonly VoiceDiagnostic[] {
-    return this.#speech.diagnostics;
+    return [...this.#speech.diagnostics, ...this.#speechOut.diagnostics];
   }
 
   /** The utterance the speech adapter is allowed to talk about, if any. */
   get liveUtteranceId(): UtteranceId | null {
     return this.#speech.liveUtteranceId;
+  }
+
+  /** The speech stream the synthesiser is allowed to talk about, if any. */
+  get liveSpeechId(): SpeechId | null {
+    return this.#speechOut.liveSpeechId;
+  }
+
+  /** Chunks accepted for the live stream but not yet handed to the synthesiser. */
+  get pendingSpeechChunks(): number {
+    return this.#speechOut.pendingChunkCount;
   }
 
   snapshot(): PilotViewState {
@@ -318,7 +351,7 @@ export class PilotInteractionController implements InteractionController {
     // Releases the microphone if an utterance was still open (system-design
     // §11: pause, lock, logout and shutdown must clear audio buffers).
     await this.#speech.dispose().catch(() => undefined);
-    await this.#speechOutput.stop().catch(() => undefined);
+    await this.#speechOut.dispose().catch(() => undefined);
     await this.#agent.interrupt('abort', 'controller disposed').catch(() => undefined);
     await this.#observation?.stop().catch(() => undefined);
     await this.#observation?.clear().catch(() => undefined);
@@ -327,12 +360,19 @@ export class PilotInteractionController implements InteractionController {
     this.#diagnostics.clear();
   }
 
-  /** Resolves once every queued effect (and anything they caused) has run. */
+  /**
+   * Resolves once every queued effect (and anything they caused) has run,
+   * including the speech chunks the output binding hands over on its own chain.
+   * It never waits for audio to *finish* playing — that is the synthesiser's
+   * business, and blocking on it would make an interruption wait for the
+   * sentence it is interrupting.
+   */
   async settled(): Promise<void> {
     let previous: Promise<void>;
     do {
       previous = this.#pending;
       await previous.catch(() => undefined);
+      await this.#speechOut.settled();
     } while (previous !== this.#pending);
   }
 
@@ -407,10 +447,16 @@ export class PilotInteractionController implements InteractionController {
         this.send({ type: 'observation-finished', observationId: effect.observationId });
         return;
       case 'speak':
-        await this.#speechOutput.speak({ speechId: effect.speechId, text: effect.text });
+        await this.#speechOut.speak({
+          speechId: effect.speechId,
+          utteranceId: effect.utteranceId,
+          text: effect.text,
+          ...(effect.sequence === undefined ? {} : { sequence: effect.sequence }),
+          ...(effect.final === undefined ? {} : { final: effect.final }),
+        });
         return;
       case 'stop-speech':
-        await this.#speechOutput.stop(effect.speechId ?? undefined);
+        await this.#speechOut.stop(effect.speechId);
         return;
       case 'clear-conversation':
         // Text persistence and session recycling belong to PR-023/PR-036.

@@ -277,7 +277,9 @@ describe('a dead utterance cannot be resurrected', () => {
     expect(speechInput.started).toHaveLength(2);
     expect(speechInput.activeUtteranceId).toBeNull();
     expect(
-      diagnostics.every((diagnostic) => diagnostic.utteranceId !== second),
+      diagnostics.every(
+        (diagnostic) => !('utteranceId' in diagnostic) || diagnostic.utteranceId !== second,
+      ),
       'nothing about the live utterance was discarded',
     ).toBe(true);
     await controller.dispose();

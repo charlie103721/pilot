@@ -50,8 +50,27 @@ export interface InteractionContext {
   readonly utteranceEndedAt: number | null;
 
   readonly liveTranscript: string | null;
-  /** Answer text accumulated for the active utterance but not yet spoken. */
+  /**
+   * Everything the active run has streamed so far. This is what the panel
+   * shows; PR-026 keeps it separate from `pendingAnswer` because the two
+   * diverge as soon as a sentence is handed to TTS.
+   */
+  readonly answerText: string;
+  /**
+   * Answer text accumulated for the active utterance but **not yet spoken** —
+   * the fragment still waiting for a terminator (PR-026). Drained into `speak`
+   * effects as sentences complete, and always emptied when the run ends, so no
+   * tail is left behind.
+   */
   readonly pendingAnswer: string;
+  /**
+   * Injected-clock reading at which `pendingAnswer` started waiting, or `null`
+   * when nothing is waiting. The phrase timeout is measured from here — never
+   * from a wall clock.
+   */
+  readonly pendingAnswerSince: number | null;
+  /** Chunks already handed to TTS for the active speech stream (PR-026). */
+  readonly spokenChunkCount: number;
   readonly transcript: readonly TranscriptEntry[];
   readonly lastError: SerializedPilotError | null;
   readonly updatedAt: number;
@@ -146,7 +165,10 @@ export function createInteractionContext(options: CreateContextOptions): Interac
     utteranceStartedAt: null,
     utteranceEndedAt: null,
     liveTranscript: null,
+    answerText: '',
     pendingAnswer: '',
+    pendingAnswerSince: null,
+    spokenChunkCount: 0,
     transcript: [],
     lastError: null,
     updatedAt: options.now,

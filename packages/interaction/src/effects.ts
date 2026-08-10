@@ -49,11 +49,30 @@ export type InteractionEffect =
       readonly observationId: ObservationId;
       readonly reason: 'manual';
     }
+  /**
+   * Say one chunk of a speech stream.
+   *
+   * system-design §15 gives a TTS *stream* one identifier, and PR-026 speaks a
+   * streamed answer as several chunks under that one `speechId`: the binding
+   * queues them and plays them in order. `sequence` and `final` are optional so
+   * a single-chunk answer — the shape PR-006 emitted — still typechecks and
+   * behaves identically.
+   */
   | {
       readonly type: 'speak';
       readonly speechId: SpeechId;
       readonly utteranceId: UtteranceId;
       readonly text: string;
+      /** Position within the stream, 0-based. Defaults to append order. */
+      readonly sequence?: number;
+      /**
+       * No further chunks will be appended to this stream. The binding reports
+       * `speech-finished` only after a final chunk has drained, which is what
+       * stops an early per-chunk completion from ending the turn mid-answer.
+       * A final chunk with empty `text` closes a stream that has nothing left
+       * to say.
+       */
+      readonly final?: boolean;
     }
   /** `null` means "stop whatever is speaking". Must be immediate. */
   | { readonly type: 'stop-speech'; readonly speechId: SpeechId | null }

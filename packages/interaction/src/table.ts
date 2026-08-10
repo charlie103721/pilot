@@ -22,6 +22,7 @@ import {
   withUserText,
   type InteractionContext,
 } from './context.js';
+import { DEFAULT_PHRASE_TIMEOUT_MS, takeSpeakablePhrases } from './segmentation.js';
 
 /**
  * The transition table (mvp-01 §7, system-design §7 and §15).
@@ -51,6 +52,12 @@ export interface TransitionEnv {
   readonly ids: IdFactory;
   readonly now: number;
   readonly required: readonly PermissionKind[];
+  /**
+   * How long an unterminated fragment may wait before it is spoken anyway
+   * (PR-026). Optional so an existing caller keeps compiling; the machine
+   * always supplies it.
+   */
+  readonly phraseTimeoutMs?: number;
 }
 
 export type TransitionApplication =
@@ -130,7 +137,10 @@ function clearedActivity(): Partial<InteractionContext> {
     activeSpeechId: null,
     activeObservationId: null,
     liveTranscript: null,
+    answerText: '',
     pendingAnswer: '',
+    pendingAnswerSince: null,
+    spokenChunkCount: 0,
   };
 }
 
@@ -253,35 +263,176 @@ function beginQuestion(
   };
 }
 
-/** `run-completed`: speak the answer, or fall back to resting when silent. */
+// ---------------------------------------------------------------------------
+// Response and TTS buffer (PR-026)
+// ---------------------------------------------------------------------------
+
+interface SpeechFlush {
+  readonly effects: readonly InteractionEffect[];
+  readonly patch: Partial<InteractionContext>;
+}
+
+function phraseTimeoutOf(env: TransitionEnv): number {
+  return env.phraseTimeoutMs ?? DEFAULT_PHRASE_TIMEOUT_MS;
+}
+
+/**
+ * Accumulate streamed answer text and hand every completed sentence to TTS
+ * (system-design §7: "Completed sentence fragments enter TTS").
+ *
+ * Two buffers, deliberately: `answerText` is everything the run has said and is
+ * what the panel renders, while `pendingAnswer` is only the fragment still
+ * waiting for a terminator. They diverge the moment a sentence is spoken, and
+ * conflating them would either re-speak the whole answer or lose the transcript.
+ *
+ * The chunks all carry the run's single `speechId`, minted here on the first
+ * speakable sentence. That is what makes the machine's own `activeSpeechId`
+ * guard cover mid-run speech: a `speech-started` for any other stream is stale
+ * before it reaches the table, and PR-006's `thinking + speech-started ->
+ * speaking` cell does the rest.
+ *
+ * Called with `addedText: ''` from the events that do not carry text, so a
+ * fragment stranded behind a slow tool call is still released once its phrase
+ * timeout has elapsed.
+ */
+function streamPhrases(
+  context: InteractionContext,
+  addedText: string,
+  env: TransitionEnv,
+): SpeechFlush {
+  const utteranceId = context.activeUtteranceId;
+  const answerText = context.answerText + addedText;
+  const flush = takeSpeakablePhrases(context.pendingAnswer + addedText, {
+    now: env.now,
+    pendingSince: context.pendingAnswerSince,
+    phraseTimeoutMs: phraseTimeoutOf(env),
+  });
+
+  const patch: Partial<InteractionContext> = {
+    answerText,
+    pendingAnswer: flush.remainder,
+    pendingAnswerSince: flush.pendingSince,
+    // Only when the answer actually grew: a timeout flush changes what is
+    // spoken, not what the panel shows, and rebuilding the array would publish
+    // a view update with nothing new in it.
+    ...(utteranceId === null || addedText === ''
+      ? {}
+      : {
+          transcript: withAssistantText(context.transcript, utteranceId, answerText, env.now, true),
+        }),
+  };
+
+  if (utteranceId === null || flush.phrases.length === 0) {
+    return { effects: [], patch };
+  }
+
+  const speechId = context.activeSpeechId ?? env.ids.speech();
+  return {
+    effects: flush.phrases.map((phrase, index) => ({
+      type: 'speak',
+      speechId,
+      utteranceId,
+      text: phrase,
+      sequence: context.spokenChunkCount + index,
+      final: false,
+    })),
+    patch: {
+      ...patch,
+      activeSpeechId: speechId,
+      spokenChunkCount: context.spokenChunkCount + flush.phrases.length,
+    },
+  };
+}
+
+/**
+ * `run-completed`: release the tail, close the speech stream, or fall back to
+ * resting when the model had nothing to say.
+ *
+ * The tail matters. A stream that ends mid-sentence — no full stop, no newline
+ * — must not silently drop what it had already produced, so the remaining
+ * fragment is spoken here whatever it looks like. This is the guarantee the
+ * phrase timeout is *for*; the elapsed-time rule in `streamPhrases` only makes
+ * it happen sooner.
+ */
 function completeRun(
   context: InteractionContext,
   text: string,
   env: TransitionEnv,
 ): TransitionApplication {
   const utteranceId = context.activeUtteranceId;
-  const answer = text === '' ? context.pendingAnswer : text;
+  const answer = text === '' ? context.answerText : text;
   const transcript =
     utteranceId === null
       ? context.transcript
       : withAssistantText(context.transcript, utteranceId, answer, env.now, false);
+  const streamOpen = context.activeSpeechId !== null;
 
-  if (utteranceId === null || answer.trim() === '') {
+  if (utteranceId === null || (!streamOpen && answer.trim() === '')) {
     return {
       to: 'resting',
       patch: { ...clearedActivity(), transcript },
     };
   }
-  if (context.state === 'speaking') {
-    // PR-026 already handed the sentences to TTS; nothing more to say.
-    return { to: 'same', patch: { transcript, activeRunId: null, pendingAnswer: '' } };
+
+  // Whatever has not been spoken yet. While a stream is open that is the
+  // fragment still waiting for a terminator; with no stream open it is the
+  // whole answer, because a provider that does not stream reports its text
+  // only here.
+  const flush = takeSpeakablePhrases(streamOpen ? context.pendingAnswer : answer, {
+    now: env.now,
+    pendingSince: context.pendingAnswerSince,
+    phraseTimeoutMs: phraseTimeoutOf(env),
+    final: true,
+  });
+  const speechId = context.activeSpeechId ?? env.ids.speech();
+  const effects: InteractionEffect[] = flush.phrases.map((phrase, index) => ({
+    type: 'speak',
+    speechId,
+    utteranceId,
+    text: phrase,
+    sequence: context.spokenChunkCount + index,
+    final: index === flush.phrases.length - 1,
+  }));
+  if (effects.length === 0) {
+    // Everything was already handed over. The stream still has to be closed,
+    // or the binding would wait forever for a chunk that is never coming.
+    effects.push({
+      type: 'speak',
+      speechId,
+      utteranceId,
+      text: '',
+      sequence: context.spokenChunkCount,
+      final: true,
+    });
   }
-  const speechId = env.ids.speech();
+
   return {
-    to: 'speaking',
-    effects: [{ type: 'speak', speechId, utteranceId, text: answer }],
-    patch: { transcript, activeRunId: null, activeSpeechId: speechId, pendingAnswer: '' },
+    to: streamOpen ? 'same' : 'speaking',
+    effects,
+    patch: {
+      transcript,
+      answerText: answer,
+      activeRunId: null,
+      activeSpeechId: speechId,
+      pendingAnswer: '',
+      pendingAnswerSince: null,
+      spokenChunkCount: context.spokenChunkCount + flush.phrases.length,
+    },
   };
+}
+
+/**
+ * A speech stream ended (drained, or stopped by the platform).
+ *
+ * `resting` only when the run is over too: with mid-run speech the answer can
+ * finish speaking while the model is still working, and ending the turn there
+ * would strand the rest of the response.
+ */
+function endSpeech(context: InteractionContext): TransitionApplication {
+  if (context.activeRunId !== null || context.state === 'observing-screen') {
+    return { to: 'same', patch: { activeSpeechId: null } };
+  }
+  return { to: 'resting', patch: clearedActivity() };
 }
 
 // ---------------------------------------------------------------------------
@@ -297,30 +448,13 @@ function runEventRow(): TransitionRow {
         : undefined,
     ),
     'run-text-delta': accept(
-      { to: ['same'], note: 'accumulate the streamed answer' },
+      { to: ['same'], note: 'accumulate the answer and speak completed sentences (PR-026)' },
       (context, input, env) => {
         if (input.type !== 'run-text-delta') {
           return undefined;
         }
-        const pendingAnswer = context.pendingAnswer + input.text;
-        const utteranceId = context.activeUtteranceId;
-        return {
-          to: 'same',
-          patch: {
-            pendingAnswer,
-            ...(utteranceId === null
-              ? {}
-              : {
-                  transcript: withAssistantText(
-                    context.transcript,
-                    utteranceId,
-                    pendingAnswer,
-                    env.now,
-                    true,
-                  ),
-                }),
-          },
-        };
+        const flush = streamPhrases(context, input.text, env);
+        return { to: 'same', effects: flush.effects, patch: flush.patch };
       },
     ),
     'run-completed': accept(
@@ -340,6 +474,40 @@ function runEventRow(): TransitionRow {
         ? {
             to: 'error',
             effects: teardown(context, 'run failed'),
+            patch: { ...clearedActivity(), lastError: input.error },
+          }
+        : undefined,
+    ),
+  };
+}
+
+/**
+ * Speech-output events, wherever a speech stream can be live (PR-026).
+ *
+ * PR-006 only had to answer these in `speaking`, because speech began when the
+ * run ended. Once completed sentences enter TTS mid-run (system-design §7), a
+ * stream is live in `thinking` and across a tool call as well — the model can
+ * say "Let me look at your screen" *and then* call `observe_screen`. These
+ * cells are what keeps that from becoming an `illegal-transition` and a
+ * user-visible error. Every one of them is still guarded by `activeSpeechId`,
+ * so an event for any other stream never reaches them.
+ */
+function speechEventRow(): TransitionRow {
+  return {
+    'speech-started': accept(
+      { to: ['speaking', 'same'], note: 'mvp-01 §7: the first speakable sentence' },
+      (context) => (context.state === 'thinking' ? { to: 'speaking' } : { to: 'same' }),
+    ),
+    'speech-finished': accept(
+      { to: ['resting', 'same'], note: 'the whole stream drained, not one chunk' },
+      (context) => endSpeech(context),
+    ),
+    'speech-stopped': accept({ to: ['resting', 'same'] }, (context) => endSpeech(context)),
+    'speech-failed': accept({ to: ['error'] }, (context, input) =>
+      input.type === 'speech-failed'
+        ? {
+            to: 'error',
+            effects: teardown(context, 'speech failed'),
             patch: { ...clearedActivity(), lastError: input.error },
           }
         : undefined,
@@ -695,27 +863,38 @@ export const TRANSITIONS: Readonly<Record<InteractionState, TransitionRow>> = {
 
   thinking: {
     ...runEventRow(),
+    ...speechEventRow(),
     'tool-started': accept(
       { to: ['observing-screen'], note: 'mvp-01 §7: screen tool starts' },
-      () => ({ to: 'observing-screen' }),
-    ),
-    'speech-started': accept(
-      { to: ['speaking'], note: 'mvp-01 §7: first speakable sentence (PR-026)' },
-      () => ({ to: 'speaking' }),
+      (context, _input, env) => {
+        // A sentence stranded behind the tool call is released before the wait
+        // begins, rather than after it (system-design §17, time to first spoken
+        // sentence).
+        const flush = streamPhrases(context, '', env);
+        return { to: 'observing-screen', effects: flush.effects, patch: flush.patch };
+      },
     ),
   },
 
   'observing-screen': {
     ...runEventRow(),
+    ...speechEventRow(),
     'tool-finished': accept(
       { to: ['thinking'], note: 'mvp-01 §7: tool result returned' },
-      (_context, input) =>
-        input.type === 'tool-finished'
-          ? {
-              to: 'thinking',
-              ...(input.error === undefined ? {} : { patch: { lastError: input.error } }),
-            }
-          : undefined,
+      (context, input, env) => {
+        if (input.type !== 'tool-finished') {
+          return undefined;
+        }
+        const flush = streamPhrases(context, '', env);
+        return {
+          to: 'thinking',
+          effects: flush.effects,
+          patch: {
+            ...flush.patch,
+            ...(input.error === undefined ? {} : { lastError: input.error }),
+          },
+        };
+      },
     ),
     'observation-finished': accept(
       { to: ['thinking', 'resting'], note: 'completion of a "Look now" observation' },
@@ -734,25 +913,11 @@ export const TRANSITIONS: Readonly<Record<InteractionState, TransitionRow>> = {
 
   speaking: {
     ...runEventRow(),
-    'tool-started': accept({ to: ['observing-screen'] }, () => ({ to: 'observing-screen' })),
-    'speech-started': accept({ to: ['same'] }, () => ({ to: 'same' })),
-    'speech-finished': accept({ to: ['resting'] }, () => ({
-      to: 'resting',
-      patch: clearedActivity(),
-    })),
-    'speech-stopped': accept({ to: ['resting'] }, () => ({
-      to: 'resting',
-      patch: clearedActivity(),
-    })),
-    'speech-failed': accept({ to: ['error'] }, (context, input) =>
-      input.type === 'speech-failed'
-        ? {
-            to: 'error',
-            effects: teardown(context, 'speech failed'),
-            patch: { ...clearedActivity(), lastError: input.error },
-          }
-        : undefined,
-    ),
+    ...speechEventRow(),
+    'tool-started': accept({ to: ['observing-screen'] }, (context, _input, env) => {
+      const flush = streamPhrases(context, '', env);
+      return { to: 'observing-screen', effects: flush.effects, patch: flush.patch };
+    }),
   },
 
   error: {

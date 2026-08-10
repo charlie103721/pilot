@@ -234,6 +234,27 @@ The transition table itself is checked in as
 `packages/interaction/test/transition-table.expected.ts`: one line per
 (state × input) pair, asserted against the machine by
 `packages/interaction/test/table.test.ts`.
+
+## Demo (PR-026 — response and TTS buffer)
+
+```sh
+pnpm demo:response
+```
+
+Streams awkward punctuation past the sentence segmenter and prints the ordered
+speech chunks that reached the fake synthesiser. Seven scenes: abbreviations,
+decimals and dotted identifiers that must not split; lists and newlines that
+must; a stream that ends mid-sentence, whose tail is spoken rather than lost;
+the phrase timeout releasing a fragment the model left hanging; speech starting
+while the model is still working and continuing across an `observe_screen`
+call; a superseded run whose queued chunk is dropped and whose late text is
+rejected; and a synthesiser that reports completion twice and out of order
+without ending the turn early.
+
+Deterministic: injected clock, counter identifiers, scripted agent and
+synthesiser. The segmentation rule and every case it deliberately refuses to
+split are documented at the top of
+`packages/interaction/src/segmentation.ts`.
 ## Demo (PR-007 — development build baseline)
 
 ```sh
