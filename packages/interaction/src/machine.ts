@@ -104,6 +104,13 @@ export function staleReason(
       return input.speechId === context.activeSpeechId ? null : 'stale-speech';
     case 'observation-finished':
       return input.observationId === context.activeObservationId ? null : 'stale-observation';
+    case 'phrase-timeout':
+      // PR-027. `pendingAnswerSince` is the identity of the waiting fragment:
+      // it is stamped when a tail starts waiting and cleared the moment that
+      // tail is spoken or discarded, so a timer that fires late — after the
+      // sentence completed itself, after an interruption, after the run ended —
+      // names a fragment the machine is no longer holding and is discarded.
+      return input.pendingSince === context.pendingAnswerSince ? null : 'stale-phrase-timeout';
     case 'window-closed':
       return input.windowId === context.selectedWindow?.windowId ? null : 'stale-window';
     default:

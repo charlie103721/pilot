@@ -234,6 +234,7 @@ describe('rejection reporting', () => {
     expect([...STALE_REJECTION_REASONS].sort()).toEqual([
       'duplicate-transcript',
       'stale-observation',
+      'stale-phrase-timeout',
       'stale-run',
       'stale-speech',
       'stale-utterance',

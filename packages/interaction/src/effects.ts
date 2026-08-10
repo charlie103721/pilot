@@ -34,9 +34,18 @@ export type InteractionEffect =
       readonly askedAt: number;
     }
   /**
-   * Stop or steer the active agent run. `runId` is `null` when a question was
-   * submitted but the agent has not reported a run identifier yet; the adapter
-   * contract makes `interrupt()` safe in that case.
+   * Stop or steer the active agent run.
+   *
+   * `runId` is `null` when a question was submitted but the agent has not
+   * reported a run identifier yet; `interrupt()` is safe in that case, but it is
+   * also a no-op, which is why `PilotInteractionController` additionally aborts
+   * the `AbortSignal` it passed to `submit()` (PR-027).
+   *
+   * `reason` is the `detail` argument of `AgentSession.interrupt`, and its
+   * audience depends on `mode`: with `'abort'` it is an internal string that
+   * never reaches the model, with `'steer'` it is **injected into the transcript
+   * as a user message verbatim**. The machine writes each accordingly — see
+   * `STEER_INTERRUPTION_MESSAGE` in `table.ts`.
    */
   | {
       readonly type: 'interrupt-run';

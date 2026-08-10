@@ -277,6 +277,30 @@ Deterministic: injected clock, counter identifiers, scripted agent and
 synthesiser. The segmentation rule and every case it deliberately refuses to
 split are documented at the top of
 `packages/interaction/src/segmentation.ts`.
+
+## Demo (PR-027 — interruption and cancellation)
+
+```sh
+pnpm demo:interrupt
+```
+
+Interrupts Pilot in eight different places and prints, for each, the four
+places late output could resurface and does not: the panel transcript, the
+synthesiser, the machine's rejections and the bindings' discards. The scenes
+are an interruption while thinking; one while speaking, with the next sentence
+already queued; one during `observe_screen`, which is *steered* rather than
+aborted so the capture can unwind (system-design §15); a run that completes
+after it was aborted; two interruptions in quick succession; one that lands
+between the answer and its first spoken word; one that lands while the question
+is still being submitted, where there is no run id to interrupt and the
+submission's own `AbortSignal` is what stops it; and a run that stalls
+mid-sentence, whose waiting fragment is spoken by an injected scheduler with no
+run event at all.
+
+Deterministic: injected clock, counter identifiers, scripted agent and
+synthesiser, and a manual scheduler — the machine still owns no timers, and
+nothing anywhere waits on real time.
+
 ## Demo (PR-007 — development build baseline)
 
 ```sh

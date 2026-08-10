@@ -5,6 +5,7 @@ import type {
   InteractionInput,
   TransitionOutcome,
 } from '@pilot/interaction';
+import { STEER_INTERRUPTION_MESSAGE } from '@pilot/interaction';
 import {
   GRANTED,
   SAMPLE_ERROR,
@@ -244,7 +245,12 @@ describe('cancellation and suspension', () => {
         type: 'interrupt-run',
         runId: TEST_RUN_ID,
         mode: 'steer',
-        reason: 'interrupted by the user',
+        // PR-027: a steer's detail is injected into the model's transcript as a
+        // user message, so it is written for the model. The internal reason
+        // ("interrupted by the user") would otherwise be spoken to it as if the
+        // user had said it. An abort's detail is unchanged — it never leaves
+        // Pilot.
+        reason: STEER_INTERRUPTION_MESSAGE,
       },
     ]);
   });
