@@ -23,7 +23,8 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
-    include: ['packages/*/test/**/*.test.ts'],
+    // Renderer suites opt into jsdom with a `@vitest-environment` docblock.
+    include: ['packages/*/test/**/*.test.ts', 'apps/*/test/**/*.test.{ts,tsx}'],
     reporters: ['default'],
   },
 });
