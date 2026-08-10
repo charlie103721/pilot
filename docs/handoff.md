@@ -443,6 +443,94 @@ PILOT_LOCAL_BASE_URL=http://127.0.0.1:11434/v1 open -a "$(packaged_app)" --args
 #          the probe is three requests, one of which loads the model, and it
 #          runs at STARTUP — before the panel appears. If it makes launch feel
 #          slow, say how slow; the probe can move behind the first question.
+# 18. PR-040 — THE FAILURE MATRIX. This is the one step where the *point* is
+#    that things go wrong. Nothing here is destructive, nothing is deleted, and
+#    every case is meant to end with Pilot either carrying on or stopping with a
+#    sentence on screen. Run it after step 10 (the observation path) — every one
+#    of these is about losing something Pilot only has once that works.
+#
+#    First the stub-driven walkthrough, which already passes on Linux. It runs
+#    fourteen cases and prints, per case, what failed, what the user sees,
+#    whether it recovered or stopped safely, and what was left behind:
+pnpm demo:failure
+
+#    Then the real thing. Six of the fourteen are simulated here and can only be
+#    answered on a Mac; each is a minute of work and each answers a different question.
+PILOT_HELPER_BINARY="$(pwd)/packages/platform-mac/native/.build/debug/PilotHelper" \
+  PILOT_LOG_LEVEL=debug pnpm dev
+
+#      (a) REALLY REVOKE A PERMISSION, MID-SESSION. Pick a window, let Pilot
+#          watch it, then open System Settings → Privacy & Security → Screen
+#          Recording and turn Pilot OFF while it is watching. Four things must
+#          happen, and the fourth is the one nothing has ever verified:
+#            - the panel moves to the permission onboarding, not to an error;
+#            - the picker shows "Pilot stopped watching … Allow it again above";
+#            - the log line `retention clear` reads `event: permission-loss`
+#              (before this PR it read whatever occasion happened to be armed
+#              last, which is what an audit of §13 would have been reading);
+#            - **macOS may kill the helper rather than merely answer `denied`.**
+#              If Screen Recording is withdrawn from a *running* capture, the
+#              documented behaviour is a stream that stops; what actually
+#              happens to the helper process, and whether Pilot reports a
+#              permission loss or a helper crash, is unknown. Either is a safe
+#              ending; which one it is decides whether the sentence the user
+#              reads is the right one. Send the two log lines around it.
+#          Then turn it back ON. Pilot must return to `idle` with the window
+#          still selected — press Start and it watches again, with no relaunch.
+#          Repeat the whole thing for Accessibility, and see the note below.
+#
+#      (b) REALLY LOCK THE SCREEN. Ctrl-Cmd-Q with Pilot watching, wait ten
+#          seconds, unlock. Watching must resume by itself, and the log must
+#          show `retention clear` with `event: screen-lock` and
+#          `lineageReset: false`. **Two signals race here on a real Mac** —
+#          Electron's `powerMonitor` (new in this PR, and immediate) and the
+#          helper's own window-list poll. The table rejects the second as
+#          `illegal-transition`; what must NOT happen is two clears or a Pilot
+#          that stays paused after unlocking.
+#
+#      (c) REALLY LOG OUT. Apple menu → Log Out, with Pilot watching, then log
+#          back in and start Pilot. This is the only occasion Pilot has no other
+#          signal for, and it is terminal: `event: logout`, `lineageReset: true`.
+#          The question only a Mac answers is whether `powerMonitor`'s
+#          `shutdown` event fires at all before the process is killed — if the
+#          log has no `retention clear` for it, say so, because the fallback
+#          (the `before-quit` shutdown clear) is the same clear under a
+#          different name and the difference is the scene lineage.
+#
+#      (d) REALLY KILL THE HELPER. With Pilot watching, find and kill it:
+killall -9 PilotHelper
+#          Pilot must NOT quit. Within a second or two the picker shows "Pilot
+#          lost its macOS helper", the log shows the crash and then a restart,
+#          and watching resumes on the same window. Two things to check that
+#          only exist on a Mac: that the *restarted* helper is still credited
+#          with the TCC grants (the `permission attribution` line after the
+#          restart must read the same verdict as the one before it — this PR
+#          re-probes it precisely because the cached one belonged to a dead
+#          process), and that killing it five times in a minute ends in the
+#          terminal state — "Quit Pilot and open it again" — rather than in a
+#          restart loop.
+#
+#      (e) A REALLY PROTECTED WINDOW. Open something that blocks capture — a
+#          DRM video in Safari or the Apple TV app is the easy one, and the
+#          password sheet of a locked 1Password/Keychain window is the other —
+#          select it, and ask a question. Pilot must say "This application does
+#          not allow Pilot to see its window", switch watching off, and **never
+#          show a black rectangle as if it were the screen.** If it answers with
+#          a description of a black frame, that is the defect this case exists
+#          to catch, and it is a PR-012 defect in `CaptureEngine.swift`.
+#
+#      (f) A WINDOW THAT CLOSES WHILE PILOT IS LOOKING. Ask a question that
+#          makes the model look, and ⌘W the window during the pause before the
+#          answer. The answer must be about the window closing, never a
+#          description of a window that is gone.
+#
+#    Two more that need no Mac but need a *provider*, so they wait on §2:
+#      (g) let a Codex/API session expire and ask a question. The sentence must
+#          be "Pilot is signed out of the model provider", the transcript must
+#          survive, and signing back in must need no relaunch (§16).
+#      (h) pull the network out mid-answer. Pilot must stop and say so, and must
+#          NOT resend the question by itself — the retry it refuses to make is
+#          the one that would answer about a screen you have moved past.
 ```
 
 Notes:
@@ -1085,6 +1173,44 @@ Five things, in decreasing order of what they would cost if wrong:
    measures what an endpoint really handles** — if your local model copes with
    more, say so and the ceiling moves.
 
+### What to look for in step 18 (PR-040)
+
+Step 18 is the only step whose *point* is that something goes wrong, and the
+thing to hold on to while running it is the rule the PR is built on: **a failure
+of the watching costs the watching, never the answer.** Losing a permission, a
+window, a capture stream or the helper must never abort a reply that is already
+arriving; it must stop Pilot watching, say so, and clear what was buffered.
+
+Four things, in decreasing order of what they would cost if wrong:
+
+1. **Does anything degrade silently?** That is the defect shape, and it is the
+   one the Linux run cannot rule out on a Mac. After each case, look at the
+   panel and at the picker: an ending with no sentence anywhere is a bug even if
+   nothing crashed. Before this PR, a window that blocked capture produced one
+   `warn` line in the log, left the switch reading "watching", and let the next
+   question be answered with no picture at all.
+2. **Does a revoked permission take the helper with it?** (a) above. Nobody
+   knows what macOS does to a *running* `SCStream` when Screen Recording is
+   withdrawn — the stream stopping and the helper dying are both plausible, and
+   they produce different sentences. Both are safe endings; send the two log
+   lines so the right one can be chosen.
+3. **Is a restarted helper still credited with the grants?** (d) above. This is
+   PR-011's attribution question asked a second time, of a process that macOS
+   has seen die once. PR-040 re-probes the cached verdict on reconnect precisely
+   because the cached one belonged to a dead process — but whether the *answer*
+   is the same is a TCC question, and TCC has never been asked anything.
+4. **Does a protected window ever produce pixels?** (e) above. A black frame
+   described as if it were the screen is the worst outcome in the whole matrix,
+   because it is the one the user cannot detect.
+
+One thing this step does **not** check, and it is deliberate: system-design §16
+asks for Accessibility loss to be a *degraded* mode ("continue with visual
+pointer coordinates and disclose reduced grounding"), and the shipped machine
+stops instead, because `REQUIRED_PERMISSIONS` lists all four permissions. That
+is a safe, visible, explained ending — but it is not §16's row, and PR-040 did
+not change it because the required-permission set is an interaction contract
+several PRs rest on. It is recorded as runbook follow-up 32.
+
 ---
 
 ## 2. Blocked on Codex sign-in
@@ -1244,6 +1370,9 @@ reversible; raise any that look wrong.
 | **Replacement records say more than §11's example** (PR-022a) | §11 shows `[Observation scene-17/revision-4 removed. <summary>]` but its prose forbids a record that "claims an old screen description remains current". A past tense alone is a weak signal to a model, so every record also ends with "This is a past record of scene-17 at revision 4, not a description of the screen now", and names the scene the screen has since moved to when that is known. It also names which image went — full frame, pointer crop, or comparison half — because one observation can contribute several blocks and identical repeated sentences read as a bug. Longer than the example, and deliberately so: this is the difference between the model saying "you were on the billing page" and "you are on the billing page". |
 | **`AgentRunHandle.completed` now waits for Pi to go idle** (PR-022a) | Found by this PR's own demo. `agent_end` fires before `Agent.prompt()` unwinds, so two questions in a row — `await submit(q1).completed; await submit(q2).completed` — produced `run-failed: "Agent is already processing a prompt"` on the second and every one after. Events were always correct; only the promise resolved a tick early. `completed` now also awaits `Agent.waitForIdle()`. Nothing else changed, but any caller that relied on `completed` resolving *before* the agent settled now resolves slightly later. |
 | **Compaction summaries are extractive, not model-generated** (PR-022b) | §11 requires a summary to preserve goals, decisions, named UI elements, unresolved questions and safety-relevant facts, and to never claim an old screen description is current. Pi's `compact()` would ask the model to do that — a live provider call, a token cost per compaction, and a requirement a generative summariser can violate silently. Pilot's summariser instead quotes and derives every line from the transcript, so it cannot invent a screen it never saw, it is free, and the truthfulness bar is asserted by test rather than hoped for. The trade is richness: an extractive summary of a very long conversation is a list, not prose. `buildCompactionSummary` is a pure function of a typed input, so swapping in a model-backed one later is contained — **say if you would rather pay for generated summaries.** |
+| **A failure of the watching never aborts an answer** (PR-040) | The interaction table's `failure` row runs `teardown()`, which aborts the run in flight. A capture stream that dies, a window that turns out to block capture, or a helper that crashes while the model is still writing would therefore have cost the user the reply as well as the screen. `main/lifecycle-runtime.ts` reports those to the §16 notice at once and queues the banner and the observation switch-off until the turn ends. The trade: for a few seconds the panel shows an answer arriving while the picker says Pilot has stopped watching. That is true, and the alternative was losing the answer. |
+| **Retry says no by default** (PR-040) | Pilot retries a failed observation exactly once, and only while the scene lineage and revision are the ones the request was made against. Everything else — a changed screen, a second failure, a failure the taxonomy calls final — becomes "ask again" with a sentence saying why. A retry that succeeds against a screen the user has moved past is a confident wrong answer, which is worse than the failure it replaced. **Say if you would rather Pilot retried harder**; the budget is one argument. |
+| **Accessibility loss stops Pilot rather than degrading it** (PR-040, unchanged) | system-design §16 asks for a degraded mode; `REQUIRED_PERMISSIONS` in `@pilot/interaction` makes every one of the four permissions required, so losing Accessibility reaches `needs-permission` exactly as losing Screen Recording does. Safe and explained, but not what §16 says. Left alone deliberately — the required set is an interaction contract that PR-006, PR-008, PR-009 and PR-028 all read — and recorded as runbook follow-up 32. |
 | **Compaction is on by default** (PR-022b) | §11 makes it a requirement, and a compactor nobody switches on is dead code. It is a no-op until a conversation is longer than the retained tail, so short sessions behave exactly as before; `compaction: { enabled: false }` turns it off entirely. |
 | **The retained tail wins over the triggers** (PR-022b) | §11 asks for compaction "when any condition is met" *and* for the "last 6–10 text turns" in active context. Four observations can land inside six turns, so early in a conversation the two disagree. The tail wins and the outcome is reported as `nothing-to-compact` — compaction that discarded a turn the user is still talking about would be the worse failure. |
 | **A compaction summary is a plain `user` message** (PR-022b) | Pi has a `compactionSummary` message type, but `Agent`'s default `convertToLlm` filters it out, so using it would have meant the model silently losing the history (`docs/pi-notes.md` §8). Pilot's summary is a `user` message whose first line says "Pilot's own record … not something the user said", so the framing does the work the message type would have. |

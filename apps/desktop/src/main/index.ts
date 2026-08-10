@@ -1,8 +1,8 @@
-import { app, ipcMain, type IpcMainInvokeEvent } from 'electron';
+import { app, ipcMain, powerMonitor, type IpcMainInvokeEvent } from 'electron';
 import { asConversationId, createIdFactory, createJsonSink, createLogger } from '@pilot/shared';
 import type { HotkeyAdapter, InteractionCommand, SpeechInputAdapter } from '@pilot/platform';
 import { FakeHotkeyAdapter, FakeSpeechInputAdapter } from '@pilot/platform/fakes';
-import { createTimeoutScheduler } from '@pilot/interaction';
+import { createTimeoutScheduler, type PilotInteractionController } from '@pilot/interaction';
 import { createDevelopmentModelSource, resolveDevelopmentModelFixture } from '@pilot/agent';
 import { IPC_TRANSPORT } from '../ipc/channels.js';
 import { createAgentRuntime } from './agent-runtime.js';
@@ -24,6 +24,7 @@ import {
 } from './electron-hosts.js';
 import { conversationDirectory, openConversationStoreRuntime } from './conversation-store.js';
 import { createInteractionRuntime, createObservationInteraction } from './interaction-runtime.js';
+import { createLifecycleRuntime, reprobeAttribution } from './lifecycle-runtime.js';
 import { createObservationRuntime, retentionEventForFeed } from './observation-runtime.js';
 import { createPlatformRuntime } from './platform-runtime.js';
 import { createQuestionAnchorRuntime } from './question-anchor.js';
@@ -83,6 +84,14 @@ import { createFakeWindowDemoDriver } from './window-demo.js';
  * async `boot()`: opening a SQLite session is asynchronous, and everything from
  * the agent onwards depends on it. The lifecycle handlers that must not be late
  * are registered *before* it, synchronously, over a mutable reference.
+ *
+ * PR-040 replaced no boundary — there was none left but the model — and added
+ * the one thing every boundary above needed and none of them owned: **what
+ * happens when it fails.** `main/lifecycle-runtime.ts` is built below, ahead of
+ * the controller, because the observation port and the recogniser both pass
+ * through it. Its rule is one sentence — *a failure of the watching costs the
+ * watching, never the answer* — and it is why a dead capture stream reaches the
+ * §16 notice at once and the panel banner only when the turn ends.
  *
  * What is still fake, and who takes each one:
  *
@@ -326,11 +335,80 @@ if (!singleInstance.isPrimary) {
       logger,
     });
 
+    // Lifecycle and failure recovery (PR-040).
+    //
+    // Built here, ahead of the controller, because two of the ports the
+    // controller takes pass through it: the observation port gains the
+    // scene-checked retry of `main/request-retry.ts`, and the recogniser gains
+    // the §16 sentence that names the text box. It reads the controller back
+    // through {@link liveController}, which is safe because nothing on this
+    // object is *called* until `lifecycle.start()` runs inside `start()` below.
+    //
+    // What it owns is stated once, in its own file: **a failure of the watching
+    // costs the watching, never the answer.** So a window that turns out to
+    // block capture, a capture stream that dies and a helper that crashes are
+    // all reported — as a panel banner when nothing is in flight, as the §16
+    // notice when something is — and none of them tears down a run that is
+    // still writing an answer (runbook cross-lane issue 15).
+    let live: PilotInteractionController | null = null;
+    const liveController = (): PilotInteractionController => {
+      if (live === null) {
+        throw new Error('the interaction controller is not built yet');
+      }
+      return live;
+    };
+    const lifecycle = createLifecycleRuntime({
+      interaction: {
+        snapshot: () => liveController().snapshot(),
+        subscribe: (listener) => liveController().subscribe(listener),
+        send: (event) => {
+          liveController().send(event);
+        },
+        // The same entry point the panel uses, so a switch Pilot turns off on
+        // the user's behalf is counted exactly like one they turned off.
+        dispatch: (command) => {
+          dispatchCommand(command);
+        },
+      },
+      observation: {
+        noteRetentionEvent: (event) => {
+          observation.noteRetentionEvent(event);
+        },
+        scene: () => observation.status().scene,
+      },
+      capture: platform.capture,
+      transport: platform.transport,
+      notices: {
+        noteObservationStopped: (reason, window, wasObserving) => {
+          windows.noteObservationStopped(reason, window, wasObserving);
+        },
+      },
+      // The recovery nothing performed before this PR. A restarted helper is a
+      // new process, so PR-011's cached attribution verdict belongs to a dead
+      // one; the window list and the permission states were read through a pipe
+      // that no longer exists. `MacObservationAdapter` re-establishes its own
+      // stream on the same edge — that part was already right.
+      onHelperRestored: async () => {
+        // The cached verdict first, then the read: see `reprobeAttribution`.
+        await reprobeAttribution(platform.permissions);
+        await observation.refreshAttribution();
+        await permissions.refresh();
+        await windows.refresh();
+      },
+      logger,
+    });
+
     // The interaction controller (PR-006/024/025/026/027), real at last.
     const { controller } = createInteractionRuntime({
       agent: agentRuntime.session,
       conversationId,
-      speechInput,
+      // PR-040: the recogniser, wrapped. A `speech.input.start` that is refused
+      // reached the panel as "The macOS helper could not run that operation" —
+      // a sentence written for a log. It now reaches it as §16's answer: type
+      // your question instead, the microphone was released, nothing was kept.
+      // The *gate* still holds the unwrapped adapter, because what it reads
+      // (`disclosure()`) is a fact about the recogniser and not a failure.
+      speechInput: lifecycle.guardSpeechInput(speechInput),
       speechOutput: speech.speechOutput,
       // Runbook follow-up 25, the remaining wiring of follow-up 6. PR-027 built
       // the phrase-timeout wake-up as an injected port so the machine keeps no
@@ -339,13 +417,20 @@ if (!singleInstance.isPrimary) {
       // There is now: a model that emits a clause and then goes quiet speaks what
       // it already had, instead of waiting for the run to end.
       scheduler: createTimeoutScheduler(),
-      observation: observation.port,
+      // PR-040: one scene-checked retry around "Look now" and the model's own
+      // observation. `main/request-retry.ts` says when — and, more importantly,
+      // when not: a retry that re-sends a picture of a screen the user has
+      // moved past is worse than the failure it was hiding.
+      observation: lifecycle.guardObservation(observation.port),
       // PR-031: this is `PilotQuestionEnvelopeFactory` over the real pointer
       // timeline, plus the one side effect that has to happen at the same instant
       // — handing the resolved anchor to the screen-context facade.
       envelopes: anchoring.envelopes,
       logger,
     });
+
+    // PR-040. The late binding the lifecycle runtime above was built around.
+    live = controller;
 
     // §10 step 1 takes the pause switch and the observation switch from the
     // machine, which is the only thing that knows them.
@@ -411,6 +496,12 @@ if (!singleInstance.isPrimary) {
     // is the difference between an observation path that works and one that looks
     // broken for the wrong reason.
     permissions.subscribe((state) => {
+      // PR-040, and the order is the whole of it: the retention occasion for a
+      // revocation has to be armed *before* the machine's own
+      // `permissions-changed` row asks for the clear it names. Until this line
+      // `permission-loss` — one of the five occasions system-design §13 lists —
+      // had no caller anywhere in the product.
+      lifecycle.notePermissions(state.snapshot);
       observation.notePermissions(state.snapshot);
       if (state.snapshot !== null) {
         controller.send({ type: 'permissions-changed', permissions: state.snapshot });
@@ -572,6 +663,29 @@ if (!singleInstance.isPrimary) {
       }
       await observation.refreshAttribution();
 
+      // PR-040. Subscribes to the two sources of a failure nothing in the app
+      // was listening to before: the capture stream's own `capture-stopped`
+      // (protected content, a stream that failed past its own restarts) and the
+      // helper supervisor's `crash`. Started here rather than at construction
+      // because both are only interesting once there is a helper to crash.
+      lifecycle.start();
+
+      // Lock, unlock and logout, from the operating system rather than from a
+      // window-list poll. This is the only signal Pilot gets for a *logout*, and
+      // system-design §13 lists logout among the five occasions the buffers must
+      // be cleared — with the scene lineage, because unlike a lock it is
+      // terminal. The window feed keeps reporting locks too; the table rejects
+      // the duplicate rather than clearing twice.
+      powerMonitor.on('lock-screen', () => {
+        lifecycle.reportScreenLock(true);
+      });
+      powerMonitor.on('unlock-screen', () => {
+        lifecycle.reportScreenLock(false);
+      });
+      powerMonitor.on('shutdown', () => {
+        lifecycle.reportSessionEnd('logout');
+      });
+
       // PR-032, and the order is the whole of runbook follow-up 12: attribution
       // is established *before* anything can open the microphone. `voice.start()`
       // reads the verdict, refuses the voice path outright when macOS credits
@@ -665,6 +779,9 @@ if (!singleInstance.isPrimary) {
         pushToTalk: voice.availability().status,
         voice: voiceAdapters.real ? 'real' : 'fake',
         speechOut: speech.real ? (voices.available ? 'audible' : 'no-voice') : 'silent',
+        // PR-040. Zero at startup, and a number a smoke run can read: every
+        // lifecycle failure since boot, whichever subsystem raised it.
+        lifecycleFailures: lifecycle.stats().records,
       });
     };
 
@@ -693,6 +810,7 @@ if (!singleInstance.isPrimary) {
       // first would drop the last turn of every conversation, which is the one a
       // relaunch most wants. Closing at all is what releases the SQLite writer
       // lease; skip it and every relaunch inside 30 s fails to open the store.
+      lifecycle.dispose();
       const quitting = voice
         .dispose()
         .then(() => speech.dispose())

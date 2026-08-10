@@ -276,6 +276,19 @@ export function ConversationPanel({
               {view.observationFailure.hint}
             </p>
           )}
+          {/* PR-040: what to do about it, and which of the two endings this was.
+              From `readLifecycleGuidance`, which is total over the error
+              taxonomy — so this line is present for every failure, including
+              ones raised by code that has never heard of it. */}
+          {view.recovery === null ? null : (
+            <p
+              className="banner__hint"
+              data-testid="conversation-recovery-remedy"
+              data-disposition={view.recovery.disposition}
+            >
+              {view.recovery.remedy}
+            </p>
+          )}
           <dl className="banner__meta">
             <dt>Code</dt>
             <dd data-testid="conversation-error-code">{view.lastError.code}</dd>

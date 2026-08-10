@@ -1328,3 +1328,71 @@ warning. It is never believed when it is larger, because a server that allocated
 128k has not made a 7B model good at 128k, and that is the question the cap was
 written for. Nothing here measures where quality degrades;
 `PILOT_CONTEXT_WINDOW` is still how a user who knows better says so.
+## Demo (PR-040 — lifecycle and failure recovery)
+
+```sh
+pnpm demo:failure                           # headless walkthrough, no display needed
+```
+
+Fourteen ways Pilot can lose the thing it needs, each driven through the
+shipping composition, each ending in **exactly one of two places**: Pilot
+recovered and kept working, or Pilot stopped somewhere safe, visible and
+explained. There is no third outcome, and a case that quietly degraded would be
+a defect — which is how one was found (see below).
+
+Per case the walkthrough prints what failed, **what the user sees** (the
+sentence *and* the remedy, read from the same `PilotViewState.lastError` the
+panel renders through `readLifecycleGuidance`), which of the two endings it was,
+and what was left behind — frames, bytes, pointer targets, transcript turns,
+active runs and files on disk.
+
+| # | case | ending |
+| ---: | --- | --- |
+| 1 | Screen Recording revoked mid-session | stopped safely |
+| 2 | …and granted again | recovered, after the user acts |
+| 3 | Accessibility revoked mid-session | stopped safely |
+| 4 | Screen locked, then unlocked | recovered |
+| 5 | Logout | stopped safely |
+| 6 | Selected window closed | stopped safely |
+| 7 | Window closed with an observation in flight | stopped safely |
+| 8 | A protected/DRM window — capture refuses | stopped safely |
+| 9 | Helper crash during `capture.pull` | recovered |
+| 10 | Helper crash during `speech.output.speak` | recovered |
+| 11 | Speech-to-text fails | stopped safely |
+| 12 | Text-to-speech fails mid-answer | recovered |
+| 13 | Provider authentication expires (provider-neutral) | stopped safely |
+| 14 | A retryable request, and the retry Pilot refuses to make | stopped safely |
+
+**The rule the whole PR turns on is one sentence: a failure of the watching
+costs the watching, never the answer.** `main/lifecycle-runtime.ts` is where the
+composition root decides which failures are the interaction machine's business,
+for the reason runbook cross-lane issue 15 records one level down — the table's
+`failure` row runs `teardown()`, which aborts a run that may be halfway through
+writing a perfectly good answer. So a capture stream that dies mid-question
+posts the §16 notice at once and **queues** the banner and the observation
+switch-off until the turn ends. (It cannot simply dispatch them: a
+`set-observation-enabled` in an active state is refused as
+`illegal-transition`, and a refused command *is* a `lastError` — so the seam's
+own tidying-up would have shown "Pilot cannot do that right now." to someone
+whose answer was arriving perfectly well.)
+
+**Typed user guidance** is `src/lifecycle/guidance.ts`, and it is total over the
+error taxonomy: every `PilotErrorCode` maps to a kind with a sentence, a remedy
+and a disposition, so a failure raised by code that has never heard of the
+module still reaches the panel as something actionable. A producer that knows
+better names its kind on `details.recovery`; the *message* always stays the
+producer's own when it wrote one (PR-030's rule).
+
+**Retry is scene-checked, and mostly says no.** `main/request-retry.ts` allows
+one retry, and only while the scene lineage *and* revision are the ones the
+request was made against — because a retry that re-sends a picture of a screen
+the user has moved past is worse than the failure it was hiding. Every
+observation in the app passes through it, "Look now" and the model's own
+`observe_screen` alike.
+
+**Read section 16 of the output before quoting any of this.** Every failure in
+the matrix is simulated: no permission has ever been revoked in System Settings,
+no screen has ever locked, no real helper has ever crashed (none has ever been
+compiled), no window has ever refused capture, and no provider has ever signed
+Pilot out. What the far end of the pipe is, in every case, is the Node helper
+stub. The Mac run that settles it is `docs/handoff.md` §1 step 18.

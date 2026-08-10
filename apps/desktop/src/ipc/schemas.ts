@@ -231,6 +231,19 @@ export const OBSERVATION_NOTICE_REASONS = [
   'selected-window-closed',
   /** Screen Recording was withdrawn while Pilot was allowed to observe. */
   'observation-permission-lost',
+  /**
+   * PR-040. The capture stream ended on its own — the window blocks capture
+   * (§16 "protected/blank content"), or capture failed past the adapter's own
+   * stream restarts. Distinct from the two above because the *permission* is
+   * intact and the *window* is still there: only the pixels are unavailable.
+   */
+  'capture-unavailable',
+  /**
+   * PR-040. The native helper died. Reported separately because the remedy is
+   * different — nothing about the window or the permission needs changing, and
+   * a helper that is coming back needs no action at all.
+   */
+  'helper-unavailable',
 ] as const;
 
 export type ObservationNoticeReason = (typeof OBSERVATION_NOTICE_REASONS)[number];

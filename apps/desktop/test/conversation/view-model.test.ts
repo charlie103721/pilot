@@ -132,6 +132,37 @@ describe('interaction states', () => {
   });
 });
 
+describe('typed user guidance (PR-040)', () => {
+  it('gives every failure a remedy and an ending, beside the message', () => {
+    const rendered = view({
+      state: 'error',
+      lastError: new PilotError('protected-content', 'stream state = protected', {
+        userMessage: 'This application does not allow Pilot to see its window.',
+      }).toJSON(),
+    });
+
+    // The message is the producer's; the remedy and the ending are the
+    // taxonomy's. The panel renders both and decides neither.
+    expect(rendered.recovery?.userMessage).toContain('does not allow Pilot to see its window');
+    expect(rendered.recovery?.remedy).toContain('different window');
+    expect(rendered.recovery?.disposition).toBe('safe-terminal');
+  });
+
+  it('answers for a failure raised by code that never heard of it', () => {
+    const rendered = view({
+      state: 'error',
+      lastError: new PilotError('internal', 'something in a dependency threw').toJSON(),
+    });
+
+    expect(rendered.recovery).not.toBeNull();
+    expect(rendered.recovery?.remedy.length).toBeGreaterThan(20);
+  });
+
+  it('has nothing to say when there is no failure', () => {
+    expect(view({ state: 'observing' }).recovery).toBeNull();
+  });
+});
+
 describe('the text box', () => {
   it('is available in `error`, which is where a failed recogniser leaves Pilot', () => {
     const rendered = view({

@@ -1,5 +1,9 @@
 import { nullLogger, type ConversationId, type Logger, type ObservedWindow } from '@pilot/shared';
-import { NativeHelperTransport, type MacHotkeyAdapter } from '@pilot/platform-mac';
+import {
+  NativeHelperTransport,
+  type HelperRestartPolicy,
+  type MacHotkeyAdapter,
+} from '@pilot/platform-mac';
 import {
   createTimeoutScheduler,
   type PilotInteractionController,
@@ -11,6 +15,11 @@ import {
   createInteractionRuntime,
   createObservationInteraction,
 } from '../main/interaction-runtime.js';
+import {
+  createLifecycleRuntime,
+  reprobeAttribution,
+  type LifecycleRuntime,
+} from '../main/lifecycle-runtime.js';
 import {
   createObservationRuntime,
   retentionEventForFeed,
@@ -193,6 +202,15 @@ export interface ObservationRigOptions {
    * id *is* the conversation id.
    */
   readonly conversationId?: ConversationId;
+  /**
+   * Helper restart policy (PR-040).
+   *
+   * Off by default, and deliberately so since PR-028: a walkthrough that is not
+   * about crashes wants a dead helper to *stay* dead rather than quietly come
+   * back and make the failure look intermittent. `pnpm demo:failure` turns it on
+   * for the two cases that are about exactly that.
+   */
+  readonly restart?: Partial<HelperRestartPolicy>;
 }
 
 /**
@@ -268,6 +286,13 @@ export interface ObservationRig {
    */
   readonly hotkey: MacHotkeyAdapter;
   /**
+   * Lifecycle and failure recovery (PR-040), over the *same* capture stream and
+   * the *same* transport the app wires it to. `lifecycle.records` is what the
+   * failure walkthrough reads: one entry per failure, with the disposition it
+   * ended in and where the user could see it.
+   */
+  readonly lifecycle: LifecycleRuntime;
+  /**
    * Every helper operation sent since the rig was built, oldest first — empty
    * unless {@link ObservationRigOptions.recordRequests} was set.
    */
@@ -303,7 +328,7 @@ export async function createObservationRig(
     handshakeTimeoutMs: 5_000,
     readyTimeoutMs: 8_000,
     shutdownGraceMs: 250,
-    restart: { enabled: false },
+    restart: { enabled: false, ...(options.restart ?? {}) },
     logger,
   });
 
@@ -420,16 +445,65 @@ export async function createObservationRig(
     dispose: () => synthesiser.dispose(),
     logger,
   });
+  // PR-040's wiring, in the rig exactly as in `main/index.ts`: the guarded
+  // observation port and the guarded recogniser go into the controller, and the
+  // capture stream and the transport go into the lifecycle runtime. The late
+  // binding is the same one the app uses and for the same reason — the
+  // controller does not exist yet, and nothing here is called until
+  // `lifecycle.start()` below.
+  let live: PilotInteractionController | null = null;
+  const liveController = (): PilotInteractionController => {
+    if (live === null) {
+      throw new Error('the interaction controller is not built yet');
+    }
+    return live;
+  };
+  const lifecycle = createLifecycleRuntime({
+    interaction: {
+      snapshot: () => liveController().snapshot(),
+      subscribe: (listener) => liveController().subscribe(listener),
+      send: (event) => {
+        liveController().send(event);
+      },
+      dispatch: (command) => {
+        conversation.noteCommand(command);
+        liveController().dispatch(command);
+      },
+    },
+    observation: {
+      noteRetentionEvent: (event) => {
+        observation.noteRetentionEvent(event);
+      },
+      scene: () => observation.status().scene,
+    },
+    capture: platform.capture,
+    transport,
+    notices: {
+      noteObservationStopped: (reason, window, wasObserving) => {
+        windows.noteObservationStopped(reason, window, wasObserving);
+      },
+    },
+    onHelperRestored: async () => {
+      // The cached verdict first, then the read: see `reprobeAttribution`.
+      await reprobeAttribution(platform.permissions);
+      await observation.refreshAttribution();
+      await permissions.refresh();
+      await windows.refresh();
+    },
+    logger,
+  });
+
   const { controller } = createInteractionRuntime({
     agent: agent.session,
     conversationId,
-    observation: observation.port,
+    observation: lifecycle.guardObservation(observation.port),
     envelopes: anchoring.envelopes,
-    speechInput: speechAdapter,
+    speechInput: lifecycle.guardSpeechInput(speechAdapter),
     speechOutput: speech.speechOutput,
     scheduler: options.scheduler ?? createTimeoutScheduler(),
     logger,
   });
+  live = controller;
   await speech.start();
   controller.subscribe((view) => {
     observation.noteViewState(view);
@@ -443,6 +517,7 @@ export async function createObservationRig(
     logger,
   });
   permissions.subscribe((state) => {
+    lifecycle.notePermissions(state.snapshot);
     observation.notePermissions(state.snapshot);
     if (state.snapshot !== null) {
       controller.send({ type: 'permissions-changed', permissions: state.snapshot });
@@ -503,9 +578,11 @@ export async function createObservationRig(
   });
 
   await observation.refreshAttribution();
+  lifecycle.start();
 
   return {
     platform,
+    lifecycle,
     observation,
     controller,
     permissions,
@@ -534,6 +611,7 @@ export async function createObservationRig(
       return window;
     },
     async dispose(): Promise<void> {
+      lifecycle.dispose();
       // Voice first, exactly as in `main/index.ts`: the tap releases a held key
       // before the controller that would have to handle the press is torn down.
       // Then the synthesiser, still ahead of the controller, so a teardown
