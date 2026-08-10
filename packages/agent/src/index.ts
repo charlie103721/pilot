@@ -9,4 +9,6 @@ export * from './tool-result.js';
 export * from './observe-screen.js';
 export * from './session.js';
 export * from './durable-transcript.js';
+export * from './conversation-store.js';
+export * from './session-backends.js';
 export * from './system-prompt.js';

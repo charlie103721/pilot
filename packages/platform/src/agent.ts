@@ -184,6 +184,19 @@ export interface AgentSession {
   interrupt(mode: InterruptMode, detail: string): Promise<void>;
   subscribe: Subscribe<AgentEvent>;
   /**
+   * Clear conversation (system-design §13). ADDED BY PR-023.
+   *
+   * Optional, so every existing implementation — including
+   * `FakeAgentSession` — still satisfies this interface untouched (see the
+   * cross-lane note in `docs/runbook.md`: optional members are the additive
+   * shape that works).
+   *
+   * Drops the durable transcript, the durable conversation summary and the
+   * live context together. Aborts an active run first: a user who asks Pilot
+   * to forget the conversation is not asking it to finish answering first.
+   */
+  clearConversation?(): Promise<void>;
+  /**
    * Releases the session.
    *
    * Text state may be persisted. Image blocks must not be: Pi's session

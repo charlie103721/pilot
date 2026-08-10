@@ -398,7 +398,9 @@ Compaction is requested when any condition is met:
 
 Compaction must preserve user goals, decisions, named UI elements, unresolved questions, and safety-relevant facts. It must not claim that an old screen description remains current.
 
-Persistent session storage contains text messages, summaries, scene metadata, and tool audit metadata. Raw image persistence is disabled by default. If the pinned Pi session implementation serializes image blocks automatically, Pilot must use a session adapter or custom context representation that prevents raw frame retention.
+Persistent session storage contains text messages, summaries, scene metadata, and tool audit metadata. Raw image persistence is disabled by default.
+
+RESOLVED by PR-005 and implemented by PR-023: the pinned Pi session implementation **does** serialize image blocks automatically, verbatim, on both shipped backends and with no flag to disable it (`docs/pi-notes.md` §3.1). Pilot therefore writes through a sanitising adapter — `ConversationStore` in `packages/agent`, the single choke point through which every durable write passes — and every image block becomes a text audit record before it reaches a backend. Restoring a conversation restores the transcript **and** the compaction state (`{ generation, boundaryIndex, summary }`), because compaction is provider-facing only: the durable transcript is complete, so a session restored from it alone would re-send the whole history at the first question after a relaunch.
 
 ## 12. Model and provider layer
 
@@ -442,7 +444,7 @@ Two corrections from the PR-005 spike (`docs/pi-notes.md` §6.3, §6.4):
 - Application preferences.
 - Selected model profiles without plaintext secrets.
 - Provider credential references.
-- Text conversation sessions and summaries, when enabled.
+- Text conversation sessions and summaries, when enabled — including the compaction boundary the summary covers, so a restored session reproduces the context it had rather than re-sending its history (PR-023).
 - Permission and onboarding state.
 - Non-sensitive diagnostics and crash metadata.
 

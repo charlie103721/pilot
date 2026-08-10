@@ -379,6 +379,15 @@ and end-to-end through a real run in
 bytes"), which additionally asserts the pixels *were* present in the live model
 context — i.e. we did not achieve privacy by breaking the feature.
 
+PR-023 extended this to the whole store rather than a single sink:
+`packages/agent/test/conversation-store.test.ts` and
+`packages/agent/test/session-restore.test.ts` run twelve-turn conversations
+against both backends in real temporary directories and scan every byte of
+every file, and `packages/agent/demo/persistence-demo.mjs` prints that scan.
+The same has to hold for the *second* write path — the compaction summary goes
+to disk as a custom entry, and custom entry payloads are serialized verbatim
+too.
+
 ### 3.3 Trap: Pi's own messages cannot be persisted verbatim — VERIFIED [P]
 
 `Session.appendMessage` runs `assertJsonSerializable`, which throws
@@ -655,7 +664,7 @@ land inside six turns. The retained tail wins, and the outcome is reported as
 `nothing-to-compact` rather than as an error. It is why PR-022a's five-turn
 tests still pass unchanged with compaction enabled by default.
 
-### PR-023 — Safe session persistence
+### PR-023 — Safe session persistence — **LANDED**
 
 - ✅ The core question is answered and the mechanism is built and tested.
 - ⚠️ **Size S → M**, for two reasons: (a) with `AgentHarness` unavailable,
@@ -665,6 +674,36 @@ tests still pass unchanged with compaction enabled by default.
   process lifecycle must respect, or a crashed run will hold a stale claim.
 - The "assertions preventing image bytes from reaching disk" task is satisfied
   by `packages/agent/test/persistence.test.ts`; extend it rather than rewrite.
+
+What landed, and the three things it found that were not in this document:
+
+| File | What it is |
+| --- | --- |
+| `packages/agent/src/conversation-store.ts` | `ConversationStore` — one conversation's durable state. Sanitising transcript sink, compaction snapshot, restore, clear. Backend-agnostic: it talks to a Pi `Session`. |
+| `packages/agent/src/session-backends.ts` | `openConversationStore({ conversationId, directory, backend, writerLease })` for both backends, the writer-lease numbers as code, and `WriterLeaseHeldError`. |
+| `packages/agent/test/conversation-store.test.ts` | 27 tests, both backends, real temp directories, real bytes. |
+| `packages/agent/test/session-restore.test.ts` | Restart mid-conversation, both backends; clear conversation; the follow-up-8 comparison. |
+| `packages/agent/demo/persistence-demo.mjs` | The runnable proof; greps the files. |
+
+1. **`appendCustomEntry` runs the same validator as `appendMessage`** — the
+   summary snapshot needs `toDurableJson` for exactly the §3.3 reason, and its
+   payload is serialized verbatim too, so the summary has to be text-only for
+   the same reason the transcript does. Both are now asserted in
+   `persistence.test.ts`.
+2. **`findEntries()` defaults to `newestFirst`** on the SQLite backend
+   (`storage/entries.js`). Transcript order has to be asked for:
+   `findEntries({ order: 'oldestFirst' })`.
+3. **A `VACUUM` in WAL mode does not shrink the file.** The rebuilt pages go to
+   the `-wal` and the main file keeps its old length, so a cleared
+   conversation's text is still readable past the logical end of the database —
+   `grep` finds it. `clear()` therefore switches to `journal_mode=DELETE`
+   first, where `VACUUM` truncates. The backend restores WAL mode itself on the
+   next open. Measured in the demo, §6.
+
+Also worth recording: a repository whose `open()` fails on the lease still owns
+an open SQLite handle. Left unclosed it turns "another writer has it" into
+`database is locked` for every later operation on that file, so the failure
+path closes it before rethrowing.
 
 ### Runbook amendment 2 (dev model profile for PR-029…036)
 
