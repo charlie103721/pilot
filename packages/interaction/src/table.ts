@@ -177,21 +177,42 @@ export function interruptModeFor(state: InteractionState): InterruptMode {
   return state === 'observing-screen' ? 'steer' : 'abort';
 }
 
+/**
+ * What a steered run is told (PR-027).
+ *
+ * `AgentSession.interrupt(mode, detail)` reads `detail` differently per mode,
+ * and the difference matters: for `'abort'` it is an internal reason string
+ * that never reaches the model, but for `'steer'` it is **a whole user message
+ * injected into the transcript verbatim** (`packages/platform/src/agent.ts`,
+ * verified against Pi 0.84.1). An internal string like "paused" or "superseded
+ * by a new question" would therefore be spoken to the model as if the user had
+ * said it. So a steer carries a message written for the model, and the internal
+ * reason stays where it belongs — in the outcome, the rejection stream and the
+ * diagnostics.
+ */
+export const STEER_INTERRUPTION_MESSAGE =
+  'Stop what you are doing and wait. The user interrupted this request; do not ' +
+  'answer the previous question.';
+
 /** Stop speech, discard in-flight audio, and stop the run — in that order. */
 function teardown(context: InteractionContext, reason: string): InteractionEffect[] {
   const effects: InteractionEffect[] = [];
   if (isSpeechPending(context)) {
+    // First, always: system-design §15 "starting a new utterance stops TTS
+    // immediately", and §17 budgets that at under 300 ms. `PilotInteractionController`
+    // performs this effect off the main effect queue for the same reason.
     effects.push({ type: 'stop-speech', speechId: context.activeSpeechId });
   }
   if (isCapturingAudio(context) && context.activeUtteranceId !== null) {
     effects.push({ type: 'cancel-listening', utteranceId: context.activeUtteranceId });
   }
   if (isRunPending(context)) {
+    const mode = interruptModeFor(context.state);
     effects.push({
       type: 'interrupt-run',
       runId: context.activeRunId,
-      mode: interruptModeFor(context.state),
-      reason,
+      mode,
+      reason: mode === 'steer' ? STEER_INTERRUPTION_MESSAGE : reason,
     });
   }
   return effects;
@@ -600,6 +621,29 @@ export const GLOBAL_TRANSITIONS: TransitionRow = {
       }
       const patch: Partial<InteractionContext> = { screenLocked: false };
       return { to: 'resting', effects: captureEffects(context, patch, env), patch };
+    },
+  ),
+  /**
+   * PR-027, runbook §8 follow-up 6: the waiting fragment has waited long enough.
+   *
+   * PR-026 evaluates the phrase timeout whenever a run event arrives and
+   * unconditionally when the run ends, so no tail is ever *lost*; what it cannot
+   * do is release a tail from a run that has gone quiet without ending, because
+   * nothing arrives to evaluate it. This input is that missing wake-up, and it
+   * is the same flush — `streamPhrases` with no new text, exactly as
+   * `tool-started` and `tool-finished` already do — so a timed release and a
+   * release triggered by the next delta produce identical effects.
+   *
+   * Global, because the identity guard has already decided whether it applies:
+   * a tail can only be pending while a run is streaming, and `clearedActivity()`
+   * drops `pendingAnswerSince` on every teardown. In every other state the guard
+   * rejects it as `stale-phrase-timeout` before the table is consulted.
+   */
+  'phrase-timeout': accept(
+    { to: ['same'], note: 'release a fragment the model left hanging' },
+    (context, _input, env) => {
+      const flush = streamPhrases(context, '', env);
+      return { to: 'same', effects: flush.effects, patch: flush.patch };
     },
   ),
   failure: accept({ to: ['error'] }, (context, input) =>

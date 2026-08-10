@@ -78,6 +78,22 @@ export type InteractionEvent =
       readonly observationId: ObservationId;
       readonly error?: SerializedPilotError;
     }
+  /**
+   * PR-027: the fragment that started waiting at `pendingSince` has now waited
+   * out its phrase timeout, so speak it rather than let it grow in silence.
+   *
+   * It carries an identity like every other result event: `pendingSince` is the
+   * injected-clock reading the tail began waiting at, and the machine discards
+   * the input unless that is still the tail it is holding. A timer that fires
+   * after the fragment was spoken, replaced, or torn down is therefore
+   * `stale-phrase-timeout` and does nothing — the same guard that makes a late
+   * transcript harmless makes a late timer harmless.
+   *
+   * The machine still owns no timers: something outside decides *when* to send
+   * this, exactly as something outside decides when a transcript arrives.
+   * `PilotInteractionController` will do it when given a `Scheduler`.
+   */
+  | { readonly type: 'phrase-timeout'; readonly pendingSince: number }
   | { readonly type: 'speech-started'; readonly speechId: SpeechId }
   | { readonly type: 'speech-finished'; readonly speechId: SpeechId }
   | { readonly type: 'speech-stopped'; readonly speechId: SpeechId }
@@ -127,6 +143,7 @@ export const INTERACTION_EVENT_TYPES = [
   'run-aborted',
   'run-failed',
   'observation-finished',
+  'phrase-timeout',
   'speech-started',
   'speech-finished',
   'speech-stopped',

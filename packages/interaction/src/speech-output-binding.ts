@@ -109,6 +109,17 @@ export class SpeechOutputBinding {
 
   /** Streams the binding has seen, so a late chunk can be explained. */
   readonly #history = new Map<SpeechId, SpeechStream>();
+  /**
+   * Streams stopped before they ever opened (PR-027).
+   *
+   * The machine emits `stop-speech` the instant it is interrupted, but the
+   * `speak` effect that would have opened that stream may still be sitting in
+   * the controller's effect queue — the window between `run-completed` and the
+   * first `speech-started`. Remembering the identifier is what makes the stop
+   * win that race: the chunk arrives, finds its stream already dead, and is
+   * discarded instead of starting an answer the user has interrupted.
+   */
+  readonly #stoppedBeforeOpen = new Set<SpeechId>();
   #live: SpeechStream | null = null;
   #pending: Promise<void> = Promise.resolve();
   #disposed = false;
@@ -203,12 +214,16 @@ export class SpeechOutputBinding {
    */
   async stop(speechId: SpeechId | null): Promise<void> {
     const stream = this.#live;
-    if (stream === null || stream.retired) {
-      this.#ignoredCall('stop', speechId, this.#callReason(speechId));
-      return;
-    }
-    if (speechId !== null && stream.speechId !== speechId) {
-      this.#ignoredCall('stop', speechId, this.#callReason(speechId));
+    if (stream === null || stream.retired || (speechId !== null && stream.speechId !== speechId)) {
+      // Nothing to stop *yet*. The identifier is remembered anyway, because the
+      // first chunk of this stream may still be queued behind other effects;
+      // see `#stoppedBeforeOpen`. `null` ("stop whatever is speaking") has no
+      // identifier to remember, and the machine only sends it when it has none.
+      const reason = this.#callReason(speechId);
+      if (speechId !== null) {
+        this.#stoppedBeforeOpen.add(speechId);
+      }
+      this.#ignoredCall('stop', speechId, reason);
       return;
     }
     await this.#stopStream(stream, 'stopped');
@@ -258,6 +273,13 @@ export class SpeechOutputBinding {
     const known = this.#history.get(chunk.speechId);
     if (known !== undefined) {
       this.#discardChunk(chunk, known.spokenChunks, known.retiredBecause ?? 'already-finished');
+      return null;
+    }
+
+    if (this.#stoppedBeforeOpen.has(chunk.speechId)) {
+      // The interruption arrived while this chunk was still queued. It is not
+      // opening a stream now.
+      this.#discardChunk(chunk, 0, 'stopped');
       return null;
     }
 
@@ -432,6 +454,9 @@ export class SpeechOutputBinding {
     }
     if (speechId === null) {
       return 'no-live-stream';
+    }
+    if (this.#stoppedBeforeOpen.has(speechId)) {
+      return 'stopped';
     }
     const known = this.#history.get(speechId);
     if (known === undefined) {

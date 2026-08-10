@@ -23,6 +23,11 @@ export const TRANSITION_REJECTION_REASONS = [
   'stale-observation',
   /** The event is about a window that is not the selected one. */
   'stale-window',
+  /**
+   * A phrase timeout fired for a fragment that is no longer waiting (PR-027):
+   * it was spoken, replaced, or the answer was torn down while the timer ran.
+   */
+  'stale-phrase-timeout',
   /** A second accepted transcript arrived for the same utterance. */
   'duplicate-transcript',
   /** A required permission is missing. */
@@ -52,6 +57,7 @@ const ERROR_CODE_BY_REASON: Readonly<Record<TransitionRejectionReason, PilotErro
   'stale-speech': 'cancelled',
   'stale-observation': 'cancelled',
   'stale-window': 'cancelled',
+  'stale-phrase-timeout': 'cancelled',
   'duplicate-transcript': 'cancelled',
   'not-permitted': 'permission-denied',
   paused: 'observation-paused',
@@ -71,6 +77,7 @@ const USER_MESSAGE_BY_REASON: Readonly<Record<TransitionRejectionReason, string>
   'stale-speech': 'That speech belonged to an earlier answer and was discarded.',
   'stale-observation': 'That screen observation was no longer needed.',
   'stale-window': 'That event was about a window Pilot is not watching.',
+  'stale-phrase-timeout': 'That reminder was for an answer Pilot has already spoken.',
   'duplicate-transcript': 'Pilot already has the transcript for that question.',
   'not-permitted': 'Pilot still needs permission before it can do that.',
   paused: 'Pilot is paused. Resume it first.',
@@ -90,6 +97,7 @@ export const STALE_REJECTION_REASONS: readonly TransitionRejectionReason[] = [
   'stale-speech',
   'stale-observation',
   'stale-window',
+  'stale-phrase-timeout',
   'duplicate-transcript',
 ];
 

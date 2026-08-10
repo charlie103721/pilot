@@ -117,6 +117,16 @@ export interface ObservationControlPort {
   stop(): Promise<void>;
   /** Drop every retained frame (system-design §11). */
   clear(): Promise<void>;
-  /** User-requested observation. Resolves when the observation is done. */
-  observe(observationId: ObservationId): Promise<void>;
+  /**
+   * User-requested observation. Resolves when the observation is done.
+   *
+   * `signal` is aborted (PR-027) as soon as the machine stops waiting for this
+   * observation — an interruption, a new question, a pause, a lock. It is
+   * optional so an implementation written against the PR-006 shape still
+   * satisfies this interface; one that ignores it is merely slower to give up,
+   * because the machine discards the result either way (`stale-observation`).
+   * system-design §15: "`observe_screen` respects the agent's abort signal" —
+   * this is the same rule for the observation Pilot itself requests.
+   */
+  observe(observationId: ObservationId, signal?: AbortSignal): Promise<void>;
 }
