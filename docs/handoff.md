@@ -146,6 +146,29 @@ demo executed against the merged tree.
 - **Double-JPEG legibility of small text** — capture encodes once, the
   processing pipeline encodes again. If grounding accuracy on small UI text
   disappoints in PR-043, this is the first thing to check.
+- **The content fingerprint cannot see a small, high-meaning change** (PR-016,
+  and worth understanding because it shapes product behaviour). Scene revisions
+  are minted when ≥15% of the *encoded* payload changes. A toggle flipping or a
+  single digit changing is roughly 3% — below the bar. That is precisely the
+  kind of change a user points at and asks about.
+
+  Mitigations already in place: window title and accessibility-root changes are
+  separate revision components, so many such changes are caught another way; the
+  threshold is biased to over-report, because a false positive costs one
+  observation while a false negative lets the model answer from a screen that no
+  longer exists; and the model can always call `observe_screen` with
+  `moment: 'current'` to force a fresh look regardless of revision state.
+
+  The residual risk is a stale `lastObservedRevision` making the model *believe*
+  its old observation is current after a small change. If acceptance testing
+  (PR-043) shows wrong answers after toggles and small edits, the fix is a
+  pixel-aware fingerprint — `ContentFingerprinter` is a standalone injectable
+  component precisely so PR-018 can replace it behind the same interface.
+  Two further blind spots are documented in `content-fingerprint.ts`: the same
+  edit scores very differently near the top versus the bottom of a window in an
+  entropy-coded format, and non-deterministic encoders or animation cause
+  continuous false positives that keep `lastObservedRevision` permanently
+  behind.
 - **Effort calibration** — `docs/implementation.md` PR size bands sum to
   roughly 2–3× the estimate in `dp/m1.md`. Treat any date derived from them
   with suspicion until several PRs have calibrated actual velocity.
