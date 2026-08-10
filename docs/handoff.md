@@ -126,7 +126,7 @@ reversible; raise any that look wrong.
 | Phase | State |
 | --- | --- |
 | Phase 1 — foundations (PR-001…007) | **Complete.** All seven merged. |
-| Phase 2 — capability lanes | In progress: PR-020, PR-024 merged; PR-016, PR-008, PR-011, PR-021, PR-025 in flight. |
+| Phase 2 — capability lanes | In progress: PR-008, PR-016, PR-020, PR-024 merged; PR-011, PR-021, PR-025 in flight. |
 | Phase 3 — integration (028…036) | Not started. Blocked on Phase 2; most steps also need the Mac (§1) and a signed-in model (§2). |
 | Phase 4 — providers (037…039) | Not started. PR-037 (Codex) is the one the user's decision selects. |
 | Phase 5 — hardening and release (040…044) | Not started. |

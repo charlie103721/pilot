@@ -15,5 +15,10 @@
     "types": ["node"],
     "jsx": "react-jsx"
   },
-  "include": ["src/renderer/**/*.ts", "src/renderer/**/*.tsx", "test/renderer/**/*.tsx"]
+  "include": [
+    "src/renderer/**/*.ts",
+    "src/renderer/**/*.tsx",
+    "test/renderer/**/*.ts",
+    "test/renderer/**/*.tsx"
+  ]
 }

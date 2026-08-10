@@ -9,6 +9,11 @@
   --error-bg: #fdeceb;
   --error-border: #d9483f;
   --error-text: #7a231c;
+  --warn-bg: #fdf4e3;
+  --warn-border: #c08a2a;
+  --warn-text: #6b4a0f;
+  --ok-border: #2f8f52;
+  --ok-text: #1d6b3a;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -22,6 +27,11 @@
     --error-bg: #3a1f1d;
     --error-border: #b8564c;
     --error-text: #ffd9d4;
+    --warn-bg: #33290f;
+    --warn-border: #b08f45;
+    --warn-text: #f5e2b8;
+    --ok-border: #4fa96e;
+    --ok-text: #a9e8bf;
   }
 }
 
@@ -231,4 +241,195 @@ body {
 .button:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+.button--active {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* --- Permission onboarding (PR-008) ------------------------------------- */
+
+.onboarding {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 10px;
+}
+
+/* The readiness of the whole gate is legible before any text is read. */
+.onboarding--checking {
+  border-left-color: var(--muted);
+}
+
+.onboarding--blocked {
+  border-left-color: var(--error-border);
+}
+
+.onboarding--degraded,
+.onboarding--limited {
+  border-left-color: var(--warn-border);
+}
+
+.onboarding--ready {
+  border-left-color: var(--ok-border);
+}
+
+.onboarding__head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.onboarding__headline {
+  margin: 0;
+  font-size: 13px;
+}
+
+.onboarding__summary,
+.onboarding__note {
+  margin: 0;
+  color: var(--muted);
+}
+
+.onboarding__meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--muted);
+}
+
+.banner--degraded {
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+  color: var(--warn-text);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 0;
+}
+
+.permissions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.permission {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.permission__head {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.permission__title {
+  font-weight: 600;
+}
+
+.permission__why,
+.permission__bound,
+.permission__impact,
+.permission__note {
+  margin: 0;
+}
+
+.permission__bound,
+.permission__note {
+  color: var(--muted);
+}
+
+.permission__impact {
+  color: var(--warn-text);
+}
+
+.permission--denied .permission__impact,
+.permission--restricted .permission__impact {
+  color: var(--error-text);
+}
+
+.permission__waiting {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.permission__actions:empty {
+  display: none;
+}
+
+.chip {
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+
+.chip--blocks {
+  border-color: var(--error-border);
+  color: var(--error-text);
+}
+
+.chip--degrades,
+.chip--limits {
+  border-color: var(--warn-border);
+  color: var(--warn-text);
+}
+
+/* "Checking" must never be mistaken for a refusal: it is neutral and it
+   animates, the two refusal states are coloured and static. */
+.chip--checking {
+  color: var(--muted);
+  font-style: italic;
+  animation: pilot-pulse 1.2s ease-in-out infinite;
+}
+
+.chip--unknown {
+  color: var(--muted);
+}
+
+.chip--granted {
+  border-color: var(--ok-border);
+  color: var(--ok-text);
+}
+
+.chip--denied {
+  border-color: var(--error-border);
+  color: var(--error-text);
+  background: var(--error-bg);
+}
+
+.chip--restricted {
+  border-color: var(--warn-border);
+  color: var(--warn-text);
+  background: var(--warn-bg);
+}
+
+@keyframes pilot-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chip--checking {
+    animation: none;
+  }
 }

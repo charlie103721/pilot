@@ -14,6 +14,7 @@ import {
 } from '../../src/ipc/channels.js';
 import { createFakeScenarioDriver } from '../../src/main/scenarios.js';
 import type { ViewScenario } from '../../src/ipc/schemas.js';
+import { permissionBridge } from './permission-bridge.js';
 
 /**
  * Renderer smoke tests.
@@ -26,14 +27,19 @@ import type { ViewScenario } from '../../src/ipc/schemas.js';
 interface Harness {
   readonly bridge: PilotBridge;
   readonly controller: FakeInteractionController;
+  readonly permissions: ReturnType<typeof permissionBridge>;
   readonly invocations: string[];
   /** Forces the next `invoke` on any channel to fail with this error. */
   failNext(error: PilotError): void;
 }
 
-function harness(): Harness {
+function harness(options: { permissionFixture?: 'granted' | 'denied' } = {}): Harness {
   const controller = new FakeInteractionController();
   const driver = createFakeScenarioDriver(controller);
+  // Permission onboarding is part of the panel now, so every harness serves it.
+  // Granted by default, so the conversation surface these tests exercise is
+  // the one a fully permitted Pilot shows.
+  const permissions = permissionBridge({ fixture: options.permissionFixture ?? 'granted' });
   const listeners = new Set<(payload: unknown) => void>();
   const invocations: string[] = [];
   let pendingFailure: PilotError | null = null;
@@ -55,6 +61,10 @@ function harness(): Harness {
         pendingFailure = null;
         return Promise.resolve({ ok: false, error: error.toJSON() });
       }
+      const served = permissions.invoke(channelName, payload);
+      if (served !== null) {
+        return served;
+      }
       switch (channelName) {
         case viewStateGetChannel.name:
           return Promise.resolve(ok(controller.snapshot()));
@@ -68,6 +78,10 @@ function harness(): Harness {
       }
     },
     subscribe(channelName: string, listener: (payload: unknown) => void): () => void {
+      const served = permissions.subscribe(channelName, listener);
+      if (served !== null) {
+        return served;
+      }
       if (channelName !== viewStateChangedEvent.name) {
         return () => undefined;
       }
@@ -79,6 +93,7 @@ function harness(): Harness {
   return {
     bridge,
     controller,
+    permissions,
     invocations,
     failNext(error: PilotError) {
       pendingFailure = error;

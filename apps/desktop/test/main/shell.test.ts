@@ -8,19 +8,29 @@ import {
   type RequestEnvelope,
   type ResponseEnvelope,
 } from '@pilot/shared';
-import { FakeInteractionController, FIXTURE_WINDOW_RETINA } from '@pilot/platform/fakes';
+import {
+  FakeInteractionController,
+  FIXTURE_PERMISSIONS_GRANTED,
+  FIXTURE_WINDOW_RETINA,
+} from '@pilot/platform/fakes';
 import {
   appInfoChannel,
+  demoPermissionFixtureChannel,
   demoScenarioChannel,
   interactionDispatchChannel,
   panelSetVisibleChannel,
+  permissionsActChannel,
+  permissionsChangedEvent,
+  permissionsGetChannel,
   quitChannel,
   viewStateChangedEvent,
   viewStateGetChannel,
 } from '../../src/ipc/channels.js';
+import type { PermissionGateState } from '../../src/ipc/schemas.js';
+import { unavailableReason } from '../../src/main/settings-shortcut.js';
 import { createFakeScenarioDriver, DEMO_FAILURE } from '../../src/main/scenarios.js';
 import { DesktopShell } from '../../src/main/shell.js';
-import { FakePanelHost, FakeTrayHost } from './support.js';
+import { FakePanelHost, FakeTrayHost, permissionHarness } from './support.js';
 
 /**
  * The composed shell.
@@ -30,19 +40,30 @@ import { FakePanelHost, FakeTrayHost } from './support.js';
  * replaced by the in-memory ports.
  */
 
-function shell(options: { withScenarioDriver?: boolean; trayFailure?: Error } = {}) {
+function shell(
+  options: {
+    withScenarioDriver?: boolean;
+    withPermissionFixtures?: boolean;
+    trayFailure?: Error;
+  } = {},
+) {
   const panelHost = new FakePanelHost();
   const trayHost = new FakeTrayHost();
   if (options.trayFailure !== undefined) {
     trayHost.failure = options.trayFailure;
   }
   const controller = new FakeInteractionController();
+  const permissions = permissionHarness({
+    ...(options.withPermissionFixtures === false ? { withFixtures: false } : {}),
+    now: () => 1_700_000_000_000,
+  });
   const quits: number[] = [];
 
   const instance = new DesktopShell({
     panelHost,
     trayHost,
     controller,
+    permissions: permissions.gate,
     appInfo: { version: '9.9.9', platform: 'linux' },
     quit: () => quits.push(1),
     ids: createIdFactory(createCounterIdSource()),
@@ -52,7 +73,7 @@ function shell(options: { withScenarioDriver?: boolean; trayFailure?: Error } = 
       : { scenarioDriver: createFakeScenarioDriver(controller) }),
   });
 
-  return { instance, panelHost, trayHost, controller, quits };
+  return { instance, panelHost, trayHost, controller, permissions, quits };
 }
 
 let sequence = 0;
@@ -235,6 +256,124 @@ describe('DesktopShell', () => {
     expect(
       panelHost.latest?.sent.some((envelope) => envelope.channel === viewStateChangedEvent.name),
     ).toBe(true);
+  });
+
+  it('serves permission state to the renderer', async () => {
+    const { instance } = shell();
+
+    const payload = successPayload(
+      await instance.router.handle(request(permissionsGetChannel.name, {}), { senderId: 1 }),
+    ) as PermissionGateState;
+
+    // Nothing has been read yet, so the snapshot is null — which the panel
+    // renders as "checking", never as a refusal.
+    expect(payload.snapshot).toBeNull();
+    expect(payload.settings).toEqual({
+      available: false,
+      platform: 'linux',
+      reason: unavailableReason('linux'),
+    });
+  });
+
+  it('reads permissions on start and pushes them to the panel', async () => {
+    const { instance, panelHost } = shell();
+
+    instance.start();
+    instance.panel.show();
+    await instance.permissions.refresh();
+
+    const events = panelHost.latest!.sent.filter(
+      (envelope) => envelope.channel === permissionsChangedEvent.name,
+    );
+    expect(events.length).toBeGreaterThan(0);
+    const latest = parseEventEnvelope(permissionsChangedEvent, events.at(-1)!).payload;
+    expect(latest.snapshot?.['screen-recording'].state).toBe('unknown');
+    expect(latest.pending).toEqual([]);
+  });
+
+  it('rechecks permissions when the panel is revealed', async () => {
+    const { instance, permissions } = shell();
+    instance.start();
+    await instance.permissions.refresh();
+    permissions.adapter.setSnapshot(FIXTURE_PERMISSIONS_GRANTED);
+
+    instance.reveal();
+    await instance.permissions.refresh();
+
+    expect(instance.permissions.snapshot().snapshot).toEqual(FIXTURE_PERMISSIONS_GRANTED);
+  });
+
+  it('runs a validated permission action', async () => {
+    const { instance } = shell();
+
+    const payload = successPayload(
+      await instance.router.handle(
+        request(permissionsActChannel.name, { type: 'request', kind: 'microphone' }),
+        { senderId: 1 },
+      ),
+    ) as PermissionGateState;
+
+    expect(payload.snapshot?.microphone.state).toBe('granted');
+  });
+
+  it('rejects a permission action for a kind that does not exist', async () => {
+    const { instance } = shell();
+
+    const response = await instance.router.handle(
+      request(permissionsActChannel.name, { type: 'request', kind: 'filesystem' }),
+      { senderId: 1 },
+    );
+
+    expect(response.ok === false && response.error.code).toBe('invalid-request');
+  });
+
+  it('reports the System Settings shortcut as unsupported instead of doing nothing', async () => {
+    const { instance } = shell();
+
+    const payload = successPayload(
+      await instance.router.handle(
+        request(permissionsActChannel.name, { type: 'open-settings', kind: 'screen-recording' }),
+        { senderId: 1 },
+      ),
+    ) as PermissionGateState;
+
+    expect(payload.lastError?.code).toBe('unsupported-capability');
+    expect(payload.lastError?.userMessage).toContain('Screen Recording');
+  });
+
+  it('switches permission fixtures on demand', async () => {
+    const { instance } = shell();
+
+    const payload = successPayload(
+      await instance.router.handle(request(demoPermissionFixtureChannel.name, 'restricted'), {
+        senderId: 1,
+      }),
+    ) as PermissionGateState;
+
+    expect(payload.fixture).toBe('restricted');
+    expect(payload.snapshot?.accessibility.state).toBe('restricted');
+  });
+
+  it('rejects an unknown permission fixture name', async () => {
+    const { instance } = shell();
+
+    const response = await instance.router.handle(
+      request(demoPermissionFixtureChannel.name, 'everything-allowed-trust-me'),
+      { senderId: 1 },
+    );
+
+    expect(response.ok === false && response.error.code).toBe('invalid-request');
+  });
+
+  it('reports fixtures as unsupported in a build without them', async () => {
+    const { instance } = shell({ withPermissionFixtures: false });
+
+    const response = await instance.router.handle(
+      request(demoPermissionFixtureChannel.name, 'granted'),
+      { senderId: 1 },
+    );
+
+    expect(response.ok === false && response.error.code).toBe('unsupported-capability');
   });
 
   it('tears everything down on dispose', async () => {

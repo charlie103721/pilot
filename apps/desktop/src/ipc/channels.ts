@@ -10,6 +10,9 @@ import {
   emptyPayloadSchema,
   interactionCommandSchema,
   panelVisibilitySchema,
+  permissionActionSchema,
+  permissionFixtureSchema,
+  permissionGateStateSchema,
   pilotViewStateSchema,
   setPanelVisibleSchema,
   viewScenarioSchema,
@@ -91,6 +94,37 @@ export const demoScenarioChannel = defineChannel({
   response: pilotViewStateSchema,
 });
 
+/** Current permission state, read on mount and whenever the panel reopens. */
+export const permissionsGetChannel = defineChannel({
+  name: 'pilot:permissions/get',
+  direction: 'renderer-to-main',
+  request: emptyPayloadSchema,
+  response: permissionGateStateSchema,
+});
+
+/**
+ * Every permission action the panel can take — recheck, prompt, open settings,
+ * dismiss the last refusal — as one validated discriminated union, so adding an
+ * affordance later cannot add an unvalidated channel by accident.
+ */
+export const permissionsActChannel = defineChannel({
+  name: 'pilot:permissions/act',
+  direction: 'renderer-to-main',
+  request: permissionActionSchema,
+  response: permissionGateStateSchema,
+});
+
+/**
+ * Loads a named permission fixture. Development builds only — the real
+ * permission adapter (PR-011) has no fixtures and the handler refuses.
+ */
+export const demoPermissionFixtureChannel = defineChannel({
+  name: 'pilot:demo/apply-permissions',
+  direction: 'renderer-to-main',
+  request: permissionFixtureSchema,
+  response: permissionGateStateSchema,
+});
+
 export const quitChannel = defineChannel({
   name: 'pilot:app/quit',
   direction: 'renderer-to-main',
@@ -108,18 +142,36 @@ export const panelVisibilityEvent = defineEventChannel({
   payload: panelVisibilitySchema,
 });
 
+/**
+ * Pushed whenever permissions change, including changes Pilot did not cause —
+ * the user granting Screen Recording in System Settings while the panel is
+ * open. Without this the only way to notice would be to restart the app, which
+ * system-design §16 does not allow us to ask for.
+ */
+export const permissionsChangedEvent = defineEventChannel({
+  name: 'pilot:permissions/changed',
+  payload: permissionGateStateSchema,
+});
+
 /** Every request channel, in registration order. */
 export const REQUEST_CHANNELS = [
   appInfoChannel,
   viewStateGetChannel,
   interactionDispatchChannel,
   panelSetVisibleChannel,
+  permissionsGetChannel,
+  permissionsActChannel,
   demoScenarioChannel,
+  demoPermissionFixtureChannel,
   quitChannel,
 ] as const;
 
 /** Every event channel. */
-export const EVENT_CHANNELS = [viewStateChangedEvent, panelVisibilityEvent] as const;
+export const EVENT_CHANNELS = [
+  viewStateChangedEvent,
+  panelVisibilityEvent,
+  permissionsChangedEvent,
+] as const;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the catalogue is heterogeneous by design; lookups re-validate through the channel's own schemas.
 export type AnyRequestChannel = ChannelDefinition<any, any>;

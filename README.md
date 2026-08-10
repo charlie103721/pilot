@@ -230,3 +230,38 @@ packaged paths and the bundled Electron runtime agree.
 What Linux does **not** prove, and what needs the Mac: the Swift build itself,
 the helper actually running, TCC prompts, the menu bar item, and anything
 visual. See "Packaging" above for the exact Mac commands.
+
+## Demo (PR-008 — permission onboarding)
+
+```sh
+pnpm demo:permissions                       # headless walkthrough, no display needed
+pnpm demo:permissions -- darwin             # same, with a working System Settings shortcut
+```
+
+The walkthrough drives the real permission gate, the real settings seam and the
+real view model through every fixture — `unknown`, `granted`, `denied`,
+`restricted`, `screen-denied`, `accessibility-denied`, `mixed` — and prints what
+the panel would show for each: the readiness, the per-permission status, the
+consequence of each permission being missing, and the action offered. It ends
+with a `denied → granted` sequence that recovers in place, and with the System
+Settings shortcut's availability on each platform.
+
+In the app:
+
+```sh
+pnpm dev                                    # starts in the "unknown" state
+PILOT_PERMISSION_FIXTURE=denied pnpm dev    # start in any fixture instead
+```
+
+The panel's **Fake permissions** row switches between the same fixtures at
+runtime, so all four contract states can be walked without editing source or
+restarting. The four permissions are modelled by what their absence costs:
+Screen Recording **blocks** Pilot entirely, Accessibility **degrades** it (Pilot
+keeps working from visual pointer coordinates and says so — system-design §16),
+and Microphone and Speech Recognition **limit** it to typed questions.
+
+`Open System Settings` is disabled on Linux, with the reason and the pane to
+open by hand printed beside it; it is enabled and functional only on macOS. A
+permission refused and then granted outside Pilot recovers without a restart:
+the gate follows adapter events, and re-reads whenever the panel is revealed,
+because macOS TCC never notifies.

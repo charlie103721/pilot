@@ -135,6 +135,59 @@ export const FIXTURE_PERMISSIONS_UNKNOWN: PermissionSnapshot = {
   'speech-recognition': { kind: 'speech-recognition', state: 'unknown', canRequest: true },
 };
 
+/**
+ * Everything refused. `canRequest: false` throughout, because macOS only ever
+ * prompts once per permission: after a denial the user must go to System
+ * Settings, which is exactly the case system-design §16 asks the UI to handle.
+ */
+export const FIXTURE_PERMISSIONS_DENIED: PermissionSnapshot = {
+  'screen-recording': { kind: 'screen-recording', state: 'denied', canRequest: false },
+  accessibility: { kind: 'accessibility', state: 'denied', canRequest: false },
+  microphone: { kind: 'microphone', state: 'denied', canRequest: false },
+  'speech-recognition': { kind: 'speech-recognition', state: 'denied', canRequest: false },
+};
+
+/**
+ * Withheld by policy rather than by the user — a managed device, a configuration
+ * profile, or Screen Time. Distinct from `denied`: the user cannot fix it from
+ * their own System Settings, so an "Open System Settings" shortcut is not the
+ * answer and the UI must say something different.
+ */
+export const FIXTURE_PERMISSIONS_RESTRICTED: PermissionSnapshot = {
+  'screen-recording': { kind: 'screen-recording', state: 'restricted', canRequest: false },
+  accessibility: { kind: 'accessibility', state: 'restricted', canRequest: false },
+  microphone: { kind: 'microphone', state: 'restricted', canRequest: false },
+  'speech-recognition': { kind: 'speech-recognition', state: 'restricted', canRequest: false },
+};
+
+/**
+ * The hard stop: no Screen Recording, everything else fine. Pilot cannot see
+ * anything at all (system-design §16, "Screen permission denied").
+ */
+export const FIXTURE_PERMISSIONS_SCREEN_DENIED: PermissionSnapshot = {
+  ...FIXTURE_PERMISSIONS_GRANTED,
+  'screen-recording': { kind: 'screen-recording', state: 'denied', canRequest: false },
+};
+
+/**
+ * The degraded mode: Pilot can see the window but cannot ask macOS what the
+ * pointer is over, so it falls back to visual pointer coordinates
+ * (system-design §16, "Accessibility denied"). Deliberately *not* the same
+ * fixture as {@link FIXTURE_PERMISSIONS_SCREEN_DENIED}.
+ */
+export const FIXTURE_PERMISSIONS_ACCESSIBILITY_DENIED: PermissionSnapshot = {
+  ...FIXTURE_PERMISSIONS_GRANTED,
+  accessibility: { kind: 'accessibility', state: 'denied', canRequest: false },
+};
+
+/** One permission in each state, for exercising a partially-onboarded app. */
+export const FIXTURE_PERMISSIONS_MIXED: PermissionSnapshot = {
+  'screen-recording': { kind: 'screen-recording', state: 'granted', canRequest: false },
+  accessibility: { kind: 'accessibility', state: 'denied', canRequest: false },
+  microphone: { kind: 'microphone', state: 'unknown', canRequest: true },
+  'speech-recognition': { kind: 'speech-recognition', state: 'restricted', canRequest: false },
+};
+
 export const FIXTURE_MODEL_PROFILE: ModelProfile = {
   id: asModelProfileId('profile-fake-vision'),
   provider: 'fake',
