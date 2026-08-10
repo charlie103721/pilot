@@ -38,10 +38,11 @@ import {
   type ScreenContextPolicy,
   type RetentionGuard,
 } from '@pilot/observation';
-import { Poller } from '@pilot/platform-mac';
+import { macWindowNumber, Poller } from '@pilot/platform-mac';
 import type { ObservationControlPort } from '@pilot/interaction';
 import type { TelemetryMetric } from '../ipc/schemas.js';
 import { toObservationFailureError } from './observation-failure.js';
+import { PointerTargetLog } from './question-anchor.js';
 import type { WindowFeedEvent } from './window-gate.js';
 
 /**
@@ -92,14 +93,25 @@ import type { WindowFeedEvent } from './window-gate.js';
  *  3. **Capture hands over `png`, not `jpeg`** (follow-up 18). Set at the
  *     composition root — see `CAPTURE_ENCODING` in `main/platform-runtime.ts`.
  *
- * ## What is still not real here
+ * ## The question anchor (PR-031)
  *
- * The question anchor. `moment: 'question'` needs the utterance anchor and the
- * accessibility node under the pointer at the moment the question ended, which
- * is PR-031's wiring (`ScreenContextInputs.anchor`). Until then the anchor is
- * `null`, which the facade reads as "a model-initiated look at now" — a correct
- * reading, and the reason "Look now" asks for `moment: 'current'` rather than
- * pretending to anchor on a question nobody asked.
+ * `ScreenContextInputs.anchor` was the last unwired input on this side, and
+ * PR-031 sets it — from `main/question-anchor.ts`, at submission, over this
+ * runtime's own `core`, `inputs` and {@link ObservationRuntime.targets}. Two
+ * halves of that live here, because this is where the pointer is sampled:
+ *
+ *  - {@link PointerTargetLog} is written by {@link samplePointer}, and **only**
+ *    for a sample inside the selected window. It holds the platform's own
+ *    `AccessibilityNode` because §10's redaction step needs `isSecure` and
+ *    screen-point `bounds`, neither of which survives the `GroundedPointer`
+ *    summary the timeline keeps.
+ *  - It is cleared by the retention guard with the ring: a role and a label
+ *    read off a screen are screen content (§13).
+ *
+ * "Look now" still asks for `moment: 'current'` and `view: 'window'`. That is
+ * unchanged on purpose — a manual look is not a question, so there is no
+ * utterance to anchor it to, and cropping it around whichever pointer sample
+ * happens to be newest would be a picture of wherever the mouse was left.
  */
 
 /**
@@ -138,6 +150,8 @@ export interface ObservationRuntimeOptions {
    * itself, so nothing here races wall time.
    */
   readonly pointerSampleIntervalMs?: number;
+  /** PR-031. Built here when absent; supply one to share or to bound it. */
+  readonly targets?: PointerTargetLog;
 }
 
 export interface ObservationRuntimeMetrics {
@@ -149,6 +163,8 @@ export interface ObservationRuntimeMetrics {
   readonly framesIngested: number;
   readonly framesRejected: number;
   readonly pointerSamples: number;
+  /** Elements retained for question anchoring, never more than one per sample. */
+  readonly pointerTargets: number;
 }
 
 export interface ObservationRuntime {
@@ -160,6 +176,12 @@ export interface ObservationRuntime {
   readonly session: ObservationSession;
   readonly retention: RetentionGuard;
   readonly inputs: MutableScreenContextInputs;
+  /**
+   * What was under the pointer, sample by sample (PR-031). Read by
+   * `main/question-anchor.ts` when a question is submitted; emptied by the
+   * retention guard with the frame ring.
+   */
+  readonly targets: PointerTargetLog;
   /** True when something can actually capture. False is a reportable state. */
   readonly captureAvailable: boolean;
   status(): ScreenStatus;
@@ -261,12 +283,50 @@ function derivedGeometry(window: ObservedWindow): WindowGeometry {
 
 type GroundFn = (target: AccessibilityGroundingTarget) => Promise<PointerGroundingSample>;
 
+/**
+ * The process id of the application owning a window, when the platform knows it
+ * (PR-031, and it is not cosmetic).
+ *
+ * PR-013 built two defences against describing an element that belongs to a
+ * window stacked on top of the selected one: the helper scopes the hit test
+ * with `AXUIElementCreateApplication(ownerPid)`, and `groundPointer` drops an
+ * element whose `ownerPid` disagrees. **Both are inert unless the caller
+ * supplies `ownerPid`**, and `AccessibilityGroundingTarget.ownerPid` is
+ * optional, so a caller that omits it gets a system-wide hit test and no
+ * host-side check — silently. Until PR-031 nothing consumed the element, so the
+ * omission cost nothing; now it is what a question is grounded on.
+ *
+ * `ObservedWindow` (system-design §5) carries no pid, so it is read off
+ * `MacWindowAdapter.lastSnapshot`, which does. Structural and optional: a
+ * `WindowAdapter` without that getter — the fakes, or a future platform —
+ * returns `undefined`, and grounding falls back to the geometric defence
+ * (`rectsOverlap`) exactly as it did before. Putting `ownerPid` on the window
+ * contract itself is the real fix and is a focused contract PR, not this one.
+ */
+export function ownerPidFor(windows: WindowAdapter, window: ObservedWindow): number | undefined {
+  const snapshot = (
+    windows as WindowAdapter & {
+      readonly lastSnapshot?: {
+        readonly windows?: readonly { readonly windowNumber: number; readonly ownerPid: number }[];
+      } | null;
+    }
+  ).lastSnapshot;
+  const wanted = macWindowNumber(window.windowId);
+  if (snapshot?.windows === undefined || wanted === null) {
+    return undefined;
+  }
+  // Exact id, no first-match fallback — the same rule PR-012's capture filter
+  // is held to by `selected-window-only.test.ts`.
+  return snapshot.windows.find((row) => row.windowNumber === wanted)?.ownerPid;
+}
+
 export function createObservationRuntime(options: ObservationRuntimeOptions): ObservationRuntime {
   const logger = (options.logger ?? nullLogger).child('observation');
   const clock = options.clock ?? systemClock;
   let telemetry = options.telemetry;
   const capture = options.capture;
   const accessibility = options.accessibility ?? null;
+  const targets = options.targets ?? new PointerTargetLog();
 
   const core = new ObservationCore({
     clock,
@@ -338,7 +398,11 @@ export function createObservationRuntime(options: ObservationRuntimeOptions): Ob
   let attribution: PermissionAttribution | undefined;
   let view: PilotViewState | null = null;
   let pendingRetentionEvent: RetentionEvent = 'observation-disabled';
-  let selected: { window: ObservedWindow; geometry: WindowGeometry } | null = null;
+  let selected: {
+    window: ObservedWindow;
+    geometry: WindowGeometry;
+    ownerPid: number | undefined;
+  } | null = null;
   let offCaptureEvents: Unsubscribe | null = null;
 
   let starts = 0;
@@ -383,6 +447,19 @@ export function createObservationRuntime(options: ObservationRuntimeOptions): Ob
    * samplePointer` predates them and issues `getPointer` then `elementAt`. Both
    * are used, preferring the cheaper one, so a platform that offers neither
    * still records a pointer.
+   *
+   * PR-031 adds one line to it: the element the grounding already resolved is
+   * written down beside the sample, so a question submitted later can say what
+   * the user was pointing *at* and not only where. Written down **only** when
+   * the grounding says the pointer was inside the selected window — the same
+   * rule `shouldHitTest` and `groundPointer` enforce upstream, here for the
+   * third time, because this is the copy that would otherwise reach a prompt.
+   *
+   * The `session.samplePointer()` fallback records no element: it resolves one
+   * through `elementAt`, but the outcome it returns does not carry the node.
+   * A platform on that path therefore anchors a position with no target, which
+   * is the same degraded answer §16 already defines for a denied Accessibility
+   * grant — never a wrong one.
    */
   const samplePointer = async (): Promise<boolean> => {
     const current = selected;
@@ -394,12 +471,25 @@ export function createObservationRuntime(options: ObservationRuntimeOptions): Ob
         const outcome = await session.samplePointer();
         return outcome.sampled && outcome.ingest.admitted;
       }
-      const sample = await groundFn({ geometry: current.geometry });
+      const sample = await groundFn({
+        geometry: current.geometry,
+        // PR-031: without this the hit test is system-wide and PR-013's
+        // foreign-application check cannot fire. See `ownerPidFor`.
+        ...(current.ownerPid === undefined ? {} : { ownerPid: current.ownerPid }),
+      });
       const ingest = core.ingestPointer({
         at: sample.at,
         windowId: current.window.windowId,
         pointer: sample.pointer,
       });
+      if (ingest.admitted) {
+        targets.note({
+          at: sample.at,
+          windowId: current.window.windowId,
+          insideWindow: sample.grounding === 'pointer-in-window',
+          node: sample.target,
+        });
+      }
       return ingest.admitted;
     } catch (cause) {
       // A pointer sample that fails is not an error the user can act on: the
@@ -427,8 +517,17 @@ export function createObservationRuntime(options: ObservationRuntimeOptions): Ob
       // is the whole of runbook follow-up 17 and is worth exactly one debug
       // line, not a second copy of the report at info.
       retention.clearFor(event);
+      // PR-031: the retained accessibility elements and the pending question
+      // anchor are screen content too (§13), and the guard does not own them.
+      // They go in the same call, so there is no window in which the ring is
+      // empty and a label read off it is still in memory.
+      const droppedTargets = targets.clear();
+      inputs.setAnchor(null);
       clears += 1;
-      logger.debug('buffers cleared through the retention guard', { event });
+      logger.debug('buffers cleared through the retention guard', {
+        event,
+        pointerTargets: droppedTargets.recordCount,
+      });
     } catch (cause) {
       // `clearFor` throws when anything survived. That is the one retention
       // failure that must never be swallowed.
@@ -442,7 +541,8 @@ export function createObservationRuntime(options: ObservationRuntimeOptions): Ob
   const port: ObservationControlPort = {
     async start(window: ObservedWindow): Promise<void> {
       const geometry = (await options.windows.geometry(window.windowId)) ?? derivedGeometry(window);
-      selected = { window, geometry };
+      const ownerPid = ownerPidFor(options.windows, window);
+      selected = { window, geometry, ownerPid };
       pendingRetentionEvent = 'observation-disabled';
       await session.start({ window, geometry });
       starts += 1;
@@ -453,7 +553,7 @@ export function createObservationRuntime(options: ObservationRuntimeOptions): Ob
       const negotiated = (capture as { captureGeometry?: WindowGeometry | null } | null)
         ?.captureGeometry;
       if (negotiated != null) {
-        selected = { window, geometry: negotiated };
+        selected = { window, geometry: negotiated, ownerPid };
         session.updateGeometry(negotiated);
       }
 
@@ -480,6 +580,9 @@ export function createObservationRuntime(options: ObservationRuntimeOptions): Ob
       logger.info('capture started', {
         windowId: window.windowId,
         captureSize: selected.geometry.captureSize,
+        // `undefined` here means the hit test cannot be scoped to one
+        // application, which is a weaker grounding guarantee — say so.
+        pointerScopedToApplication: ownerPid !== undefined,
       });
       applyConditions();
     },
@@ -547,6 +650,7 @@ export function createObservationRuntime(options: ObservationRuntimeOptions): Ob
     session,
     retention,
     inputs,
+    targets,
     captureAvailable: capture !== null,
     status: () => screenContext.status(),
     metrics: () => {
@@ -560,6 +664,7 @@ export function createObservationRuntime(options: ObservationRuntimeOptions): Ob
         framesIngested: sessionMetrics.framesIngested,
         framesRejected: sessionMetrics.framesRejected,
         pointerSamples: sessionMetrics.pointerSamples,
+        pointerTargets: targets.size,
       };
     },
     lastObservation: () => lastObservation,

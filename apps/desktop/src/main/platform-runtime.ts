@@ -126,6 +126,18 @@ export interface PlatformRuntimeOptions {
    */
   readonly pollIntervalMs?: number;
   /**
+   * Drain interval for the capture stream. Defaults to the adapter's own
+   * resolved sample interval, which is what the app wants.
+   *
+   * A test or a demo that pushes its own frames into the ring sets it long and
+   * drains by hand: the stub's frames are not a decodable image (runbook
+   * cross-lane issue 11), so a stub frame arriving between a synthetic
+   * screenshot and the question anchored on it turns `moment: 'question'` into
+   * a decode failure — a real race, and one that would make the anchor look
+   * flaky rather than wrong.
+   */
+  readonly capturePollIntervalMs?: number;
+  /**
    * The identity macOS must credit a grant to (PR-011). In the packaged app it
    * is Electron's own bundle; against the stub it is whatever the stub claims,
    * which is how the attribution wiring is exercised at all on Linux.
@@ -306,6 +318,9 @@ export function createPlatformRuntime(options: PlatformRuntimeOptions = {}): Pla
     logger,
     // Runbook follow-up 18. See CAPTURE_ENCODING.
     encoding: options.encoding ?? CAPTURE_ENCODING,
+    ...(options.capturePollIntervalMs === undefined
+      ? {}
+      : { pollIntervalMs: options.capturePollIntervalMs }),
   });
   const identity =
     options.permissionIdentity ?? (choice.kind === 'macos-stub' ? STUB_IDENTITY : {});

@@ -13,6 +13,10 @@ import {
   type ObservationRuntime,
 } from '../main/observation-runtime.js';
 import { createPlatformRuntime, type PlatformRuntime } from '../main/platform-runtime.js';
+import {
+  createQuestionAnchorRuntime,
+  type QuestionAnchorRuntime,
+} from '../main/question-anchor.js';
 import { PermissionGate } from '../main/permission-gate.js';
 import { createSettingsShortcut } from '../main/settings-shortcut.js';
 import { WindowGate } from '../main/window-gate.js';
@@ -107,11 +111,37 @@ export interface ObservationRigOptions {
   /** Long by default: the rig drives every poll itself, so nothing races. */
   readonly pointerSampleIntervalMs?: number;
   /**
+   * Drain interval for the capture stream (PR-031). Left at the adapter's own
+   * default so PR-028's and PR-030's walkthroughs are unchanged; a caller that
+   * pushes its own decodable frames sets it long and owns the ring, because a
+   * stub frame landing between a screenshot and the question anchored on it
+   * would make `moment: 'question'` fail to decode.
+   */
+  readonly capturePollIntervalMs?: number;
+  /**
    * The model (PR-030). Defaults to {@link createDevelopmentModelSource}, which
    * answers every question the same way and never calls a tool. Pass
    * `createScriptedModelSource` to make the model call `observe_screen`.
    */
   readonly modelSource?: ModelSource;
+  /**
+   * Record every helper operation this rig sends (PR-031).
+   *
+   * The outside-window rule is a claim about what Pilot *asks the platform*,
+   * not only about what it does with the answer: PR-013 proved it at the wire
+   * by showing `accessibility.element-at` is never sent for a pointer outside
+   * the selected window. With the question anchor wired, that claim has to hold
+   * for the application and not only for the adapter, so the rig can record the
+   * wire and a test can read it. Off by default — recording costs an array per
+   * request and proves nothing the tests do not ask for.
+   */
+  readonly recordRequests?: boolean;
+}
+
+/** One operation, as it crossed the framed stdio protocol. */
+export interface RecordedRequest {
+  readonly op: string;
+  readonly payload: Record<string, unknown>;
 }
 
 export interface ObservationRig {
@@ -127,6 +157,16 @@ export interface ObservationRig {
    * (PR-030). `agent.screenContext === observation.screenContext`.
    */
   readonly agent: AgentRuntime;
+  /**
+   * The question anchor (PR-031), over the *same* `ObservationCore` the pointer
+   * poller feeds and the same inputs the facade reads.
+   */
+  readonly anchoring: QuestionAnchorRuntime;
+  /**
+   * Every helper operation sent since the rig was built, oldest first — empty
+   * unless {@link ObservationRigOptions.recordRequests} was set.
+   */
+  readonly wire: readonly RecordedRequest[];
   /** The first selectable window the platform reports. */
   firstWindow(): Promise<ObservedWindow>;
   dispose(): Promise<void>;
@@ -159,13 +199,47 @@ export async function createObservationRig(
     logger,
   });
 
+  // The recorder sits between the adapters and the transport, so what it sees
+  // is exactly what crossed the pipe — not what a caller intended to send.
+  const wire: RecordedRequest[] = [];
+  const observed =
+    options.recordRequests !== true
+      ? transport
+      : (new Proxy(transport, {
+          get(target, property): unknown {
+            if (property === 'request') {
+              return (operation: { name: string }, payload: unknown, extra?: unknown) => {
+                wire.push({
+                  op: operation.name,
+                  payload: (payload ?? {}) as RecordedRequest['payload'],
+                });
+                return (
+                  target.request as unknown as (
+                    a: unknown,
+                    b: unknown,
+                    c: unknown,
+                  ) => Promise<unknown>
+                ).call(target, operation, payload, extra);
+              };
+            }
+            // Two arguments, not three: the private fields of
+            // `NativeHelperTransport` are only reachable when the receiver *is*
+            // the transport, and a proxy receiver would make every getter throw.
+            const value: unknown = Reflect.get(target, property);
+            return typeof value === 'function' ? value.bind(target) : value;
+          },
+        }) as NativeHelperTransport);
+
   const platform = createPlatformRuntime({
     env: { ...process.env, PILOT_HELPER_STUB_PATH: stubPath },
-    transport,
+    transport: observed,
     logger,
     // Nothing polls on its own: the rig calls `refresh()` where the app would
     // have waited for a tick, so a walkthrough reads the same every time.
     pollIntervalMs: 3_600_000,
+    ...(options.capturePollIntervalMs === undefined
+      ? {}
+      : { capturePollIntervalMs: options.capturePollIntervalMs }),
     // `permissionIdentity` is left to the platform runtime's own stub default
     // (the identity `helper-stub.ts` claims), so PR-011's verdict comes back
     // `matched` and the *failing* verdict stays a scriptable case rather than
@@ -197,14 +271,23 @@ export async function createObservationRig(
     screenContext: observation.screenContext,
     logger,
   });
+  // PR-031's wiring, in the rig exactly as in `main/index.ts`.
+  const anchoring = createQuestionAnchorRuntime({
+    core: observation.core,
+    inputs: observation.inputs,
+    targets: observation.targets,
+    logger,
+  });
   const { controller } = createInteractionRuntime({
     agent: agent.session,
     conversationId,
     observation: observation.port,
+    envelopes: anchoring.envelopes,
     logger,
   });
   controller.subscribe((view) => {
     observation.noteViewState(view);
+    anchoring.noteActiveUtterance(controller.context.activeUtteranceId);
   });
   observation.noteViewState(controller.snapshot());
 
@@ -262,6 +345,8 @@ export async function createObservationRig(
     conversation,
     transport,
     agent,
+    anchoring,
+    wire,
     async firstWindow(): Promise<ObservedWindow> {
       const state = await windows.refresh();
       const window = state.windows[0];

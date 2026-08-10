@@ -21,6 +21,7 @@ import {
 import { createInteractionRuntime, createObservationInteraction } from './interaction-runtime.js';
 import { createObservationRuntime, retentionEventForFeed } from './observation-runtime.js';
 import { createPlatformRuntime } from './platform-runtime.js';
+import { createQuestionAnchorRuntime } from './question-anchor.js';
 import { PermissionGate } from './permission-gate.js';
 import { createPermissionFixtureSource, resolvePermissionFixture } from './permission-fixtures.js';
 import { createSettingsShortcut } from './settings-shortcut.js';
@@ -48,6 +49,11 @@ import { createFakeWindowDemoDriver } from './window-demo.js';
  * `observe_screen`**. `FakeScreenContextService` is gone from the real path, so
  * a model that calls the tool reaches the same facade "Look now" does.
  *
+ * PR-031 replaced the last one on the observation side: **the question
+ * anchor**. `FakeQuestionAnchorSource` is gone from the real path, and
+ * `ScreenContextInputs.anchor` is set at submission, so a typed question is
+ * grounded on where the pointer was when it was asked.
+ *
  * What is still fake, and who takes each one:
  *
  * | boundary        | today                                      | owner   |
@@ -56,7 +62,7 @@ import { createFakeWindowDemoDriver } from './window-demo.js';
  * | window list     | real adapter; fake only when `kind: fakes`  | —       |
  * | screen capture  | real; **no capture at all** on `kind: fakes`| —       |
  * | `observe_screen`| real `PilotScreenContextService`            | —       |
- * | question anchor | `FakeQuestionAnchorSource`                 | PR-031  |
+ * | question anchor | real `ObservationCore` pointer timeline     | —       |
  * | speech in       | `FakeSpeechInputAdapter`                   | PR-032  |
  * | speech out      | silent adapter                             | PR-033  |
  * | model           | Pi's faux provider                         | PR-037  |
@@ -155,6 +161,20 @@ if (!singleInstance.isPrimary) {
     logger,
   });
 
+  // The question anchor (PR-031). The last unwired input on the observation
+  // side: `ScreenContextInputs.anchor`. Setting it is what makes point-and-ask
+  // work — `moment: 'question'` selects the frame the user was looking at when
+  // they asked instead of the newest one, `view: 'pointer'` crops around where
+  // they were pointing, and the element under that pointer reaches the model as
+  // `targetRole`. It is built over the *same* `ObservationCore` the pointer
+  // poller feeds and the same `MutableScreenContextInputs` the facade reads.
+  const anchoring = createQuestionAnchorRuntime({
+    core: observation.core,
+    inputs: observation.inputs,
+    targets: observation.targets,
+    logger,
+  });
+
   // The interaction controller (PR-006/024/025/026/027), real at last. The
   // recogniser it is given is still mocked; it is constructed here rather than
   // inside the runtime so the replay bar can make recognition *fail*, which is
@@ -165,13 +185,22 @@ if (!singleInstance.isPrimary) {
     conversationId,
     speechInput,
     observation: observation.port,
+    // PR-031: this is `PilotQuestionEnvelopeFactory` over the real pointer
+    // timeline, plus the one side effect that has to happen at the same instant
+    // — handing the resolved anchor to the screen-context facade.
+    envelopes: anchoring.envelopes,
     logger,
   });
 
   // §10 step 1 takes the pause switch and the observation switch from the
   // machine, which is the only thing that knows them.
+  //
+  // The anchor is dropped on the same edge: once the machine is no longer
+  // waiting for a question, a "Look now" or a model observation must not be
+  // grounded on the pointer of the question that has already been answered.
   controller.subscribe((view) => {
     observation.noteViewState(view);
+    anchoring.noteActiveUtterance(controller.context.activeUtteranceId);
   });
   observation.noteViewState(controller.snapshot());
 

@@ -18,6 +18,7 @@
     "demo:agent": "node scripts/agent-demo.js",
     "demo:observe": "node scripts/observe-demo.js",
     "demo:look": "node scripts/look-demo.js",
+    "demo:ask": "node scripts/ask-demo.js",
     "package": "node scripts/ensure-electron.js --require && pnpm run build:app && electron-builder --dir --config electron-builder.yml && node scripts/verify-bundle.js",
     "verify:bundle": "node scripts/verify-bundle.js",
     "start": "electron .",
