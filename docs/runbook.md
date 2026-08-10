@@ -55,7 +55,14 @@ runbook for process. If they conflict, flag it before proceeding.
    concurrent subagents, give each `isolation: "worktree"` so they cannot
    clobber each other; merge results back to `main` as each finishes.
    Sequential work runs directly on `main` — no worktree.
-4. **Delivery rules** (from `docs/implementation.md`, enforced on every PR):
+4. **Landing a PR** (user-mandated): each PR unit is committed on the
+   development branch `claude/implementation-md-approach-21bepa`, pushed, then
+   **opened as a GitHub pull request and merged into `main`**. Do not leave
+   finished work sitting only on the development branch, and do not
+   direct-push to `main` in place of the pull request. After the merge, the
+   development branch and `main` are identical, and the next PR continues from
+   there.
+5. **Delivery rules** (from `docs/implementation.md`, enforced on every PR):
    one capability per PR; `main` stays runnable; tests or a deterministic
    harness included; a demo command or manual verification procedure
    documented; explicit failure/unavailable states; integration PRs replace at
