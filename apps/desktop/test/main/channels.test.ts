@@ -18,9 +18,16 @@ import {
   permissionFixtureSchema,
   permissionGateStateSchema,
   pilotViewStateSchema,
+  windowActionSchema,
+  windowDemoEventSchema,
+  windowGateStateSchema,
+  OBSERVATION_NOTICE_REASONS,
   PERMISSION_FIXTURES,
+  WINDOW_DEMO_EVENTS,
   type PermissionAction,
   type PermissionGateState,
+  type WindowAction,
+  type WindowGateState,
 } from '../../src/ipc/schemas.js';
 import { PERMISSION_FIXTURE_SNAPSHOTS } from '../../src/main/permission-fixtures.js';
 import { assertCatalogueIsComplete, PERMISSION_COPY } from '../../src/permissions/catalog.js';
@@ -194,6 +201,93 @@ describe('permission gate state schema', () => {
     expect(permissionGateStateSchema.safeParse({ ...base, screenshot: 'AAAA' }).success).toBe(
       false,
     );
+  });
+});
+
+describe('window action schema', () => {
+  it('accepts every observation control the panel can operate', () => {
+    // Same guard as the two unions above, for the same reason: a
+    // `z.ZodType<WindowAction>` annotation stays satisfied by a schema that is
+    // missing a union member, so the samples are keyed by action type and
+    // TypeScript fails the build when one has no validator behind it.
+    const samples: Record<WindowAction['type'], WindowAction> = {
+      refresh: { type: 'refresh' },
+      select: { type: 'select', windowId: FIXTURE_WINDOW_RETINA.windowId },
+      start: { type: 'start' },
+      stop: { type: 'stop' },
+      pause: { type: 'pause' },
+      resume: { type: 'resume' },
+      'dismiss-notice': { type: 'dismiss-notice' },
+    };
+
+    for (const action of Object.values(samples)) {
+      expect(windowActionSchema.safeParse(action).success).toBe(true);
+    }
+  });
+
+  it('rejects a selection with no window and extra properties on a known action', () => {
+    expect(windowActionSchema.safeParse({ type: 'select' }).success).toBe(false);
+    expect(windowActionSchema.safeParse({ type: 'start', andAlso: 'record' }).success).toBe(false);
+  });
+
+  it('accepts only the demo events the shell knows how to cause', () => {
+    for (const event of WINDOW_DEMO_EVENTS) {
+      expect(windowDemoEventSchema.safeParse(event).success).toBe(true);
+    }
+    expect(windowDemoEventSchema.safeParse('capture-everything').success).toBe(false);
+  });
+});
+
+describe('window gate state schema', () => {
+  const base: WindowGateState = {
+    windows: [FIXTURE_WINDOW_RETINA],
+    listedAt: 1_700_000_000_000,
+    listing: false,
+    notice: {
+      reason: 'selected-window-closed',
+      window: FIXTURE_WINDOW_RETINA,
+      wasObserving: true,
+      at: 1_700_000_000_000,
+    },
+    lastError: null,
+    demoEvents: true,
+  };
+
+  it('accepts a fully populated state', () => {
+    expect(windowGateStateSchema.parse(base).windows).toEqual([FIXTURE_WINDOW_RETINA]);
+  });
+
+  it('accepts the pre-first-list state, which is not the same as "no windows"', () => {
+    const parsed = windowGateStateSchema.parse({
+      ...base,
+      windows: [],
+      listedAt: null,
+      listing: true,
+      notice: null,
+    });
+    expect(parsed.listedAt).toBeNull();
+  });
+
+  it('accepts every notice reason the app can raise', () => {
+    for (const reason of OBSERVATION_NOTICE_REASONS) {
+      expect(
+        windowGateStateSchema.safeParse({ ...base, notice: { ...base.notice, reason } }).success,
+      ).toBe(true);
+    }
+    expect(
+      windowGateStateSchema.safeParse({ ...base, notice: { ...base.notice, reason: 'because' } })
+        .success,
+    ).toBe(false);
+  });
+
+  it('rejects a window carrying image bytes, and any unknown field', () => {
+    expect(
+      windowGateStateSchema.safeParse({
+        ...base,
+        windows: [{ ...FIXTURE_WINDOW_RETINA, thumbnail: 'AAAA' }],
+      }).success,
+    ).toBe(false);
+    expect(windowGateStateSchema.safeParse({ ...base, frame: 'AAAA' }).success).toBe(false);
   });
 });
 

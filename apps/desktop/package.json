@@ -13,6 +13,7 @@
     "build:app": "node scripts/build-helper.js && electron-vite build",
     "dev": "electron-vite dev",
     "demo:permissions": "node scripts/permissions-demo.js",
+    "demo:windows": "node scripts/windows-demo.js",
     "package": "node scripts/ensure-electron.js --require && pnpm run build:app && electron-builder --dir --config electron-builder.yml && node scripts/verify-bundle.js",
     "verify:bundle": "node scripts/verify-bundle.js",
     "start": "electron .",

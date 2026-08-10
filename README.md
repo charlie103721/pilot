@@ -286,3 +286,59 @@ open by hand printed beside it; it is enabled and functional only on macOS. A
 permission refused and then granted outside Pilot recovers without a restart:
 the gate follows adapter events, and re-reads whenever the panel is revealed,
 because macOS TCC never notifies.
+
+## Demo (PR-009 — window picker and observation controls)
+
+```sh
+pnpm demo:windows                           # headless walkthrough, no display needed
+```
+
+The walkthrough drives the real window gate, the real permission gate and the
+real observation view model through **every** indicator state and prints what
+the panel would show for each: the indicator, whether Pilot is capturing, the
+selected-window summary, each control with its availability and — when it is
+unavailable — the reason, and every window row with its own reason. It ends by
+listing which of the six states it reached, so a state that stopped being
+reachable fails loudly rather than quietly disappearing.
+
+The six states are deliberately six, not one badge with a boolean:
+
+| Indicator | Capturing | What it means |
+| --- | --- | --- |
+| `checking` | no | Permissions or the window list have not been read yet |
+| `blocked` | no | Screen Recording is refused; Pilot can see nothing |
+| `no-window` | no | Allowed, but nothing has been chosen |
+| `paused` | no | Pilot is suspended — capture cannot run whatever else is true |
+| `stopped` | no | A window is selected and observation is switched off |
+| `observing` | **yes** | Capture is running against the selected window |
+
+`data-capturing` is true in exactly one of them, and the indicator dot is filled
+and pulsing only there.
+
+In the app:
+
+```sh
+pnpm dev
+```
+
+Click path — no source edits, and it exercises everything in this PR:
+
+1. **Fake permissions → `granted`.** The indicator reads *No window selected*.
+2. **Watch this window** on *Billing Settings* → *Not watching*; **Start
+   watching** becomes available and every other control states why it is not.
+3. **Start watching** → *Watching this window*, `capturing now`.
+4. **Fake window events → retitle selected window** → the summary and the list
+   row follow the new title; Pilot keeps watching.
+5. **Pause Pilot** → *Paused*, `not capturing`, and selecting a different window
+   is refused with "Pilot is paused. Resume it first." **Resume Pilot** →
+   *Watching this window* again.
+6. **Fake window events → close selected window** → observation stops, the
+   selection clears, the closed window leaves the list, and a prompt appears:
+   "The window Pilot was watching closed… Choose another window to carry on"
+   (system-design §16). Choosing another window answers the prompt.
+7. **Fake permissions → `screen-denied`** → *Cannot watch*; every control and
+   every window row is disabled with the Screen Recording reason.
+8. **Fake permissions → `accessibility-denied`** → observation is still offered
+   and still runs. Blocked and degraded are different states, per §16.
+9. **Fake window events → restore all windows** puts the list back so the walk
+   can be repeated.

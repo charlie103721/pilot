@@ -1,11 +1,21 @@
 import type { EventEnvelope } from '@pilot/shared';
-import { FakePermissionAdapter } from '@pilot/platform/fakes';
+import {
+  FakeInteractionController,
+  FakePermissionAdapter,
+  FakeWindowAdapter,
+} from '@pilot/platform/fakes';
 import type { PanelWindowHandle, PanelWindowHost } from '../../src/main/panel-window.js';
 import type { TrayHandle, TrayHost, TrayMenuItem } from '../../src/main/tray.js';
 import type { SingleInstanceHost } from '../../src/main/single-instance.js';
 import { PermissionGate } from '../../src/main/permission-gate.js';
 import { createPermissionFixtureSource } from '../../src/main/permission-fixtures.js';
 import { createSettingsShortcut } from '../../src/main/settings-shortcut.js';
+import { WindowGate, type ObservationPermissionSource } from '../../src/main/window-gate.js';
+import {
+  createFakeObservationInteraction,
+  createFakeWindowDemoDriver,
+  type WindowDemoDriver,
+} from '../../src/main/window-feed.js';
 import type { PermissionFixtureName } from '../../src/ipc/schemas.js';
 
 /**
@@ -170,6 +180,49 @@ export function permissionHarness(options: PermissionHarnessOptions = {}): Permi
     ...(options.now === undefined ? {} : { now: options.now }),
   });
   return { gate, adapter };
+}
+
+export interface WindowHarnessOptions {
+  readonly permissions: ObservationPermissionSource;
+  readonly controller?: FakeInteractionController;
+  readonly adapter?: FakeWindowAdapter;
+  readonly demoEvents?: boolean;
+  readonly now?: () => number;
+}
+
+export interface WindowHarness {
+  readonly gate: WindowGate;
+  readonly adapter: FakeWindowAdapter;
+  readonly controller: FakeInteractionController;
+  /** The panel's fake window-event controls, as `main/index.ts` builds them. */
+  readonly demo: WindowDemoDriver;
+}
+
+/**
+ * A {@link WindowGate} over the PR-001 fake window adapter and fake interaction
+ * controller, wired exactly as `main/index.ts` wires it — including the
+ * `ObservationInteraction` bridge, so what the tests drive is the shipped path
+ * rather than a stand-in for it.
+ */
+export function windowHarness(options: WindowHarnessOptions): WindowHarness {
+  const controller = options.controller ?? new FakeInteractionController();
+  const adapter = options.adapter ?? new FakeWindowAdapter();
+  const gate = new WindowGate({
+    windows: adapter,
+    interaction: createFakeObservationInteraction(controller),
+    permissions: options.permissions,
+    demoEvents: options.demoEvents ?? true,
+    ...(options.now === undefined ? {} : { now: options.now }),
+  });
+  return {
+    gate,
+    adapter,
+    controller,
+    demo: createFakeWindowDemoDriver({
+      adapter,
+      selected: () => controller.snapshot().selectedWindow,
+    }),
+  };
 }
 
 export class FakeSingleInstanceHost implements SingleInstanceHost {

@@ -22,6 +22,7 @@
     "demo:interaction": "pnpm build && pnpm --filter @pilot/interaction run demo",
     "demo:envelope": "pnpm build && pnpm --filter @pilot/interaction run demo:envelope",
     "demo:permissions": "pnpm --filter @pilot/desktop run demo:permissions",
+    "demo:windows": "pnpm --filter @pilot/desktop run demo:windows",
     "demo:voice": "pnpm build && pnpm --filter @pilot/interaction run demo:voice",
     "clean": "tsc --build tsconfig.json --clean && rm -rf apps/desktop/dist apps/desktop/release apps/desktop/resources"
   },

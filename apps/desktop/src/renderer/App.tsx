@@ -1,25 +1,33 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { InteractionState, SerializedPilotError } from '@pilot/shared';
 import type { PilotViewState } from '@pilot/platform';
 import { VIEW_SCENARIOS, type ViewScenario } from '../ipc/schemas.js';
+import { buildObservationView } from '../observation/view-model.js';
 import { permissionsAllowObservation } from '../permissions/view-model.js';
+import { ObservationControls } from './ObservationControls.js';
 import { PermissionOnboarding } from './PermissionOnboarding.js';
 import { usePermissions } from './use-permissions.js';
 import { usePilotShell } from './use-pilot-shell.js';
+import { useWindows } from './use-windows.js';
 
 /**
  * The floating panel.
  *
  * Every interaction state named in mvp-01 §7 has a visible rendering, including
  * the two that are easy to leave as blank screens: `error`, and the case where
- * the panel cannot reach the main process at all. PR-009 and PR-010 replace the
- * body of this panel with window selection and conversation views; the state
- * plumbing and the failure surfaces stay.
+ * the panel cannot reach the main process at all. PR-010 replaces the
+ * conversation part of this panel; the state plumbing and the failure surfaces
+ * stay.
  *
  * Permission onboarding (PR-008) sits above all of it: while a permission that
  * blocks Pilot is missing, the conversation controls are replaced by the
  * onboarding view and an explicit reason, because offering a "hold to talk"
  * button that cannot work is the silent failure the delivery rules forbid.
+ *
+ * The window picker and the observation controls (PR-009) sit between the two,
+ * and unlike the conversation they are rendered in *every* state including
+ * blocked — because the one thing that must never disappear is the statement of
+ * whether Pilot is capturing the screen.
  */
 
 const STATE_LABELS: Readonly<Record<InteractionState, string>> = {
@@ -127,15 +135,14 @@ function Transcript({ view }: { view: PilotViewState }) {
   );
 }
 
-function Controls({
-  view,
-  onCommand,
-}: {
-  view: PilotViewState;
-  onCommand: ReturnType<typeof usePilotShell>['dispatch'];
-}) {
+/**
+ * The conversation controls. Pause, resume and everything about *which* window
+ * Pilot watches live in {@link ObservationControls} instead (PR-009): they are
+ * observation controls, and having two places to pause would mean two answers
+ * to whether Pilot is capturing.
+ */
+function Controls({ onCommand }: { onCommand: ReturnType<typeof usePilotShell>['dispatch'] }) {
   const [text, setText] = useState('');
-  const paused = view.state === 'paused';
 
   return (
     <section className="controls" aria-label="Controls">
@@ -183,13 +190,6 @@ function Controls({
         </button>
         <button
           type="button"
-          className="button"
-          onClick={() => onCommand({ type: paused ? 'resume' : 'pause' })}
-        >
-          {paused ? 'Resume' : 'Pause'}
-        </button>
-        <button
-          type="button"
           className="button button--quiet"
           onClick={() => onCommand({ type: 'clear-conversation' })}
         >
@@ -222,7 +222,19 @@ function ScenarioBar({ onApply }: { onApply: (scenario: ViewScenario) => void })
 export function App() {
   const shell = usePilotShell();
   const permissions = usePermissions();
+  const windows = useWindows();
   const [dismissedCommandError, setDismissedCommandError] = useState(false);
+  const observation = useMemo(
+    () =>
+      shell.view === null
+        ? null
+        : buildObservationView({
+            gate: windows.gate,
+            view: shell.view,
+            permissions: permissions.view,
+          }),
+    [windows.gate, shell.view, permissions.view],
+  );
 
   if (shell.status.kind === 'unavailable') {
     return (
@@ -233,7 +245,7 @@ export function App() {
     );
   }
 
-  if (shell.status.kind === 'connecting' || shell.view === null) {
+  if (shell.status.kind === 'connecting' || shell.view === null || observation === null) {
     return (
       <main className="panel panel--connecting" data-testid="panel-connecting">
         <h1 className="panel__title">Pilot</h1>
@@ -263,11 +275,14 @@ export function App() {
 
       <PermissionOnboarding permissions={permissions} />
 
+      {/* Always rendered, including while blocked: the indicator has to say
+          that Pilot is capturing nothing, and why, rather than disappear. */}
+      <ObservationControls view={observation} windows={windows} />
+
       {canConverse ? (
         <>
           <Transcript view={view} />
           <Controls
-            view={view}
             onCommand={(command) => {
               setDismissedCommandError(false);
               shell.dispatch(command);

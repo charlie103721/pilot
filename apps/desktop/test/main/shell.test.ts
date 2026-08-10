@@ -17,6 +17,7 @@ import {
   appInfoChannel,
   demoPermissionFixtureChannel,
   demoScenarioChannel,
+  demoWindowEventChannel,
   interactionDispatchChannel,
   panelSetVisibleChannel,
   permissionsActChannel,
@@ -25,12 +26,15 @@ import {
   quitChannel,
   viewStateChangedEvent,
   viewStateGetChannel,
+  windowsActChannel,
+  windowsChangedEvent,
+  windowsGetChannel,
 } from '../../src/ipc/channels.js';
-import type { PermissionGateState } from '../../src/ipc/schemas.js';
+import type { PermissionGateState, WindowGateState } from '../../src/ipc/schemas.js';
 import { unavailableReason } from '../../src/main/settings-shortcut.js';
 import { createFakeScenarioDriver, DEMO_FAILURE } from '../../src/main/scenarios.js';
 import { DesktopShell } from '../../src/main/shell.js';
-import { FakePanelHost, FakeTrayHost, permissionHarness } from './support.js';
+import { FakePanelHost, FakeTrayHost, permissionHarness, windowHarness } from './support.js';
 
 /**
  * The composed shell.
@@ -44,6 +48,7 @@ function shell(
   options: {
     withScenarioDriver?: boolean;
     withPermissionFixtures?: boolean;
+    withWindowDemoDriver?: boolean;
     trayFailure?: Error;
   } = {},
 ) {
@@ -57,6 +62,11 @@ function shell(
     ...(options.withPermissionFixtures === false ? { withFixtures: false } : {}),
     now: () => 1_700_000_000_000,
   });
+  const windows = windowHarness({
+    permissions: permissions.gate,
+    controller,
+    now: () => 1_700_000_000_000,
+  });
   const quits: number[] = [];
 
   const instance = new DesktopShell({
@@ -64,6 +74,7 @@ function shell(
     trayHost,
     controller,
     permissions: permissions.gate,
+    windows: windows.gate,
     appInfo: { version: '9.9.9', platform: 'linux' },
     quit: () => quits.push(1),
     ids: createIdFactory(createCounterIdSource()),
@@ -71,9 +82,10 @@ function shell(
     ...(options.withScenarioDriver === false
       ? {}
       : { scenarioDriver: createFakeScenarioDriver(controller) }),
+    ...(options.withWindowDemoDriver === false ? {} : { windowDemoDriver: windows.demo }),
   });
 
-  return { instance, panelHost, trayHost, controller, permissions, quits };
+  return { instance, panelHost, trayHost, controller, permissions, windows, quits };
 }
 
 let sequence = 0;
@@ -370,6 +382,97 @@ describe('DesktopShell', () => {
 
     const response = await instance.router.handle(
       request(demoPermissionFixtureChannel.name, 'granted'),
+      { senderId: 1 },
+    );
+
+    expect(response.ok === false && response.error.code).toBe('unsupported-capability');
+  });
+
+  it('serves the window list and the observation controls', async () => {
+    const { instance, controller } = shell();
+    // Observation is gated on permissions in the main process too, so the
+    // fixture is granted first — a selection before that is refused, which the
+    // window-gate suite asserts separately.
+    await instance.router.handle(request(demoPermissionFixtureChannel.name, 'granted'), {
+      senderId: 1,
+    });
+
+    const listed = successPayload(
+      await instance.router.handle(request(windowsGetChannel.name, {}), { senderId: 1 }),
+    ) as WindowGateState;
+    expect(listed.listedAt).toBeNull();
+
+    const refreshed = successPayload(
+      await instance.router.handle(request(windowsActChannel.name, { type: 'refresh' }), {
+        senderId: 1,
+      }),
+    ) as WindowGateState;
+    expect(refreshed.windows).toHaveLength(2);
+
+    await instance.router.handle(
+      request(windowsActChannel.name, {
+        type: 'select',
+        windowId: FIXTURE_WINDOW_RETINA.windowId,
+      }),
+      { senderId: 1 },
+    );
+    await instance.router.handle(request(windowsActChannel.name, { type: 'start' }), {
+      senderId: 1,
+    });
+
+    expect(controller.snapshot().selectedWindow).toEqual(FIXTURE_WINDOW_RETINA);
+    expect(controller.snapshot().observationEnabled).toBe(true);
+  });
+
+  it('rejects an unknown window action rather than acting on it', async () => {
+    const { instance } = shell();
+
+    const response = await instance.router.handle(
+      request(windowsActChannel.name, { type: 'capture-everything' }),
+      { senderId: 1 },
+    );
+
+    expect(response.ok === false && response.error.code).toBe('invalid-request');
+  });
+
+  it('pushes the §16 prompt to the panel when the selected window closes', async () => {
+    const { instance, panelHost, windows } = shell();
+    instance.start();
+    instance.panel.show();
+    await instance.router.handle(request(demoPermissionFixtureChannel.name, 'granted'), {
+      senderId: 1,
+    });
+    await instance.router.handle(request(windowsActChannel.name, { type: 'refresh' }), {
+      senderId: 1,
+    });
+    await instance.router.handle(
+      request(windowsActChannel.name, {
+        type: 'select',
+        windowId: FIXTURE_WINDOW_RETINA.windowId,
+      }),
+      { senderId: 1 },
+    );
+    await instance.router.handle(request(windowsActChannel.name, { type: 'start' }), {
+      senderId: 1,
+    });
+    const panel = panelHost.latest;
+    expect(panel).toBeDefined();
+    panel!.sent.length = 0;
+
+    windows.adapter.closeWindow(FIXTURE_WINDOW_RETINA.windowId);
+
+    const events = panel!.sent.filter((envelope) => envelope.channel === windowsChangedEvent.name);
+    expect(events.length).toBeGreaterThan(0);
+    expect(parseEventEnvelope(windowsChangedEvent, events[0]).payload.notice?.reason).toBe(
+      'selected-window-closed',
+    );
+  });
+
+  it('reports fake window events as unsupported in a build without them', async () => {
+    const { instance } = shell({ withWindowDemoDriver: false });
+
+    const response = await instance.router.handle(
+      request(demoWindowEventChannel.name, 'close-selected'),
       { senderId: 1 },
     );
 
