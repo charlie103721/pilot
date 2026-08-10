@@ -4,6 +4,10 @@ coverage/
 pnpm-lock.yaml
 *.tsbuildinfo
 
+# Build products: electron-builder output and the staged native helper.
+release/
+apps/*/resources/
+
 # Transient worktrees of parallel agent sessions.
 .claude/
 

@@ -1,5 +1,9 @@
 {
   "$schema": "https://json.schemastore.org/tsconfig",
+  // `tsc --build` emits the shared libraries only. `apps/desktop` is no longer
+  // a reference: electron-vite bundles all three of its processes from source
+  // (see apps/desktop/electron.vite.config.ts), and it is typechecked without
+  // emit by its own `typecheck` script.
   "files": [],
   "references": [
     { "path": "packages/shared" },
@@ -7,7 +11,6 @@
     { "path": "packages/platform-mac" },
     { "path": "packages/observation" },
     { "path": "packages/interaction" },
-    { "path": "packages/agent" },
-    { "path": "apps/desktop" }
+    { "path": "packages/agent" }
   ]
 }

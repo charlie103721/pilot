@@ -10,6 +10,9 @@ export default tseslint.config(
       '**/node_modules/**',
       '**/*.tsbuildinfo',
       'coverage/**',
+      // Build products: electron-builder output and the staged native helper.
+      '**/release/**',
+      'apps/*/resources/**',
       // Transient worktrees of parallel agent sessions: linting them reads
       // another session's half-written files and fails at random.
       '.claude/**',
@@ -41,10 +44,18 @@ export default tseslint.config(
     },
   },
   {
-    // The Electron renderer and the sandboxed preload run in Chromium, not Node.
-    files: ['apps/*/src/renderer/**/*.{ts,tsx}', 'apps/*/src/shims/**/*.ts'],
+    // The Electron renderer runs in Chromium, not Node.
+    files: ['apps/*/src/renderer/**/*.{ts,tsx}'],
     languageOptions: {
       globals: { ...globals.browser },
+    },
+  },
+  {
+    // Build scripts are plain Node ESM, not part of any tsconfig, and they talk
+    // to the operator on stdout — that is their entire job.
+    files: ['apps/*/scripts/**/*.js'],
+    rules: {
+      'no-console': 'off',
     },
   },
   prettier,

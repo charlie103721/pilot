@@ -4,8 +4,14 @@
     <meta charset="utf-8" />
     <!--
       The panel loads nothing from the network and evaluates no inline script.
-      This CSP is part of the renderer's security posture (system-design §14)
-      and must survive the move to electron-vite in PR-007.
+      This CSP is part of the renderer's security posture (system-design §14).
+
+      It is shipped byte for byte: `electron.vite.config.ts` fails the build if
+      this policy stops matching the copy recorded there, and
+      `test/build/development-build.test.ts` compares this file against the
+      built `dist/renderer/index.html`. The Vite dev server serves a documented,
+      narrower relaxation (inline styles + the HMR websocket) that never reaches
+      a packaged build.
     -->
     <meta
       http-equiv="Content-Security-Policy"
@@ -13,10 +19,10 @@
     />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Pilot</title>
-    <link rel="stylesheet" href="./renderer.css" />
   </head>
   <body>
     <div id="root"></div>
-    <script type="module" src="./renderer.js"></script>
+    <!-- Vite entry: rewritten to ./renderer.js (plus an ./index.css link) on build. -->
+    <script type="module" src="./main.tsx"></script>
   </body>
 </html>

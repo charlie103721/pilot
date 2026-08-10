@@ -24,9 +24,18 @@ import type { TrayHandle, TrayHost, TrayMenuItem } from './tray.js';
 const PANEL_WIDTH = 420;
 const PANEL_HEIGHT = 620;
 
+/**
+ * Where the panel's document comes from. A packaged app always loads a file
+ * from inside its own bundle; `electron-vite dev` serves the renderer over
+ * http so it can hot-reload, and passes the origin in `ELECTRON_RENDERER_URL`.
+ * Modelling it as a union keeps "there is exactly one source" a type-level
+ * fact rather than a convention.
+ */
+export type ElectronPanelSource = { readonly file: string } | { readonly url: string };
+
 export interface ElectronPanelHostOptions {
   readonly preloadPath: string;
-  readonly rendererPath: string;
+  readonly renderer: ElectronPanelSource;
 }
 
 /**
@@ -77,7 +86,9 @@ export function createElectronPanelHost(options: ElectronPanelHostOptions): Pane
         event.preventDefault();
       });
 
-      void window.loadFile(options.rendererPath);
+      void ('url' in options.renderer
+        ? window.loadURL(options.renderer.url)
+        : window.loadFile(options.renderer.file));
 
       return {
         show: () => window.show(),
