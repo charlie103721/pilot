@@ -137,7 +137,7 @@ swift build -c release --package-path packages/platform-mac/native   # optional:
 pnpm --filter @pilot/desktop run build:helper -- --require-native     # fails if Swift is missing
 pnpm package
 pnpm --filter @pilot/desktop exec node scripts/verify-bundle.js       # expect `helper: native`
-open apps/desktop/release/mac-arm64/Pilot.app
+open "$(find apps/desktop/release -maxdepth 2 -name 'Pilot.app' | head -1)"   # mac-arm64 or mac-x64
 ```
 
 `--require-native` is the difference that matters: without it the hook falls
