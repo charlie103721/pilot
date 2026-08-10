@@ -183,6 +183,17 @@ export const DEMO_SPEECH_OUTPUT = {
 export interface RecordedRequest {
   readonly op: string;
   readonly payload: Record<string, unknown>;
+  /**
+   * Wall clock when the operation was handed to the transport (PR-035).
+   *
+   * Additive, and the only wall clock in the rig. §17 budgets TTS interruption
+   * under 300 ms, and the honest place to read Pilot's half of that is the
+   * moment `speech.output.stop` actually crossed the pipe — not a polling loop
+   * around a counter, whose resolution would be the poll interval. A caller
+   * that does not measure can ignore it; `pnpm demo:interrupt-flow` §5 says
+   * exactly what the number does and does not include.
+   */
+  readonly at: number;
 }
 
 export interface ObservationRig {
@@ -279,6 +290,7 @@ export async function createObservationRig(
                 wire.push({
                   op: operation.name,
                   payload: (payload ?? {}) as RecordedRequest['payload'],
+                  at: Date.now(),
                 });
                 return (
                   target.request as unknown as (

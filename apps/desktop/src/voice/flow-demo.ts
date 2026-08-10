@@ -71,13 +71,23 @@ import {
  * Section 4 says, row by row, which of `docs/mvp-01-point-ask-hear.md` §18's
  * A-01…A-15 this trace evidences and which it cannot. PR-043 owns running the
  * matrix; this owns the single trace.
+ *
+ * ## Exported for PR-035
+ *
+ * `recordPanel`, `spoken`, `pressKey`, `releaseKey`, `waitFor` and the
+ * whole-tree/base64 checks below were written here and are now **exported**
+ * rather than copied: `src/voice/interrupt-demo.ts` reads the panel through the
+ * same one view stream and the synthesiser through the same framed wire, so
+ * "no stale chunk was spoken" means the same thing in both walkthroughs. The
+ * export is the only change PR-035 made to this file; nothing here behaves
+ * differently.
  */
 
 export interface FlowDemoResult {
   readonly lines: readonly string[];
 }
 
-const GRANTED = {
+export const GRANTED = {
   'screen-recording': 'granted',
   accessibility: 'granted',
   microphone: 'granted',
@@ -126,13 +136,17 @@ const MVP_TRANSITIONS = [
 ] as const;
 
 /** Whitespace-insensitive comparison of what was spoken with what was written. */
-function sameWords(left: string, right: string): boolean {
+export function sameWords(left: string, right: string): boolean {
   const flatten = (text: string): string => text.replace(/\s+/g, ' ').trim();
   return flatten(left) === flatten(right);
 }
 
 /** Bounded wait on observable state. No fixed sleeps: a wedged demo fails loudly. */
-async function waitFor(what: string, predicate: () => boolean, timeoutMs = 20_000): Promise<void> {
+export async function waitFor(
+  what: string,
+  predicate: () => boolean,
+  timeoutMs = 20_000,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
     if (Date.now() > deadline) {
@@ -151,7 +165,7 @@ async function waitFor(what: string, predicate: () => boolean, timeoutMs = 20_00
  * 30 Hz poller is 33 ms apart for the same reason; widening the bucket to make
  * a demo read better would delete the property under test.
  */
-async function nextPointerBucket(): Promise<void> {
+export async function nextPointerBucket(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 40));
 }
 
@@ -164,14 +178,14 @@ async function nextPointerBucket(): Promise<void> {
  * `transcript` and `speaking`, and nothing here reads any of them from
  * anywhere else.
  */
-interface PanelTrace {
+export interface PanelTrace {
   readonly states: readonly string[];
   readonly speakingEdges: readonly string[];
   readonly live: readonly string[];
   stop(): void;
 }
 
-function recordPanel(rig: ObservationRig): PanelTrace {
+export function recordPanel(rig: ObservationRig): PanelTrace {
   const first = rig.controller.snapshot();
   const states: string[] = [first.state];
   const speakingEdges: string[] = [];
@@ -194,7 +208,7 @@ function recordPanel(rig: ObservationRig): PanelTrace {
 }
 
 /** Every `speech.output.speak` that crossed the framed stdio protocol, in order. */
-function spoken(rig: ObservationRig): readonly { id: string; text: string }[] {
+export function spoken(rig: ObservationRig): readonly { id: string; text: string }[] {
   return rig.wire
     .filter((request) => request.op === 'speech.output.speak')
     .map((request) => ({
@@ -203,7 +217,7 @@ function spoken(rig: ObservationRig): readonly { id: string; text: string }[] {
     }));
 }
 
-function answerOf(rig: ObservationRig): string {
+export function answerOf(rig: ObservationRig): string {
   return String(
     rig.controller
       .snapshot()
@@ -212,7 +226,7 @@ function answerOf(rig: ObservationRig): string {
   );
 }
 
-function questionOf(rig: ObservationRig): string {
+export function questionOf(rig: ObservationRig): string {
   return String(
     rig.controller
       .snapshot()
@@ -230,20 +244,20 @@ function questionOf(rig: ObservationRig): string {
  * asks for the *next* scripted transition. `MacHotkeyAdapter` cannot tell a
  * scripted key event from a real one, which is the whole point of the stub.
  */
-async function pressKey(rig: ObservationRig, started: boolean): Promise<void> {
+export async function pressKey(rig: ObservationRig, started: boolean): Promise<void> {
   const before = rig.voice.stats().downs;
   await (started ? rig.hotkey.start() : rig.voice.start());
   await waitFor('the key press to reach the machine', () => rig.voice.stats().downs > before);
 }
 
-async function releaseKey(rig: ObservationRig): Promise<void> {
+export async function releaseKey(rig: ObservationRig): Promise<void> {
   const before = rig.voice.stats().ups;
   await rig.hotkey.start();
   await waitFor('the key release to reach the machine', () => rig.voice.stats().ups > before);
 }
 
 /** Files under the repository, excluding build output and dependencies. */
-function listTree(root: string): readonly string[] {
+export function listTree(root: string): readonly string[] {
   const skip = new Set([
     'node_modules',
     '.git',
@@ -272,10 +286,10 @@ function listTree(root: string): readonly string[] {
   return found;
 }
 
-const REPO_ROOT = new URL('../../../../', import.meta.url).pathname.replace(/\/$/, '');
+export const REPO_ROOT = new URL('../../../../', import.meta.url).pathname.replace(/\/$/, '');
 
 /** A run of base64 long enough to be a payload rather than an identifier. */
-const BASE64_RUN = /[A-Za-z0-9+/]{120,}={0,2}/;
+export const BASE64_RUN = /[A-Za-z0-9+/]{120,}={0,2}/;
 
 interface Watched {
   readonly rig: ObservationRig;

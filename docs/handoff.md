@@ -228,6 +228,39 @@ PILOT_HELPER_BINARY="$(pwd)/packages/platform-mac/native/.build/debug/PilotHelpe
 #    …and finally from inside the packaged `.app`, which is the only layout
 #    where TCC can plausibly attribute any of it to Pilot:
 open "$(packaged_app)"
+
+# 15. PR-035 — INTERRUPTION, WHERE IT IS HARD. This one MAKES NOISE and raises
+#    no new TCC prompt. Run it after step 14, in the same session if you can.
+#    Everything Pilot does here is verified on Linux; the ONE thing that is not
+#    is the thing that matters: whether the SOUND stops.
+#
+#    First the stub-driven walkthrough, which already passes on Linux:
+pnpm demo:interrupt-flow
+
+#    Then the real thing, with the volume up. Four presses, in this order:
+PILOT_HELPER_BINARY="$(pwd)/packages/platform-mac/native/.build/debug/PilotHelper" \
+  PILOT_LOG_LEVEL=debug pnpm dev
+
+#      (a) ask something that makes it LOOK, and hold the key again WHILE the
+#          panel is showing it looking — before the answer starts. Then ask a
+#          different question. This is the case PR-035 decided (follow-up 14);
+#          what must NOT happen is the error "Pilot is still working on the
+#          previous question", and what must happen is that the second question
+#          is answered.
+#      (b) interrupt a spoken answer mid-sentence. TIME IT BY EAR: the voice
+#          must stop before you have finished the first word of the new
+#          question. §17 budgets 300 ms and Linux measures ~1 ms of Pilot's own
+#          half; the rest is AVSpeechSynthesizer and the audio device, and this
+#          is the only place that part has ever been exercised.
+#      (c) interrupt twice in quick succession — press, speak, release, and
+#          interrupt that answer too. Only the last answer may be spoken to the
+#          end, and no abandoned answer may resume.
+#      (d) interrupt in the moment between the answer appearing on screen and
+#          the first word being spoken. It is a narrow window on a Mac; if you
+#          cannot hit it, say so and it stays a Linux-only result.
+#
+#    …and from inside the packaged `.app`:
+open "$(packaged_app)"
 ```
 
 Notes:
@@ -799,6 +832,39 @@ fails mid-answer or dies mid-sentence; what cannot be proven here is whether a
 single word is audible, whether two sentences run together without a gap, or
 whether the sound really stops when an interruption says it should. Step 13 is
 what produces that answer, and part of it is audible rather than printed.
+PR-035 interrupts all of that — during a screen observation, during a spoken
+answer, twice in a row, and in the window between an answer and its first word —
+and every one of those results is a Linux result. Its gap is one sentence long
+and it is the one people will most want to skip: **no sound has ever been
+stopped, because no sound has ever been made.** `pnpm demo:interrupt-flow`
+measures the time from Pilot accepting `push-to-talk-down` to
+`speech.output.stop` crossing the pipe (~1 ms here) and says, in its own section
+5, that this is Pilot's half of §17's 300 ms and that everything after it —
+`stopSpeaking(at: .immediate)`, the synthesiser draining, the audio device going
+quiet — is unmeasured and is the part a person in the room would hear. Step 15
+is what produces that answer, by ear.
+
+### What to look for in step 15 (PR-035)
+
+Four things, in decreasing order of what they would cost if wrong:
+
+1. **Does the voice stop before you finish your first word?** That is §17, and
+   it is the only acceptance question here a machine cannot answer. If it
+   trails off, or finishes the sentence it was on, say so and roughly how long
+   it took — the fix is in `SystemSpeechOutputService.stop(speechId:)` (does it
+   pass `.immediate`?), not in Pilot's half.
+2. **Does interrupting while Pilot is *looking* work?** Press the key while the
+   panel says it is looking, then ask something else. The answer must be to the
+   new question and there must be no "Pilot is still working on the previous
+   question". This is the decision PR-035 took (runbook follow-up 14) and the
+   first time it will have met a real capture rather than a delayed stub.
+3. **Does the abandoned answer ever resume?** Not in the panel, and not aloud —
+   including a second or two later, once the model's own request has finished
+   unwinding. On Linux this is checked at the wire; on a Mac it is checked by
+   listening.
+4. **Does the interrupted answer's *text* survive?** §16 says the sound is what
+   may be lost, never the reply. Whatever the panel had when you pressed the key
+   must still be there afterwards.
 
 ---
 
@@ -1009,6 +1075,7 @@ reversible; raise any that look wrong.
 | **`LiveConversationDriver.speech` became optional** (PR-032) | The panel's "Replay" bar could make recognition fail because the recogniser was `FakeSpeechInputAdapter` and had an `emitError` control. A real one fails when the platform makes it fail. Rather than keep a fake beside the real adapter purely to drive one fixture, the option is now absent on a helper build and the `stt-failure` fixture says what to do instead — `PILOT_HELPER_STUB` with `speechInput.startFailsWith`, which reaches the same state through the real code path. A dev affordance that lies about which layer failed is worse than one that is honest about needing a scripted helper. |
 | **PR-034's refusal path is the attribution failure, not a denied permission** (PR-034) | The brief asked for one refusal the user can carry on past. A denied *required* permission is not that: `REQUIRED_PERMISSIONS` includes the microphone, so once the gate reports it the machine rests in `needs-permission`, where the table denies `submit-text` too — the user cannot continue by typing, and PR-008's onboarding is the only way out (which is PR-006's design, and correct). The refusal that leaves the flow usable is PR-011's verdict: every permission reads `granted`, macOS credits them to the helper, so the tap is never installed *and* the §10 conditions read `denied`, while the machine stays in `observing`. The user types the question, the tool refusal reaches the model as a typed result it can reason about, and the answer is still streamed and still spoken. It is also the plan's top structural risk, so it is the refusal most worth rehearsing. |
 | **PR-034 interrupts in `speaking`, and leaves `observing-screen` to PR-035** (PR-034) | The trace's interruption is `mvp-01` §7's `speaking + new push-to-talk → listening`, which is `interruptModeFor`'s `abort` branch and behaves: the synthesiser stops, no chunk of the abandoned answer follows, the follow-up is answered on the same conversation. Interrupting *during* `observing-screen` steers the run and then submits a second one — runbook follow-up 14 — which recovers but does not do what the user asked, and fixing it is a design decision PR-027 declined to take alone. Taking it inside an integration PR whose stated job is to add no capability would have been the wrong place. |
+| **An interruption aborts the model run, in every state — including while `observe_screen` is in flight** (PR-035, runbook follow-up 14) | This is the decision PR-027 recorded and PR-034 declined to take, and it is the last open design question in Phase 3. PR-006 chose `steer` for `observing-screen` so an in-flight capture could unwind rather than be torn down; PR-035 changed it to `abort` everywhere. Three things the real composition showed that the fakes could not. (a) **A steer does not end the run**, so the replacement question hit `run-already-active` and the user saw "Pilot is still working on the previous question" — the interruption did not do what they asked. (b) **The premise was backwards**: a steer leaves the tool's `AbortSignal` unfired, so the capture *completes* and its image is appended to the model's context for a question that has been replaced. Aborting is what unwinds it, because `observe_screen` checks that signal before capturing and discards a result that arrives after it. (c) **Nothing else in the table wanted `steer` either** — every teardown clears the run identity, so a steered run's output can never reach the user however long it goes on. The alternative PR-027 listed — deliver the new question *as* the steering message — was rejected because the question does not exist yet when the key goes down, because a steer carries raw text and would lose the §6 pointer anchor and the §8 envelope, and because a steered run emits no `run-started`, so the answer would be discarded as `stale-run` unless the identity guard were weakened. **Consequence worth knowing:** an interruption during an observation now costs that observation outright — Pilot does not keep the picture it was in the middle of taking. **Say if you would rather have the other answer**: it is one line in `interruptModeFor` (`packages/interaction/src/table.ts`), the `steer` mode is still on the `AgentSession` contract, and `STEER_INTERRUPTION_MESSAGE` is still exported for it. |
 | **The demo is `pnpm demo:flow`, and it derives its own claims** (PR-034) | Named for what it is (the whole flow) rather than for the PR, beside `demo:observe` / `demo:look` / `demo:ask` / `demo:talk` / `demo:speak`. Two things it deliberately does not do: it does not narrate which state transitions it took — it reads them back out of the recorded `PilotViewState` path, because a demo that describes itself proves nothing — and it does not assert wall-clock numbers, which runbook cross-lane issue 7 is about. |
 
 ---
@@ -1035,6 +1102,7 @@ reversible; raise any that look wrong.
 | Phase 3 — integration (028…036) | In progress. **PR-032 is merged: voice enters the conversation.** Holding the push-to-talk key opens a real recogniser, the live transcript grows partial by partial in the panel, releasing the key submits what was heard as the question, and the utterance's key-down/key-up instants reach PR-031's anchor — so `pointerSampleCount`, `pointerCrossedWindowBorder` and `sceneRevisedDuringUtterance` stop being degenerate with no change to the anchoring code. Voice is gated on PR-011's attribution verdict, and the §16 text box is proved reachable in every failure mode (dead tap, denied microphone, refused attribution, unavailable shortcut). **No key has ever been pressed and no audio has ever been recorded** (§1 step 12): every key transition and every transcript comes from the Node helper stub. Speech *output*, persistence and the model itself are still fake. |
 | Phase 3 — integration (028…036) | In progress. **PR-033 is merged: the voice loop is closed.** Pilot now answers out loud — the streamed answer is spoken sentence by sentence through `MacSpeechOutputAdapter` while its text fills the panel, and every platform adapter in system-design §5 is finally the real one. The silent stand-in is deleted. The property that took the work is §16's: a synthesiser failure costs the sound and never the answer, because the interaction table's `speech-failed` row aborts the run that is still writing it — so `main/speech-runtime.ts` turns every synthesiser failure into silence and the turn completes exactly as it would have. `createTimeoutScheduler()` is passed at last, so a model that goes quiet mid-sentence speaks what it already had. **Nothing has ever been spoken aloud** (§1 step 13): no `AVSpeechSynthesizer`, no voice, no audio device, and every speech callback in every test is the Node helper stub. Persistence and the model itself are still fake. |
 | Phase 3 — integration (028…036) | In progress. **PR-034 is merged: the MVP scenario runs as one trace.** `pnpm demo:flow` walks `docs/mvp-01-point-ask-hear.md` §2 through the shipping composition — window selected, pointer anchored at the question, spoken question transcribed, model calls `observe_screen`, policy-checked image returned, answer streamed into the panel and spoken sentence by sentence, then interrupted mid-answer by a second press and a follow-up answered on the same conversation. The §7 rows it walked are read back out of the recorded view-state path, and six invariants are checked on that same trace (selected-window-only, the capability gate, no image bytes to a log line or to disk, no accessibility target outside the selected window, the unknown-pointer sentinel, the §16 text fallback). **No boundary was replaced and no defect was found** — the pieces compose. What it does *not* establish is unchanged and is printed in the demo's own section 4: against the Node helper stub and a scripted faux provider it evidences A-01, A-03, A-08, A-11 and A-14 only in part, and the other ten not at all (§1 step 14, §2). |
+| Phase 3 — integration (028…036) | In progress. **PR-035 is merged: interruption works in the states where it is hard, and Phase 3 has no open design question left.** `pnpm demo:interrupt-flow` interrupts a screen observation with a capture genuinely in flight, twice in quick succession, and in the window between an answer and its first spoken word — reading the result off the panel's own view stream, the `speech.output.speak` operations that crossed the framed wire, and the rejection stream. It closes runbook follow-up 14 by **aborting rather than steering**, which is a decision the user can reverse in one line (§4). No boundary was replaced and no defect was found; what it did find is that the identity guard is what keeps a `run-failed` from an interrupted tool call out of the user's face (runbook cross-lane issue 17). Its own limit is one sentence long: **no sound has ever been stopped, because no sound has ever been made** — the §17 number here is Pilot's half of the budget and is measured as a JSON round trip over a pipe (§1 step 15, §5). Persistence and the model itself are still fake. |
 | Phase 4 — providers (037…039) | Not started. PR-037 (Codex) is the one the user's decision selects. |
 | Phase 5 — hardening and release (040…044) | Not started. |
 
@@ -1049,6 +1117,28 @@ demo executed against the merged tree.
 ---
 
 ## 5. Risks worth watching
+
+- **§17's 300 ms interruption budget is half-measured** (PR-035). What Linux can
+  measure is the time from the interaction machine accepting `push-to-talk-down`
+  to `speech.output.stop` crossing the pipe: ~1 ms, dominated by nothing.
+  Everything after that is unmeasured and unexercised — the Swift helper
+  dispatching to `AVSpeechSynthesizer.stopSpeaking(at:)`, the synthesiser
+  draining whatever it has buffered, and the audio device going quiet. That
+  second half is the whole of what a user perceives as "the voice stopped", and
+  it is also where the plausible failure lives: `stopSpeaking(at: .word)` rather
+  than `.immediate` would finish the current word, and a synthesiser that has
+  already handed audio to the device may keep playing it. §1 step 15 is the only
+  thing that can settle it, and it settles it by ear. **Do not read a green
+  `pnpm demo:interrupt-flow` as "interruption meets §17".**
+
+- **An interrupted observation is lost, not resumed** (PR-035). Following from
+  the §4 decision: a push-to-talk that lands while `observe_screen` is in flight
+  aborts the capture, and Pilot does not keep or retry the frame it was in the
+  middle of taking. That is correct for the case the decision is about — the
+  user replaced the question, so the picture was for a question nobody is asking
+  any more — but it also applies to an interruption the user did not mean, such
+  as a stuck key producing a spurious press. PR-015's coalescing is what keeps
+  that from happening and it has never run against a real `CGEventTap`.
 
 - **The SQLite writer lease is a launch-time failure mode nobody has seen yet**
   (PR-023). The session database is single-writer: the backend claims a row in

@@ -22,6 +22,7 @@
     "demo:talk": "node scripts/talk-demo.js",
     "demo:speak": "node scripts/speak-demo.js",
     "demo:flow": "node scripts/flow-demo.js",
+    "demo:interrupt-flow": "node scripts/interrupt-demo.js",
     "package": "node scripts/ensure-electron.js --require && pnpm run build:app && electron-builder --dir --config electron-builder.yml && node scripts/verify-bundle.js",
     "verify:bundle": "node scripts/verify-bundle.js",
     "start": "electron .",

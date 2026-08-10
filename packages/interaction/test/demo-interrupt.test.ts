@@ -44,11 +44,14 @@ describe('interruption demo', () => {
     expect(scene.discards).toContain('dropped chunk #1 (31 chars) of speech-000001: stopped');
   });
 
-  it('steers rather than aborts while a capture is in flight', async () => {
+  it('aborts while a capture is in flight, which is what unwinds it (PR-035)', async () => {
     const { scenes } = await runInterruptDemo();
     const scene = sceneNamed(scenes, 'interrupted during a screen observation');
 
-    expect(scene.interrupts).toEqual(['steer']);
+    // Was `steer` until PR-035 (runbook §8 follow-up 14): a steered run stays
+    // alive, so the abandoned capture's image still reaches the model and the
+    // replacement question meets `run-already-active`.
+    expect(scene.interrupts).toEqual(['abort']);
     expect(scene.path).toEqual([
       'idle',
       'observing',
@@ -57,7 +60,12 @@ describe('interruption demo', () => {
       'observing-screen',
       'observing',
     ]);
-    expect(scene.rejections).toEqual(['run-text-delta in observing: stale-run']);
+    // The abort's own terminal event now arrives too, and is discarded exactly
+    // like the delta: the machine forgot the run id when it tore down.
+    expect(scene.rejections).toEqual([
+      'run-aborted in observing: stale-run',
+      'run-text-delta in observing: stale-run',
+    ]);
   });
 
   it('discards a completion that arrives after the abort', async () => {

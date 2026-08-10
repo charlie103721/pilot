@@ -5,7 +5,7 @@ import type {
   InteractionInput,
   TransitionOutcome,
 } from '@pilot/interaction';
-import { STEER_INTERRUPTION_MESSAGE } from '@pilot/interaction';
+import { STEER_INTERRUPTION_MESSAGE, interruptModeFor } from '@pilot/interaction';
 import {
   GRANTED,
   SAMPLE_ERROR,
@@ -237,22 +237,28 @@ describe('cancellation and suspension', () => {
     ]);
   });
 
-  it('steers rather than aborts while a screen observation is in flight', () => {
+  it('aborts rather than steers while a screen observation is in flight', () => {
     const harness = driveTo('observing-screen');
     const outcome = harness.machine.send({ type: 'interrupt' });
+    // PR-035 (runbook §8 follow-up 14). PR-006 chose `steer` here so a capture
+    // could unwind; with a real `PiAgentSession` a steer leaves the run alive,
+    // so the replacement question meets `run-already-active` and the abandoned
+    // capture's image lands in the model's context anyway. `abort` is what
+    // fires the signal `observe_screen` checks — it is the unwinding.
     expect(accepted(outcome).effects).toEqual([
       {
         type: 'interrupt-run',
         runId: TEST_RUN_ID,
-        mode: 'steer',
-        // PR-027: a steer's detail is injected into the model's transcript as a
-        // user message, so it is written for the model. The internal reason
-        // ("interrupted by the user") would otherwise be spoken to it as if the
-        // user had said it. An abort's detail is unchanged — it never leaves
-        // Pilot.
-        reason: STEER_INTERRUPTION_MESSAGE,
+        mode: 'abort',
+        // An abort's detail is the internal reason and never leaves Pilot; a
+        // steer's would be injected into the model's transcript verbatim, which
+        // is why `STEER_INTERRUPTION_MESSAGE` exists and why nothing here uses
+        // an internal string for it.
+        reason: 'interrupted by the user',
       },
     ]);
+    expect(interruptModeFor('observing-screen')).toBe('abort');
+    expect(STEER_INTERRUPTION_MESSAGE).not.toContain('interrupted by the user');
   });
 
   it('screen lock suspends and unlock restores', () => {

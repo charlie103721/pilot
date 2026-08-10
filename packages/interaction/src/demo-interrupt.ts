@@ -34,8 +34,10 @@ import type { VoiceDiagnostic } from './voice-diagnostics.js';
  *  1. interrupted while thinking — the abandoned answer stops mid-stream;
  *  2. interrupted while speaking — the sentence queued behind the one being
  *     spoken is dropped, not deferred;
- *  3. interrupted during `observe_screen` — steered, not aborted, so the
- *     capture unwinds (system-design §15);
+ *  3. interrupted during `observe_screen` — aborted, which is what makes the
+ *     capture unwind and lets the replacement question start (PR-035; this
+ *     scene said "steered" until then, and runbook §8 follow-up 14 is why it
+ *     no longer does);
  *  4. the abandoned run finishes anyway, and its answer goes nowhere;
  *  5. two interruptions in quick succession;
  *  6. interrupted between the answer and its first spoken word;
@@ -296,7 +298,17 @@ async function sceneInterruptSpeaking(): Promise<InterruptDemoScene> {
   );
 }
 
-/** 3. system-design §15: a capture in flight is steered so it can unwind. */
+/**
+ * 3. system-design §15: a capture in flight, stopped.
+ *
+ * PR-006 chose `steer` for this state so the tool call could unwind rather than
+ * be cut in half, and this scene printed `steer` until PR-035 decided otherwise
+ * (runbook §8 follow-up 14). What `abort` buys is visible in the scene itself:
+ * the run's `AbortSignal` fires, which is the signal `observe_screen` checks
+ * before its capture, passes to `ScreenContextService.observe` and uses to
+ * discard a result that arrives late — so the capture unwinds *and* the run
+ * ends, which is what lets a replacement question start.
+ */
 async function sceneInterruptObservation(): Promise<InterruptDemoScene> {
   const harness = createHarness();
   await harness.ask('what is this?');
@@ -309,17 +321,18 @@ async function sceneInterruptObservation(): Promise<InterruptDemoScene> {
   harness.note('user presses Stop');
   await harness.send({ type: 'interrupt' });
   harness.note(
-    `mode: ${harness.agent.interrupts.map((i) => i.mode).join()} — the run keeps its abort signal ` +
-      `unfired (${harness.agent.runAborted ? 'aborted' : 'not aborted'}), so the capture unwinds`,
+    `mode: ${harness.agent.interrupts.map((i) => i.mode).join()} — the run's abort signal fired ` +
+      `(${harness.agent.runAborted ? 'aborted' : 'not aborted'}), which is what observe_screen ` +
+      `checks before it captures and what discards a frame that lands afterwards`,
   );
 
-  harness.note('whatever the steered run says next is still discarded');
+  harness.note('whatever the aborted run says next is still discarded');
   harness.agent.lateDelta('The Auto Renew toggle is off.');
   await harness.controller.settled();
   return finish(
     harness,
     'interrupted during a screen observation',
-    'The run is steered rather than aborted, so `observe_screen` finishes and unwinds instead of being cut in half.',
+    'The run is aborted: the tool’s signal fires, the capture unwinds into a `cancelled` refusal, and no run is left holding the conversation.',
   );
 }
 
