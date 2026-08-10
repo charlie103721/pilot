@@ -23,7 +23,8 @@
     "demo": "node demo/observe-screen-demo.mjs",
     "demo:capability": "node demo/capability-gate-demo.mjs",
     "demo:observe": "node demo/observe-screen-tool-demo.mjs",
-    "demo:visual-context": "node demo/visual-context-demo.mjs"
+    "demo:visual-context": "node demo/visual-context-demo.mjs",
+    "demo:compaction": "node demo/compaction-demo.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.84.1",

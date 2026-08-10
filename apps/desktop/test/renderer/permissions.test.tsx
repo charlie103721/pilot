@@ -11,6 +11,7 @@ import {
 } from '../../src/ipc/channels.js';
 import { PERMISSION_FIXTURES, type PermissionFixtureName } from '../../src/ipc/schemas.js';
 import { permissionBridge, type PermissionBridgeOptions } from './permission-bridge.js';
+import { windowBridge } from './window-bridge.js';
 
 /**
  * Permission onboarding, rendered.
@@ -30,6 +31,9 @@ interface Harness {
 function harness(options: PermissionBridgeOptions = {}): Harness {
   const controller = new FakeInteractionController();
   const permissions = permissionBridge(options);
+  // The panel now also draws the window picker (PR-009), so the bridge has to
+  // serve its channels for the onboarding cases to render at all.
+  const windows = windowBridge({ controller, permissions: permissions.gate });
   const listeners = new Set<(payload: unknown) => void>();
   controller.subscribe((view) => {
     for (const listener of listeners) {
@@ -40,7 +44,8 @@ function harness(options: PermissionBridgeOptions = {}): Harness {
   const bridge: PilotBridge = {
     protocolVersion: 1,
     invoke(channelName: string, payload: unknown): Promise<BridgeResult<unknown>> {
-      const served = permissions.invoke(channelName, payload);
+      const served =
+        permissions.invoke(channelName, payload) ?? windows.invoke(channelName, payload);
       if (served !== null) {
         return served;
       }
@@ -55,7 +60,8 @@ function harness(options: PermissionBridgeOptions = {}): Harness {
       }
     },
     subscribe(channelName: string, listener: (payload: unknown) => void): () => void {
-      const served = permissions.subscribe(channelName, listener);
+      const served =
+        permissions.subscribe(channelName, listener) ?? windows.subscribe(channelName, listener);
       if (served !== null) {
         return served;
       }

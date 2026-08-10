@@ -15,6 +15,7 @@ import {
 import { createFakeScenarioDriver } from '../../src/main/scenarios.js';
 import type { ViewScenario } from '../../src/ipc/schemas.js';
 import { permissionBridge } from './permission-bridge.js';
+import { windowBridge } from './window-bridge.js';
 
 /**
  * Renderer smoke tests.
@@ -40,6 +41,9 @@ function harness(options: { permissionFixture?: 'granted' | 'denied' } = {}): Ha
   // Granted by default, so the conversation surface these tests exercise is
   // the one a fully permitted Pilot shows.
   const permissions = permissionBridge({ fixture: options.permissionFixture ?? 'granted' });
+  // The panel now also draws the window picker (PR-009); the bridge serves its
+  // channels so these smoke tests render the whole panel, not part of it.
+  const windows = windowBridge({ controller, permissions: permissions.gate });
   const listeners = new Set<(payload: unknown) => void>();
   const invocations: string[] = [];
   let pendingFailure: PilotError | null = null;
@@ -61,7 +65,8 @@ function harness(options: { permissionFixture?: 'granted' | 'denied' } = {}): Ha
         pendingFailure = null;
         return Promise.resolve({ ok: false, error: error.toJSON() });
       }
-      const served = permissions.invoke(channelName, payload);
+      const served =
+        permissions.invoke(channelName, payload) ?? windows.invoke(channelName, payload);
       if (served !== null) {
         return served;
       }
@@ -78,7 +83,8 @@ function harness(options: { permissionFixture?: 'granted' | 'denied' } = {}): Ha
       }
     },
     subscribe(channelName: string, listener: (payload: unknown) => void): () => void {
-      const served = permissions.subscribe(channelName, listener);
+      const served =
+        permissions.subscribe(channelName, listener) ?? windows.subscribe(channelName, listener);
       if (served !== null) {
         return served;
       }

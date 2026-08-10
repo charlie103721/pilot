@@ -14,6 +14,9 @@
   --warn-text: #6b4a0f;
   --ok-border: #2f8f52;
   --ok-text: #1d6b3a;
+  /* Reserved for "Pilot is capturing right now" and used nowhere else. */
+  --live-border: #b8322a;
+  --live-text: #8c231d;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -32,6 +35,8 @@
     --warn-text: #f5e2b8;
     --ok-border: #4fa96e;
     --ok-text: #a9e8bf;
+    --live-border: #e2564a;
+    --live-text: #ffc9c3;
   }
 }
 
@@ -430,6 +435,209 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .chip--checking {
+    animation: none;
+  }
+}
+
+/* --- Window picker and observation controls (PR-009) --------------------- */
+
+.observation {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 10px;
+}
+
+/* Each indicator state has its own edge colour, so which one Pilot is in is
+   legible before a single word is read. `live` is only ever capture. */
+.observation--checking {
+  border-left-color: var(--muted);
+}
+
+.observation--blocked {
+  border-left-color: var(--error-border);
+}
+
+.observation--no-window,
+.observation--stopped {
+  border-left-color: var(--border);
+}
+
+.observation--paused {
+  border-left-color: var(--warn-border);
+}
+
+.observation--observing {
+  border-left-color: var(--live-border);
+}
+
+.observation__head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.observation__indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.observation__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: transparent;
+  flex: none;
+}
+
+/* Filled and pulsing only while capture is actually running; hollow and
+   static in every other state, including paused. */
+.observation__indicator--live .observation__dot {
+  background: var(--live-border);
+  border-color: var(--live-border);
+  animation: pilot-pulse 1.6s ease-in-out infinite;
+}
+
+.observation__indicator--live .observation__label,
+.observation__indicator--live .observation__capture {
+  color: var(--live-text);
+}
+
+.observation__indicator--danger .observation__dot {
+  border-color: var(--error-border);
+}
+
+.observation__indicator--danger .observation__label {
+  color: var(--error-text);
+}
+
+.observation__indicator--warning .observation__dot {
+  border-color: var(--warn-border);
+  background: var(--warn-border);
+}
+
+.observation__indicator--warning .observation__label {
+  color: var(--warn-text);
+}
+
+.observation__capture {
+  font-weight: 400;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.observation__detail,
+.observation__empty,
+.observation__reason {
+  margin: 0;
+  color: var(--muted);
+}
+
+.observation__warning {
+  margin: 0;
+  color: var(--warn-text);
+}
+
+.observation__headline {
+  margin: 0;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.observation__list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.observation__control {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 220px;
+}
+
+.observation__reason {
+  font-size: 11px;
+}
+
+.windows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.windows:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.window {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.window--selected {
+  border-color: var(--accent);
+}
+
+.window__head {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.window__title {
+  font-weight: 600;
+}
+
+.window__app,
+.window__meta {
+  margin: 0;
+  color: var(--muted);
+}
+
+.window__actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.chip--selected {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.chip--offscreen {
+  border-color: var(--warn-border);
+  color: var(--warn-text);
+}
+
+/* The capture dot's colour and fill carry the meaning; the pulse is only
+   emphasis, so removing it loses nothing. */
+@media (prefers-reduced-motion: reduce) {
+  .observation__indicator--live .observation__dot {
     animation: none;
   }
 }

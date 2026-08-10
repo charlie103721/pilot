@@ -16,6 +16,9 @@ import {
   pilotViewStateSchema,
   setPanelVisibleSchema,
   viewScenarioSchema,
+  windowActionSchema,
+  windowDemoEventSchema,
+  windowGateStateSchema,
 } from './schemas.js';
 
 /**
@@ -125,6 +128,38 @@ export const demoPermissionFixtureChannel = defineChannel({
   response: permissionGateStateSchema,
 });
 
+/** The observable window list, read on mount and whenever the panel reopens. */
+export const windowsGetChannel = defineChannel({
+  name: 'pilot:windows/get',
+  direction: 'renderer-to-main',
+  request: emptyPayloadSchema,
+  response: windowGateStateSchema,
+});
+
+/**
+ * Every observation control the panel can operate — select, start, stop, pause,
+ * resume, re-list, dismiss the §16 prompt — as one validated discriminated
+ * union, so a new control cannot arrive without a validator behind it.
+ */
+export const windowsActChannel = defineChannel({
+  name: 'pilot:windows/act',
+  direction: 'renderer-to-main',
+  request: windowActionSchema,
+  response: windowGateStateSchema,
+});
+
+/**
+ * Causes a window-lifecycle event in the fake window adapter. Development
+ * builds only — a build on the real macOS adapter (PR-011) has no such control
+ * and the handler refuses.
+ */
+export const demoWindowEventChannel = defineChannel({
+  name: 'pilot:demo/window-event',
+  direction: 'renderer-to-main',
+  request: windowDemoEventSchema,
+  response: windowGateStateSchema,
+});
+
 export const quitChannel = defineChannel({
   name: 'pilot:app/quit',
   direction: 'renderer-to-main',
@@ -153,6 +188,17 @@ export const permissionsChangedEvent = defineEventChannel({
   payload: permissionGateStateSchema,
 });
 
+/**
+ * Pushed whenever the window list or the observation prompt changes, including
+ * changes Pilot did not cause — the user closing the window Pilot was watching.
+ * system-design §16 requires that to be visible immediately, so it is an event
+ * and not something the panel discovers by polling.
+ */
+export const windowsChangedEvent = defineEventChannel({
+  name: 'pilot:windows/changed',
+  payload: windowGateStateSchema,
+});
+
 /** Every request channel, in registration order. */
 export const REQUEST_CHANNELS = [
   appInfoChannel,
@@ -161,8 +207,11 @@ export const REQUEST_CHANNELS = [
   panelSetVisibleChannel,
   permissionsGetChannel,
   permissionsActChannel,
+  windowsGetChannel,
+  windowsActChannel,
   demoScenarioChannel,
   demoPermissionFixtureChannel,
+  demoWindowEventChannel,
   quitChannel,
 ] as const;
 
@@ -171,6 +220,7 @@ export const EVENT_CHANNELS = [
   viewStateChangedEvent,
   panelVisibilityEvent,
   permissionsChangedEvent,
+  windowsChangedEvent,
 ] as const;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the catalogue is heterogeneous by design; lookups re-validate through the channel's own schemas.
