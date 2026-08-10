@@ -102,6 +102,13 @@ export class FakeInteractionController implements InteractionController {
         this.set({ transcript: [], liveTranscript: null, lastError: null });
         return;
       }
+      case 'dismiss-error': {
+        this.set({
+          lastError: null,
+          state: this.#state.state === 'error' ? 'idle' : this.#state.state,
+        });
+        return;
+      }
       default: {
         const next = DEFAULT_STATE_BY_COMMAND[command.type];
         if (next !== undefined) {

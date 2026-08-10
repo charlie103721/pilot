@@ -66,6 +66,7 @@ export const interactionCommandSchema: z.ZodType<InteractionCommand> = z.discrim
     z.strictObject({ type: z.literal('clear-conversation') }),
     z.strictObject({ type: z.literal('pause') }),
     z.strictObject({ type: z.literal('resume') }),
+    z.strictObject({ type: z.literal('dismiss-error') }),
   ],
 );
 

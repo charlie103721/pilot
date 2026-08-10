@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { FakeInteractionController, FIXTURE_WINDOW_RETINA } from '@pilot/platform/fakes';
+import type { InteractionCommand } from '@pilot/platform';
 import { asUtteranceId } from '@pilot/shared';
 import {
   EVENT_CHANNELS,
@@ -70,21 +71,27 @@ describe('view state schema', () => {
 
 describe('interaction command schema', () => {
   it('accepts every command the platform contract declares', () => {
-    const commands = [
-      { type: 'select-window', windowId: FIXTURE_WINDOW_RETINA.windowId },
-      { type: 'set-observation-enabled', enabled: true },
-      { type: 'push-to-talk-down' },
-      { type: 'push-to-talk-up' },
-      { type: 'submit-text', text: 'hello' },
-      { type: 'look-now' },
-      { type: 'interrupt' },
-      { type: 'stop-speaking' },
-      { type: 'clear-conversation' },
-      { type: 'pause' },
-      { type: 'resume' },
-    ];
+    // Keyed by command type so TypeScript fails the build when @pilot/platform
+    // gains a command that has no sample here. The `z.ZodType<InteractionCommand>`
+    // annotation on the schema does NOT catch a missing union member — a
+    // narrower union stays assignable — which is how `dismiss-error` reached
+    // the renderer with no validator behind it.
+    const samples: Record<InteractionCommand['type'], InteractionCommand> = {
+      'select-window': { type: 'select-window', windowId: FIXTURE_WINDOW_RETINA.windowId },
+      'set-observation-enabled': { type: 'set-observation-enabled', enabled: true },
+      'push-to-talk-down': { type: 'push-to-talk-down' },
+      'push-to-talk-up': { type: 'push-to-talk-up' },
+      'submit-text': { type: 'submit-text', text: 'hello' },
+      'look-now': { type: 'look-now' },
+      interrupt: { type: 'interrupt' },
+      'stop-speaking': { type: 'stop-speaking' },
+      'clear-conversation': { type: 'clear-conversation' },
+      pause: { type: 'pause' },
+      resume: { type: 'resume' },
+      'dismiss-error': { type: 'dismiss-error' },
+    };
 
-    for (const command of commands) {
+    for (const command of Object.values(samples)) {
       expect(interactionCommandSchema.safeParse(command).success).toBe(true);
     }
   });

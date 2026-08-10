@@ -16,14 +16,14 @@ Design and delivery documents live in `docs/` and `dp/`. Start with
 ## Workspace layout
 
 ```text
-apps/desktop/         Electron shell: main process, sandboxed preload, React panel
-packages/shared/      identifiers, geometry, errors, IPC envelopes, logging, domain types
-packages/platform/    adapter interfaces, cross-block service contracts, fakes
-packages/observation/ frame ring, pointer timeline, scene revision, deterministic clear
+apps/desktop/          Electron shell: main process, sandboxed preload, React panel
+packages/shared/       identifiers, geometry, errors, IPC envelopes, logging, domain types
+packages/platform/     adapter interfaces, cross-block service contracts, fakes
+packages/observation/  frame ring, pointer timeline, scene revision, deterministic clear
+packages/interaction/  the interaction state machine, its transition table and controller
 ```
 
-Later PRs add `packages/platform-mac/`,
-`packages/agent-runtime/` and `packages/interaction/` per
+Later PRs add `packages/platform-mac/` and `packages/agent-runtime/` per
 `docs/system-design.md` §20.
 
 `pnpm install` also downloads the Electron runtime binary
@@ -91,3 +91,27 @@ machine. It prints the recorded session, the scene revision transitions, the
 buffer statistics against their bounds, the frame and pointer sample selected
 for the question moment, the explicit failures for out-of-range queries, and
 the deterministic clear with proof that nothing is retrievable afterwards.
+
+## Demo (PR-006 — interaction state machine)
+
+```sh
+pnpm demo:interaction
+```
+
+Builds the workspace and replays one deterministic conversation against the
+fake speech, agent and observation adapters:
+
+```text
+idle → observing → listening → transcribing → thinking → observing-screen →
+thinking → speaking → (interrupted) listening → transcribing → thinking →
+(interrupted) observing → idle
+```
+
+It prints the state path, everything that was spoken, the capture lifecycle,
+and every input the machine discarded — including the late results from both
+superseded runs, which is the property PR-027 later has to hold end to end.
+
+The transition table itself is checked in as
+`packages/interaction/test/transition-table.expected.ts`: one line per
+(state × input) pair, asserted against the machine by
+`packages/interaction/test/table.test.ts`.
