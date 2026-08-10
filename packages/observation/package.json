@@ -1,0 +1,29 @@
+{
+  "name": "@pilot/observation",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Observation core: bounded frame ring, pointer timeline, scene identity/revision, and deterministic clear.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "demo": "node ./dist/demo.js"
+  },
+  "dependencies": {
+    "@pilot/platform": "workspace:*",
+    "@pilot/shared": "workspace:*"
+  }
+}

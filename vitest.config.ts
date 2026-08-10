@@ -15,6 +15,10 @@ export default defineConfig({
       },
       { find: '@pilot/platform', replacement: fromRoot('./packages/platform/src/index.ts') },
       { find: '@pilot/shared', replacement: fromRoot('./packages/shared/src/index.ts') },
+      {
+        find: '@pilot/observation',
+        replacement: fromRoot('./packages/observation/src/index.ts'),
+      },
     ],
   },
   test: {

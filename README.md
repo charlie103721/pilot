@@ -16,11 +16,12 @@ Design and delivery documents live in `docs/` and `dp/`. Start with
 ## Workspace layout
 
 ```text
-packages/shared/     identifiers, geometry, errors, IPC envelopes, logging, domain types
-packages/platform/   adapter interfaces, cross-block service contracts, fakes
+packages/shared/      identifiers, geometry, errors, IPC envelopes, logging, domain types
+packages/platform/    adapter interfaces, cross-block service contracts, fakes
+packages/observation/ frame ring, pointer timeline, scene revision, deterministic clear
 ```
 
-Later PRs add `apps/desktop/`, `packages/platform-mac/`, `packages/observation/`,
+Later PRs add `apps/desktop/`, `packages/platform-mac/`,
 `packages/agent-runtime/` and `packages/interaction/` per
 `docs/system-design.md` §20.
 
@@ -49,3 +50,18 @@ pnpm build      # tsc --build over the project references
    Every block in that file binds a fake to the interface a real
    implementation will have to satisfy, so it fails to compile if a fake drifts
    from its contract.
+
+## Demo (PR-004 — observation core)
+
+Feed the recorded fixtures through the observation core and inspect the
+selected frame and the buffer statistics:
+
+```sh
+pnpm build && pnpm --filter @pilot/observation demo
+```
+
+The run is driven by a fake clock, so its output is identical on every
+machine. It prints the recorded session, the scene revision transitions, the
+buffer statistics against their bounds, the frame and pointer sample selected
+for the question moment, the explicit failures for out-of-range queries, and
+the deterministic clear with proof that nothing is retrievable afterwards.

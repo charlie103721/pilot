@@ -4,6 +4,9 @@ coverage/
 pnpm-lock.yaml
 *.tsbuildinfo
 
+# Transient worktrees of parallel agent sessions.
+.claude/
+
 # Design documents are hand-formatted; PR-001 does not reflow them.
 docs/
 dp/
