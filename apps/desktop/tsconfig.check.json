@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false
+  },
+  // Everything that runs under Node/Electron privileges, plus its tests.
+  "include": ["src/main/**/*.ts", "src/preload/**/*.ts", "src/ipc/**/*.ts", "test/main/**/*.ts"]
+}

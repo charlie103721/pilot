@@ -16,14 +16,20 @@ Design and delivery documents live in `docs/` and `dp/`. Start with
 ## Workspace layout
 
 ```text
+apps/desktop/         Electron shell: main process, sandboxed preload, React panel
 packages/shared/      identifiers, geometry, errors, IPC envelopes, logging, domain types
 packages/platform/    adapter interfaces, cross-block service contracts, fakes
 packages/observation/ frame ring, pointer timeline, scene revision, deterministic clear
 ```
 
-Later PRs add `apps/desktop/`, `packages/platform-mac/`,
+Later PRs add `packages/platform-mac/`,
 `packages/agent-runtime/` and `packages/interaction/` per
 `docs/system-design.md` §20.
+
+`pnpm install` also downloads the Electron runtime binary
+(`apps/desktop/scripts/ensure-electron.js`). That download is optional: lint,
+typecheck, test and build all pass without it, and only launching the app needs
+it. Set `PILOT_SKIP_ELECTRON_DOWNLOAD=1` to skip it.
 
 ## Verification
 
@@ -50,6 +56,26 @@ pnpm build      # tsc --build over the project references
    Every block in that file binds a fake to the interface a real
    implementation will have to satisfy, so it fails to compile if a fake drifts
    from its contract.
+
+## Demo (PR-002 — desktop shell)
+
+Build first (`pnpm build`), then:
+
+```sh
+pnpm dev                                    # launch the shell
+pnpm --filter @pilot/desktop run smoke      # headless launch check (Linux, Xvfb)
+```
+
+`pnpm dev` puts Pilot in the menu bar. Use the menu bar item to show and hide
+the floating panel, or the panel's own **Fake state** row to render each
+interaction state — `idle`, `listening`, `thinking`, `speaking`, `observing`
+and `error`. Everything is driven by the PR-001 fake interaction controller;
+there is no real platform, agent or voice code yet.
+
+On Linux the shell runs headlessly under `xvfb-run`, which is what the `smoke`
+script does: it starts the real Electron binary and waits for the renderer to
+complete a validated IPC round trip. There is no visible menu bar under Xvfb,
+so the *visual* part of the demo needs a desktop session — the user's Mac.
 
 ## Demo (PR-004 — observation core)
 
