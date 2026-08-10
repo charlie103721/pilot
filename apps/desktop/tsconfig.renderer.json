@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+
+    // The renderer is the one place in the workspace that runs in a browser.
+    // It gets DOM and JSX; nothing else in the repo does. `node` types stay
+    // because `@pilot/shared` is shared with the main process.
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "jsx": "react-jsx"
+  },
+  "include": [
+    "src/renderer/**/*.ts",
+    "src/renderer/**/*.tsx",
+    "src/shims/**/*.ts",
+    "test/renderer/**/*.tsx"
+  ]
+}

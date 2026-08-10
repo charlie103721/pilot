@@ -27,9 +27,16 @@ export default tseslint.config(
   },
   {
     // Fakes and tests may use non-null assertions on fixture data they own.
-    files: ['**/test/**/*.ts', '**/src/fakes/**/*.ts'],
+    files: ['**/test/**/*.ts', '**/test/**/*.tsx', '**/src/fakes/**/*.ts'],
     rules: {
       '@typescript-eslint/no-non-null-assertion': 'off',
+    },
+  },
+  {
+    // The Electron renderer and the sandboxed preload run in Chromium, not Node.
+    files: ['apps/*/src/renderer/**/*.{ts,tsx}', 'apps/*/src/shims/**/*.ts'],
+    languageOptions: {
+      globals: { ...globals.browser },
     },
   },
   prettier,

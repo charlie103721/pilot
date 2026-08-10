@@ -1,0 +1,33 @@
+{
+  "name": "@pilot/desktop",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Electron desktop shell: lifecycle, single-instance lock, menu bar item, floating panel, and the validated renderer IPC surface.",
+  "main": "./dist/main/index.js",
+  "scripts": {
+    "postinstall": "node scripts/ensure-electron.js",
+    "typecheck": "tsc -p tsconfig.check.json && tsc -p tsconfig.renderer.json",
+    "build:bundle": "node scripts/bundle.js",
+    "start": "electron .",
+    "smoke": "xvfb-run -a node scripts/smoke.js"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@pilot/platform": "workspace:*",
+    "@pilot/shared": "workspace:*",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.3.2",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.4",
+    "electron": "^43.3.0",
+    "esbuild": "^0.28.2",
+    "jsdom": "^30.0.1"
+  }
+}
