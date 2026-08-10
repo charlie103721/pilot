@@ -190,6 +190,27 @@ buffer statistics against their bounds, the frame and pointer sample selected
 for the question moment, the explicit failures for out-of-range queries, and
 the deterministic clear with proof that nothing is retrievable afterwards.
 
+## Demo (PR-016 — scene and pointer timeline)
+
+Replay the recorded events through the PR-001 platform fakes and inspect the
+scene/revision transitions:
+
+```sh
+pnpm build && pnpm --filter @pilot/observation demo:scene
+```
+
+Frames arrive through `ObservationAdapter.subscribe`, pointer positions are
+pulled from `AccessibilityAdapter`, and window lifecycle events come from
+`WindowAdapter.subscribe`; a fake clock drives the whole run, so the output is
+identical on every machine. It prints the content-fingerprint decision for
+every frame (including the one scripted change the rule is documented as
+unable to see), the scene revision ladder, the question anchor at the utterance
+end with its envelope fields, the lock/unlock/resume and window-close
+lifecycle, and the scene lineage — with every stale scene reference refused.
+
+The fingerprint rule and its failure modes are documented at the top of
+`packages/observation/src/content-fingerprint.ts`.
+
 ## Demo (PR-006 — interaction state machine)
 
 ```sh

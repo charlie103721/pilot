@@ -3,9 +3,11 @@ import {
   PilotError,
   type CapturedFrame,
   type FrameId,
+  type SceneId,
   type ScreenStatus,
 } from '@pilot/shared';
 import { toTimestamp, type Clock } from './clock.js';
+import { matchesSceneScope, type SceneScope } from './scene-lineage.js';
 
 /**
  * Bounded, memory-only frame ring (system-design §6, §13, §17).
@@ -46,6 +48,12 @@ export interface FrameRecord {
    * (`ObservationCore`). `null` when the producer did not supply one.
    */
   readonly sceneRevision: number | null;
+  /**
+   * Scene the frame was captured for, stamped by the owner. Selection filters
+   * on it so a frame from a previous window selection can never be returned
+   * (system-design §10 step 3).
+   */
+  readonly sceneId: SceneId | null;
 }
 
 export type FrameRejectionReason =
@@ -97,6 +105,14 @@ export interface FrameSelectionQuery {
    * whatever the ring holds.
    */
   readonly maxSkewMs?: number;
+  /**
+   * Restricts candidates to one scene. `ObservationCore` defaults it to the
+   * current scene, so a caller holding a moment from a previous window
+   * selection cannot be handed the new window's pixels. `'any'` opts out.
+   */
+  readonly scene?: SceneScope;
+  /** Restricts candidates to frames captured at or after a scene revision. */
+  readonly minSceneRevision?: number;
 }
 
 export type FrameSelectionFailure =
@@ -105,7 +121,9 @@ export type FrameSelectionFailure =
   /** Frames exist, but the closest is further away than `maxSkewMs`. */
   | 'out-of-range'
   /** Frames exist, but none on the requested side of the moment. */
-  | 'no-frame-in-direction';
+  | 'no-frame-in-direction'
+  /** Frames exist, but none belong to the requested scene or revision. */
+  | 'scene-mismatch';
 
 /**
  * Result of a nearest-frame lookup. Never `undefined`: callers switch on
@@ -163,6 +181,7 @@ export interface FrameRingOptions extends FrameRingConfig {
 
 export interface FramePushOptions {
   readonly sceneRevision?: number;
+  readonly sceneId?: SceneId;
 }
 
 function assertPositive(value: number, what: string): number {
@@ -255,6 +274,7 @@ export class FrameRing {
       byteLength,
       receivedAt: now,
       sceneRevision: options.sceneRevision ?? null,
+      sceneId: options.sceneId ?? null,
     };
     this.#insert(record);
     this.#admitted += 1;
@@ -276,6 +296,10 @@ export class FrameRing {
    * Ties (a frame exactly as far before the moment as another is after) resolve
    * to the **earlier** frame: what was on screen when the user spoke is a
    * safer anchor than what appeared afterwards.
+   *
+   * The scene filter is applied before the direction filter, so a query scoped
+   * to a scene the ring holds nothing for reports `scene-mismatch` rather than
+   * a misleading `no-frame-in-direction`.
    */
   select(requestedAt: number, query: FrameSelectionQuery = {}): FrameSelection {
     this.#pruneByAge(this.#clock.now());
@@ -284,8 +308,13 @@ export class FrameRing {
 
     let best: FrameRecord | undefined;
     let bestDistance = Number.POSITIVE_INFINITY;
+    let inScene = 0;
 
     for (const record of this.#records) {
+      if (!matchesSceneScope(record, query)) {
+        continue;
+      }
+      inScene += 1;
       if (direction === 'at-or-before' && record.capturedAt > requestedAt) {
         continue;
       }
@@ -303,7 +332,12 @@ export class FrameRing {
     if (best === undefined) {
       return {
         found: false,
-        reason: this.#records.length === 0 ? 'empty' : 'no-frame-in-direction',
+        reason:
+          this.#records.length === 0
+            ? 'empty'
+            : inScene === 0
+              ? 'scene-mismatch'
+              : 'no-frame-in-direction',
         nearestDistanceMs: null,
         frameCount: this.#records.length,
       };
