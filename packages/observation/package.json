@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Observation core: bounded frame ring, pointer timeline, scene identity/revision, and deterministic clear.",
+  "description": "Observation core and platform event ingest: bounded frame ring, pointer timeline, scene identity/revision/lineage, content fingerprint, question anchoring, and deterministic clear.",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -20,7 +20,8 @@
     "node": ">=24"
   },
   "scripts": {
-    "demo": "node ./dist/demo.js"
+    "demo": "node ./dist/demo.js",
+    "demo:scene": "node ./dist/scene-demo-cli.js"
   },
   "dependencies": {
     "@pilot/platform": "workspace:*",

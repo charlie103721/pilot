@@ -142,6 +142,25 @@ export class FakeWindowAdapter implements WindowAdapter {
     return this.#geometry.get(windowId) ?? null;
   }
 
+  /**
+   * Test control: replace a window's title, bounds or scale and emit
+   * `window-changed`. Adds the window when the list does not hold it yet.
+   */
+  changeWindow(window: ObservedWindow): void {
+    const index = this.#windows.findIndex((entry) => entry.windowId === window.windowId);
+    if (index >= 0) {
+      this.#windows[index] = window;
+    } else {
+      this.#windows.push(window);
+    }
+    this.#emitter.emit({ type: 'window-changed', window });
+  }
+
+  /** Test control: emit `window-list-changed` without changing the list. */
+  notifyWindowListChanged(): void {
+    this.#emitter.emit({ type: 'window-list-changed' });
+  }
+
   /** Test control: remove a window and emit `window-closed`. */
   closeWindow(windowId: WindowId): void {
     this.#windows = this.#windows.filter((window) => window.windowId !== windowId);
