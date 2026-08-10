@@ -186,6 +186,11 @@ include them:
     the `undefined`-payload trap and the SQLite writer lease.
 11. **Anything needing the user goes in `docs/handoff.md`**, not scattered
     through PR reports. Keep it current as lanes land.
+12. **`docs/handoff.md` is updated and merged with every PR** (user decision,
+    2026-08-10). Before landing a PR, ask what it changed for the user —
+    a new blocker, a decision taken on their behalf, a gap accepted, a risk
+    surfaced — and write it into `docs/handoff.md` in the *same* merge. A
+    finding that lives only in a PR description or a chat message is lost.
 
 ## 5a. Pending Mac batch
 

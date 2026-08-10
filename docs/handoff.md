@@ -3,6 +3,10 @@
 Status: Live document
 Last updated: 2026-08-10
 
+**This file is updated and merged with every PR** (runbook amendment 12). If a
+PR raises something the user must decide, do or verify, it lands here in the
+same merge — never only in a PR description or a chat message.
+
 This is the single place to look for **things only the user can do**, and for
 **decisions taken on the user's behalf** that they may want to reverse. Anything
 that could be decided from the docs, the code or a spike was decided and
@@ -111,8 +115,25 @@ reversible; raise any that look wrong.
 | **`docs/system-design.md` corrected in place** | User-confirmed. Three claims were disproved by the spike; leaving them in a doc marked authoritative would mislead every future session. |
 | **Agent worktrees excluded from lint/format** | `eslint .` was descending into other agents' half-written worktrees, making the verification gate nondeterministic — it failed and then passed with no code change. |
 | **`dismiss-error` added to the desktop IPC validator** | The contract and the state machine had it; the renderer's validator did not, so the `error` state had no exit from the UI. Typecheck did not catch it because a narrower zod union stays assignable. |
+| **The capability gate ANDs profile and probe in both directions** (PR-020) | A first draft let the Pi probe *override* a profile's `supportsVision: false`. That is backwards: setting it false on a capable model is how an operator selects the degraded accessibility-only mode of system-design §12, so overriding it would send screen images to a model the user asked not to show them to. The reverse case (profile claims vision, Pi disagrees) reports a distinct `profile-model-mismatch` so a stale profile stays diagnosable. |
+| **`QuestionEnvelope.pointer` carries a sentinel, not `null`** (PR-024) | system-design §8 types it as a required numeric pair, so "no pointer recorded" is `UNKNOWN_NORMALIZED_POINT` (`-1,-1`, outside `[0,1]`) plus `grounding: 'pointer-unknown'`, read via `envelopePointerKnown()`. Nullable is the cleaner shape but needs a coordinated change across two readers. **Say if you would rather have `null`** — it is a small, contained change now and a wider one later. |
+| **`QuestionAnchorSource` declared on the interaction side** (PR-024) | No contract exposed scene plus pointer-by-instant/interval to that lane, and editing `packages/observation` mid-flight would have collided with PR-016. It mirrors `PointerTimeline` exactly, so PR-031's adapter is the identity function. Moving it onto `ScreenContextService` later is mechanical. |
 
 ---
+
+## 4a. Progress
+
+| Phase | State |
+| --- | --- |
+| Phase 1 — foundations (PR-001…007) | **Complete.** All seven merged. |
+| Phase 2 — capability lanes | In progress: PR-020, PR-024 merged; PR-016, PR-008, PR-011, PR-021, PR-025 in flight. |
+| Phase 3 — integration (028…036) | Not started. Blocked on Phase 2; most steps also need the Mac (§1) and a signed-in model (§2). |
+| Phase 4 — providers (037…039) | Not started. PR-037 (Codex) is the one the user's decision selects. |
+| Phase 5 — hardening and release (040…044) | Not started. |
+
+Verification standard on every merge: `pnpm lint`, `typecheck`, `test`, `build`
+re-run by the orchestrator — never taken on a subagent's word — plus each PR's
+demo executed against the merged tree.
 
 ## 5. Risks worth watching
 
