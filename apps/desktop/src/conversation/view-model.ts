@@ -2,6 +2,10 @@ import type { InteractionState, SerializedPilotError, UtteranceId } from '@pilot
 import type { InteractionCommand, PilotViewState } from '@pilot/platform';
 import { isTextFallbackAvailable, lookupRule } from '@pilot/interaction';
 import { MAX_SUBMITTED_TEXT_LENGTH, type ConversationGateState } from '../ipc/schemas.js';
+import {
+  readObservationFailure,
+  type ObservationFailureView,
+} from '../observation/failure-view.js';
 import type { ObservationView } from '../observation/view-model.js';
 
 /**
@@ -398,6 +402,12 @@ export interface ConversationView {
   readonly controls: readonly ConversationControlView[];
   readonly disclosure: VoiceDisclosureView | null;
   readonly lastError: SerializedPilotError | null;
+  /**
+   * Set when {@link lastError} is a refused observation (PR-030), whether the
+   * model asked for it or the user pressed "Look now". Null for every other
+   * failure, so the panel never claims a broken run was a screen problem.
+   */
+  readonly observationFailure: ObservationFailureView | null;
   /** True while the developer diagnostics surface is open. */
   readonly diagnosticsVisible: boolean;
 }
@@ -474,6 +484,7 @@ export function buildConversationView(input: ConversationViewInput): Conversatio
     }),
     disclosure: buildDisclosure(input),
     lastError: input.view.lastError,
+    observationFailure: readObservationFailure(input.view.lastError),
     diagnosticsVisible: input.gate.diagnosticsVisible,
   };
 }

@@ -394,6 +394,16 @@ function buildNotice(notice: ObservationNotice | null): ObservationNoticeView | 
 
 export type WindowListStatus = 'checking' | 'empty' | 'listed';
 
+/**
+ * Shown while an observation is in flight (PR-030).
+ *
+ * Present tense and specific about the scope: §14's promise is that Pilot looks
+ * at the selected window and nothing else, and the moment to repeat it is the
+ * moment it is actually happening.
+ */
+export const OBSERVATION_LOOKING_NOTE =
+  'Pilot is reading an image of this window right now — this window only.';
+
 export interface ObservationViewInput {
   readonly gate: WindowGateState;
   readonly view: PilotViewState;
@@ -410,6 +420,25 @@ export interface ObservationView {
    * Every other state — paused, blocked, stopped, nothing selected — is false.
    */
   readonly capturing: boolean;
+  /**
+   * The *second* privacy fact (PR-030): a frame is being read **right now**.
+   *
+   * Not a re-derivation of {@link capturing} and not a seventh indicator state:
+   * capture is a stream Pilot holds open for as long as a window is selected,
+   * and looking is the moment an image of that window is turned into something
+   * a model can read. system-design §14 asks the user be able to see the
+   * second, and until PR-030 nothing in the observation surface showed it —
+   * `observe_screen` reached a fake, so there was nothing to show.
+   *
+   * True in exactly one interaction state, `observing-screen`, which is where
+   * the transition table puts both the model's tool call (`tool-started`) and
+   * the user's "Look now". The conversation panel says the same thing in its
+   * own words through `INTERACTION_STATE_PRESENTATION`; this is the observation
+   * surface's copy of the fact, next to the window it is about.
+   */
+  readonly looking: boolean;
+  /** One sentence while {@link looking}, else null. */
+  readonly lookingNote: string | null;
   /** Whether observation may be offered at all (PR-008's rule, unmodified). */
   readonly allowed: boolean;
   /** Accessibility refused leaves Pilot working with weaker grounding (§16). */
@@ -440,6 +469,10 @@ export function buildObservationView(input: ObservationViewInput): ObservationVi
     input.gate.listedAt === null ? 'checking' : rows.length === 0 ? 'empty' : 'listed';
   const primary = primaryControl(indicator);
   const reduced = input.permissions.groundingDisclosure !== null;
+  // Read off the machine, which is the only thing that knows an observation is
+  // in flight — and read as a state name, never as "capture is on and something
+  // is happening", which would be a second, disagreeing answer.
+  const looking = input.view.state === 'observing-screen';
 
   const controls = OBSERVATION_CONTROLS.map((id): ObservationControlView => {
     const reason = controlReason(id, input, allowed, rows.length > 0);
@@ -461,6 +494,8 @@ export function buildObservationView(input: ObservationViewInput): ObservationVi
         : copy.detail,
     tone: copy.tone,
     capturing: indicator === 'observing',
+    looking,
+    lookingNote: looking ? OBSERVATION_LOOKING_NOTE : null,
     allowed,
     grounding: reduced ? 'reduced' : 'full',
     groundingNote: input.permissions.groundingDisclosure,

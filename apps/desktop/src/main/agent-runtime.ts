@@ -33,8 +33,14 @@ import { renderAnchoredQuestionEnvelope } from '@pilot/interaction';
  *
  * This is the one fake boundary PR-029 replaces: `FakeAgentSession` goes, and a
  * real `PiAgentSession` — real Pi `Agent`, real capability gate, real streaming
- * — takes its place. Observation is deliberately still mocked; PR-028 and
- * PR-030 own that half.
+ * — takes its place.
+ *
+ * PR-030 finished the other half: {@link AgentRuntimeOptions.screenContext} is
+ * supplied by the composition root and is PR-019's real
+ * `PilotScreenContextService`, so `observe_screen` looks at the window the user
+ * selected instead of at a fixture. Nothing else on this side changed — the
+ * tool, the notebook, the envelope renderer and the gate are PR-021's and
+ * PR-029's, untouched.
  *
  * Three wirings here are not decoration. Each one is a recorded cross-lane
  * follow-up (`docs/runbook.md` §8) that is silently wrong if it is skipped:
@@ -76,9 +82,10 @@ export interface AgentRuntime {
   /** Wired into both halves of the visual-context contract. See above. */
   readonly notebook: ObservationNotebook;
   /**
-   * What `observe_screen` reaches. STILL MOCKED unless a caller supplies one:
-   * PR-028 brings a real `ScreenContextService` and PR-030 passes it here, and
-   * that is the whole change on this side.
+   * What `observe_screen` reaches. `main/index.ts` passes PR-019's real
+   * `PilotScreenContextService` (PR-030); it falls back to
+   * `FakeScreenContextService` only for a caller that supplies nothing, which
+   * is the scripted desktop suites.
    */
   readonly screenContext: ScreenContextService;
   dispose(): Promise<void>;
@@ -87,7 +94,11 @@ export interface AgentRuntime {
 export interface AgentRuntimeOptions {
   readonly conversationId: ConversationId;
   readonly source: ModelSource;
-  /** Defaults to `FakeScreenContextService`. PR-030 passes the real one. */
+  /**
+   * The real service in the app (PR-030: `observation.screenContext`).
+   * Defaults to `FakeScreenContextService` for callers that have no
+   * observation runtime to hand.
+   */
   readonly screenContext?: ScreenContextService;
   readonly logger?: Logger;
 }

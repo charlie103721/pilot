@@ -19,6 +19,11 @@ import type { WindowsShell } from './use-windows.js';
  * class, a different label and a `data-capturing` flag that is true in exactly
  * one of them — and that no control is ever disabled without its reason being
  * on screen next to it.
+ *
+ * PR-030 added one more fact to the same indicator: `data-looking`, true while
+ * an observation is actually in flight. It is a different question from
+ * `data-capturing` and both are shown, because "Pilot may watch this window"
+ * and "Pilot is reading this window right now" are different promises.
  */
 
 const DEMO_LABELS: Readonly<Record<WindowDemoEvent, string>> = {
@@ -44,6 +49,16 @@ function Indicator({ view }: { view: ObservationView }) {
       </span>
       <span className="observation__capture" data-testid="observation-capture-state">
         {view.capturing ? 'capturing now' : 'not capturing'}
+      </span>
+      {/* PR-030: capture is a stream; looking is the moment an image of this
+          window is read. §14 asks the user be able to see the second one, and
+          the sentence appears only while it is true. */}
+      <span
+        className="observation__looking"
+        data-testid="observation-looking"
+        data-looking={view.looking ? 'true' : 'false'}
+      >
+        {view.lookingNote ?? ''}
       </span>
     </div>
   );

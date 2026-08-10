@@ -460,5 +460,72 @@ describe('fixture replay', () => {
 
     await waitFor(() => expect(screen.getByTestId('conversation-error')).toBeTruthy());
     expect(screen.getByTestId('conversation-error-code').textContent).toBe('provider-unavailable');
+    // PR-030: a failure that has nothing to do with the screen must not be
+    // dressed up as one.
+    expect(screen.getByTestId('conversation-error').getAttribute('data-observation-failure')).toBe(
+      'none',
+    );
+    expect(screen.queryByTestId('conversation-observation-hint')).toBeNull();
+  });
+
+  // PR-030 --------------------------------------------------------------------
+
+  it('shows a refused look as a sentence, with its kind and whether to retry', async () => {
+    const test = await renderPanel();
+    test.controller.fail(
+      new PilotError('permission-denied', 'Screen policy [screen-recording-permission]: denied', {
+        userMessage: 'Pilot needs Screen Recording permission to look at your screen.',
+        retryable: false,
+        details: {
+          tool: 'observe_screen',
+          failure: 'permission-denied',
+          view: 'window',
+          moment: 'current',
+          policyRule: 'screen-recording-permission',
+        },
+      }).toJSON(),
+    );
+
+    await waitFor(() => expect(screen.getByTestId('conversation-error')).toBeTruthy());
+    const banner = screen.getByTestId('conversation-error');
+    expect(banner.textContent).toContain(
+      'Pilot needs Screen Recording permission to look at your screen.',
+    );
+    // The technical message is never what the user reads.
+    expect(banner.textContent).not.toContain('Screen policy [');
+    expect(banner.getAttribute('data-observation-failure')).toBe('permission-denied');
+    expect(screen.getByTestId('conversation-observation-hint').textContent).toBe(
+      'Looking again will not help until this is fixed.',
+    );
+    expect(screen.getByTestId('conversation-observation-failure').textContent).toBe(
+      'permission-denied · screen-recording-permission',
+    );
+    // system-design §16: the way out is still there.
+    expect(screen.getByTestId('composer-input').hasAttribute('disabled')).toBe(false);
+  });
+
+  it('says that Pilot is looking at the window, while it is looking', async () => {
+    const test = await renderPanel();
+    test.controller.set({
+      selectedWindow: FIXTURE_WINDOW_RETINA,
+      observationEnabled: true,
+      state: 'observing',
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId('observation-looking').getAttribute('data-looking')).toBe('false'),
+    );
+    expect(screen.getByTestId('observation-looking').textContent).toBe('');
+
+    test.controller.set({ state: 'observing-screen' });
+    await waitFor(() =>
+      expect(screen.getByTestId('observation-looking').getAttribute('data-looking')).toBe('true'),
+    );
+    expect(screen.getByTestId('observation-looking').textContent).toContain(
+      'reading an image of this window right now',
+    );
+    // Capture and looking are two facts, and both are on screen.
+    expect(screen.getByTestId('observation-indicator').getAttribute('data-capturing')).toBe('true');
+    expect(screen.getByTestId('conversation').getAttribute('data-activity')).toBe('looking');
   });
 });

@@ -5,6 +5,7 @@ import {
   type Logger,
   type ObservationId,
   type ObservedWindow,
+  type ObserveScreenRequest,
   type PermissionAttribution,
   type PermissionSnapshot,
   type PermissionState,
@@ -40,6 +41,7 @@ import {
 import { Poller } from '@pilot/platform-mac';
 import type { ObservationControlPort } from '@pilot/interaction';
 import type { TelemetryMetric } from '../ipc/schemas.js';
+import { toObservationFailureError } from './observation-failure.js';
 import type { WindowFeedEvent } from './window-gate.js';
 
 /**
@@ -99,6 +101,13 @@ import type { WindowFeedEvent } from './window-gate.js';
  * reading, and the reason "Look now" asks for `moment: 'current'` rather than
  * pretending to anchor on a question nobody asked.
  */
+
+/**
+ * What "Look now" asks for (runbook amendment 1, PR-028's choice, PR-030's
+ * wiring). Exported so the demo and the tests name the same request the app
+ * makes rather than a plausible-looking copy of it.
+ */
+export const LOOK_NOW_REQUEST: ObserveScreenRequest = { view: 'window', moment: 'current' };
 
 /** What the runtime reports to the diagnostics ring. Numbers only, by shape. */
 export interface ObservationTelemetrySink {
@@ -498,7 +507,8 @@ export function createObservationRuntime(options: ObservationRuntimeOptions): Ob
     async observe(observationId: ObservationId, signal?: AbortSignal): Promise<void> {
       // This is Pilot's *own* observation — "Look now" (runbook amendment 1,
       // wired by PR-030). The model's `observe_screen` chooses its own view and
-      // moment and reaches the same facade through PR-030.
+      // moment and reaches the same facade — the same instance, since PR-030
+      // passes it to `createAgentRuntime({ screenContext })`.
       //
       // `moment: 'current'` is the honest reading of "look now": a fresh
       // capture, not whichever frame happens to be in the ring. `view: 'window'`
@@ -507,14 +517,26 @@ export function createObservationRuntime(options: ObservationRuntimeOptions): Ob
       // crop around a pointer nobody pointed with would be a picture of the
       // wrong thing. It also means an unchanged frame is passed through
       // unencoded (PR-018), so the ordinary look costs no re-encode at all.
-      const result = await screenContext.observeDetailed(
-        { view: 'window', moment: 'current' },
-        signal,
-      );
-      logger.debug('observation completed', {
-        observationId,
-        producedObservationId: result.observation.observationId,
-      });
+      try {
+        const result = await screenContext.observeDetailed(LOOK_NOW_REQUEST, signal);
+        logger.debug('observation completed', {
+          observationId,
+          producedObservationId: result.observation.observationId,
+        });
+      } catch (cause) {
+        // PR-030: a refusal the *user* triggered is given the same shape a
+        // refusal the *model* triggered has, so the panel has one thing to
+        // render and the user reads a sentence rather than an adapter's log
+        // line. The controller turns this throw into the machine's `failure`
+        // input, which is what puts it on `lastError`.
+        const error = toObservationFailureError(cause, LOOK_NOW_REQUEST);
+        logger.warn('look now refused', {
+          observationId,
+          code: error.code,
+          failure: error.details?.['failure'],
+        });
+        throw error;
+      }
     },
   };
 

@@ -16,8 +16,9 @@ import { createPlatformRuntime, type PlatformRuntime } from '../main/platform-ru
 import { PermissionGate } from '../main/permission-gate.js';
 import { createSettingsShortcut } from '../main/settings-shortcut.js';
 import { WindowGate } from '../main/window-gate.js';
-import { createDevelopmentModelSource } from '@pilot/agent';
+import { createDevelopmentModelSource, type ModelSource } from '@pilot/agent';
 import { asConversationId } from '@pilot/shared';
+import type { AgentRuntime } from '../main/agent-runtime.js';
 
 /**
  * The shell's observation path, assembled exactly as `main/index.ts` assembles
@@ -105,6 +106,12 @@ export interface ObservationRigOptions {
   readonly logger?: Logger;
   /** Long by default: the rig drives every poll itself, so nothing races. */
   readonly pointerSampleIntervalMs?: number;
+  /**
+   * The model (PR-030). Defaults to {@link createDevelopmentModelSource}, which
+   * answers every question the same way and never calls a tool. Pass
+   * `createScriptedModelSource` to make the model call `observe_screen`.
+   */
+  readonly modelSource?: ModelSource;
 }
 
 export interface ObservationRig {
@@ -115,6 +122,11 @@ export interface ObservationRig {
   readonly windows: WindowGate;
   readonly conversation: ConversationGate;
   readonly transport: NativeHelperTransport;
+  /**
+   * The agent, holding the *same* `PilotScreenContextService` the port drives
+   * (PR-030). `agent.screenContext === observation.screenContext`.
+   */
+  readonly agent: AgentRuntime;
   /** The first selectable window the platform reports. */
   firstWindow(): Promise<ObservedWindow>;
   dispose(): Promise<void>;
@@ -123,11 +135,12 @@ export interface ObservationRig {
 /**
  * Builds the rig and starts the helper.
  *
- * The three wirings that make the difference between a working observation path
+ * The four wirings that make the difference between a working observation path
  * and one that looks broken are all here, and each is a recorded follow-up:
  * permission states plus the attribution verdict into the facade (16), the
- * retention occasion onto every clear (17), and the real port into
- * `createInteractionRuntime` (23).
+ * retention occasion onto every clear (17), the real port into
+ * `createInteractionRuntime` (23), and — PR-030, the other half of 23 — the
+ * real `ScreenContextService` into `createAgentRuntime`.
  */
 export async function createObservationRig(
   options: ObservationRigOptions = {},
@@ -175,9 +188,13 @@ export async function createObservationRig(
   });
 
   const conversationId = asConversationId('conv-observe-demo');
+  // PR-030's one-argument change, in the rig exactly as in `main/index.ts`:
+  // `observe_screen` reaches the same `PilotScreenContextService` instance the
+  // interaction table's "Look now" drives.
   const agent = createAgentRuntime({
     conversationId,
-    source: createDevelopmentModelSource(),
+    source: options.modelSource ?? createDevelopmentModelSource(),
+    screenContext: observation.screenContext,
     logger,
   });
   const { controller } = createInteractionRuntime({
@@ -244,6 +261,7 @@ export async function createObservationRig(
     windows,
     conversation,
     transport,
+    agent,
     async firstWindow(): Promise<ObservedWindow> {
       const state = await windows.refresh();
       const window = state.windows[0];
