@@ -14,7 +14,6 @@ import {
   conversationGetChannel,
   demoConversationChannel,
   demoPermissionFixtureChannel,
-  demoScenarioChannel,
   interactionDispatchChannel,
   panelSetVisibleChannel,
   demoWindowEventChannel,
@@ -31,12 +30,11 @@ import {
 import { IpcRouter } from './ipc-router.js';
 import { PanelController, type PanelWindowHost } from './panel-window.js';
 import { TrayController, type TrayAvailability, type TrayHost } from './tray.js';
-import type { ScenarioDriver } from './scenarios.js';
 import type { ConversationGate } from './conversation-gate.js';
-import type { ConversationFixtureDriver } from './conversation-fixtures.js';
+import type { LiveConversationDriver } from './conversation-driver.js';
 import type { PermissionGate } from './permission-gate.js';
 import type { WindowGate } from './window-gate.js';
-import type { WindowDemoDriver } from './window-feed.js';
+import type { WindowDemoDriver } from './window-demo.js';
 
 /**
  * Composition root for the desktop shell.
@@ -65,12 +63,13 @@ export interface DesktopShellOptions {
   readonly conversation: ConversationGate;
   readonly appInfo: DesktopShellAppInfo;
   readonly quit: () => void;
-  /** Present only while the shell runs on fakes. Omit once PR-029 lands. */
-  readonly scenarioDriver?: ScenarioDriver;
   /** Present only while the shell runs on the fake window adapter (PR-009). */
   readonly windowDemoDriver?: WindowDemoDriver;
-  /** Present only while the shell runs on the fake controller (PR-010). */
-  readonly conversationFixtureDriver?: ConversationFixtureDriver;
+  /**
+   * The panel's "Replay" bar. Since PR-029 it drives real commands into the
+   * real controller, so it is a development affordance rather than a fake.
+   */
+  readonly conversationFixtureDriver?: LiveConversationDriver;
   readonly ids?: IdFactory;
   readonly now?: () => number;
   readonly logger?: Logger;
@@ -270,7 +269,7 @@ export class DesktopShell {
 
     this.router.register(conversationActChannel, (action) => this.conversation.act(action));
 
-    this.router.register(demoConversationChannel, (fixture) => {
+    this.router.register(demoConversationChannel, async (fixture) => {
       const driver = this.#options.conversationFixtureDriver;
       if (driver === undefined) {
         throw new PilotError('unsupported-capability', 'This build has no conversation fixtures', {
@@ -278,7 +277,9 @@ export class DesktopShell {
           details: { fixture },
         });
       }
-      driver(fixture);
+      // Awaited: since PR-029 a replay is a real conversation, so the response
+      // must not be older than the view states the panel has already been sent.
+      await driver(fixture);
       return this.conversation.noteFixture(fixture);
     });
 
@@ -294,17 +295,6 @@ export class DesktopShell {
       // Re-listed before answering: the response must not be older than the
       // event the panel has already been sent, or it would overwrite it.
       return this.windows.refresh();
-    });
-
-    this.router.register(demoScenarioChannel, (scenario) => {
-      const driver = this.#options.scenarioDriver;
-      if (driver === undefined) {
-        throw new PilotError('unsupported-capability', 'This build has no fake scenario driver', {
-          userMessage: 'Demo states are only available in development builds.',
-          details: { scenario },
-        });
-      }
-      return driver(scenario);
     });
 
     this.router.register(quitChannel, () => {

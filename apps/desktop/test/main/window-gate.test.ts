@@ -8,7 +8,6 @@ import {
   FIXTURE_WINDOW_SECONDARY,
 } from '@pilot/platform/fakes';
 import type { WindowGateState } from '../../src/ipc/schemas.js';
-import { windowClosedError } from '../../src/main/window-feed.js';
 import { permissionHarness, windowHarness, type WindowHarness } from './support.js';
 import type { PermissionHarness } from './support.js';
 
@@ -102,7 +101,7 @@ describe('selection', () => {
   it('selects a listed window and tells the controller', async () => {
     await test.gate.act({ type: 'select', windowId: FIXTURE_WINDOW_RETINA.windowId });
 
-    expect(test.controller.commands).toEqual([
+    expect(test.commands).toEqual([
       { type: 'select-window', windowId: FIXTURE_WINDOW_RETINA.windowId },
     ]);
     expect(test.controller.snapshot().selectedWindow).toEqual(FIXTURE_WINDOW_RETINA);
@@ -120,7 +119,7 @@ describe('selection', () => {
 
     expect(state.lastError?.code).toBe('window-not-found');
     expect(state.lastError?.userMessage).toContain('no longer open');
-    expect(test.controller.commands).toEqual([]);
+    expect(test.commands).toEqual([]);
   });
 
   it('refuses a window that is not on screen', async () => {
@@ -204,7 +203,7 @@ describe('permissions gate the main process too, not only the panel', () => {
       windowId: FIXTURE_WINDOW_RETINA.windowId,
     });
     expect(selected.lastError?.code).toBe('permission-denied');
-    expect(blocked.controller.commands).toEqual([]);
+    expect(blocked.commands).toEqual([]);
   });
 
   it('allows selection when only Accessibility is refused', async () => {
@@ -251,8 +250,11 @@ describe('the selected window closing (system-design §16)', () => {
     expect(view.observationEnabled).toBe(false);
     expect(view.selectedWindow).toBeNull();
     expect(view.lastError?.code).toBe('window-closed');
+    // The exact sentence `@pilot/interaction`'s `window-closed` row writes.
+    // PR-029 deleted PR-009's copy of that row, so this is the only place it is
+    // stated outside the table itself.
     expect(view.lastError?.userMessage).toBe(
-      windowClosedError(FIXTURE_WINDOW_RETINA.windowId).toJSON().userMessage,
+      'The window Pilot was watching closed. Choose another window.',
     );
 
     const notice = test.gate.snapshot().notice;
@@ -367,5 +369,51 @@ describe('reporting a fully granted, watching Pilot over the wire', () => {
     const state = await harness();
     state.permissions.adapter.setSnapshot(FIXTURE_PERMISSIONS_GRANTED);
     expect(state.gate.allowsObservation()).toBe(true);
+  });
+});
+
+/**
+ * Runbook follow-up 11, closed by PR-029. PR-009 logged these two events and
+ * acted on neither, because the fake controller had no event input and
+ * duplicating the table's rows in the shell was the wrong fix.
+ */
+describe('the screen locking (system-design §6, §14)', () => {
+  it('stops capture and clears the buffers, and resumes on unlock', async () => {
+    await test.gate.act({ type: 'select', windowId: FIXTURE_WINDOW_RETINA.windowId });
+    expect(test.controller.snapshot().state).toBe('observing');
+    const before = test.observation.calls.length;
+
+    test.adapter.lockScreen();
+    // Effects are performed on the controller's queue, so the calls land a tick
+    // after the transition does.
+    await test.controller.settled();
+
+    // Nothing may be captured while the screen is locked, whatever else is true.
+    expect(test.controller.snapshot().state).toBe('paused');
+    expect(test.observation.calls.slice(before)).toContain('stop');
+    expect(test.observation.calls.slice(before)).toContain('clear');
+    // The selection survives: the user has not changed what Pilot watches.
+    expect(test.controller.snapshot().selectedWindow).toEqual(FIXTURE_WINDOW_RETINA);
+    // A lock is not an error.
+    expect(test.controller.snapshot().lastError).toBeNull();
+
+    test.adapter.unlockScreen();
+    await test.controller.settled();
+
+    expect(test.controller.snapshot().state).toBe('observing');
+    expect(test.observation.calls.at(-1)).toBe('start');
+  });
+
+  it('ignores a second lock rather than clearing twice', async () => {
+    await test.gate.act({ type: 'select', windowId: FIXTURE_WINDOW_RETINA.windowId });
+    test.adapter.lockScreen();
+    await test.controller.settled();
+    const after = test.observation.calls.length;
+
+    test.adapter.lockScreen();
+    await test.controller.settled();
+
+    expect(test.observation.calls).toHaveLength(after);
+    expect(test.controller.snapshot().state).toBe('paused');
   });
 });

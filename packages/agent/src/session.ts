@@ -5,6 +5,7 @@ import {
   type AgentTool,
 } from '@earendil-works/pi-agent-core';
 import type { Api, AssistantMessage, Model, Models } from '@earendil-works/pi-ai';
+import type { TSchema } from 'typebox';
 import type {
   AgentEvent,
   AgentRunHandle,
@@ -190,6 +191,28 @@ export interface SessionCompactionOptions {
    * transcript is being restored by some other route.
    */
   readonly restore?: RestoredCompaction;
+}
+
+/**
+ * Adapts a concrete tool to the element type {@link PiAgentSessionOptions.tools}
+ * uses. ADDED BY PR-029; additive and source-compatible.
+ *
+ * `tools` is declared `readonly AgentTool<never>[]`, and `AgentTool`'s first
+ * parameter appears in `execute`'s *parameter* position, so a tool with a real
+ * TypeBox schema — every tool Pilot has — is not assignable to it under
+ * `strictFunctionTypes`. Every call site in the agent lane therefore wrote
+ * `tool as unknown as AgentTool<never>`. That cast now lives here, once, behind
+ * a signature that still requires a genuine `AgentTool` on the way in, so the
+ * composition root does not have to contain a cast at all.
+ *
+ * Widening `tools` itself is the real fix and is a contract change worth making
+ * deliberately rather than in an integration PR — Pi's own `Agent` types the
+ * same field `AgentTool<any>[]`.
+ */
+export function asSessionTool<TParameters extends TSchema, TDetails>(
+  tool: AgentTool<TParameters, TDetails>,
+): AgentTool<never> {
+  return tool as unknown as AgentTool<never>;
 }
 
 /** Default text rendering of a question envelope (system-design §8). */

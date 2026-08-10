@@ -15,6 +15,7 @@
     "demo:permissions": "node scripts/permissions-demo.js",
     "demo:windows": "node scripts/windows-demo.js",
     "demo:conversation": "node scripts/conversation-demo.js",
+    "demo:agent": "node scripts/agent-demo.js",
     "package": "node scripts/ensure-electron.js --require && pnpm run build:app && electron-builder --dir --config electron-builder.yml && node scripts/verify-bundle.js",
     "verify:bundle": "node scripts/verify-bundle.js",
     "start": "electron .",
@@ -25,6 +26,7 @@
     "node": ">=24"
   },
   "dependencies": {
+    "@pilot/agent": "workspace:*",
     "@pilot/interaction": "workspace:*",
     "@pilot/platform": "workspace:*",
     "@pilot/shared": "workspace:*",

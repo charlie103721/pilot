@@ -1,15 +1,17 @@
 import { app, ipcMain, type IpcMainInvokeEvent } from 'electron';
-import { createIdFactory, createJsonSink, createLogger } from '@pilot/shared';
+import { asConversationId, createIdFactory, createJsonSink, createLogger } from '@pilot/shared';
 import {
   FakeHotkeyAdapter,
-  FakeInteractionController,
   FakePermissionAdapter,
+  FakeSpeechInputAdapter,
   FakeWindowAdapter,
 } from '@pilot/platform/fakes';
+import { createDevelopmentModelSource, resolveDevelopmentModelFixture } from '@pilot/agent';
 import { IPC_TRANSPORT } from '../ipc/channels.js';
+import { createAgentRuntime } from './agent-runtime.js';
 import { ConversationGate } from './conversation-gate.js';
+import { createLiveConversationDriver } from './conversation-driver.js';
 import {
-  createFakeConversationDriver,
   createFakeSpeechDisclosureSource,
   createReplayClock,
   resolveHotkeyAvailability,
@@ -21,15 +23,15 @@ import {
   createElectronTrayHost,
   resolveFromMain,
 } from './electron-hosts.js';
+import { createInteractionRuntime, createObservationInteraction } from './interaction-runtime.js';
 import { PermissionGate } from './permission-gate.js';
 import { createPermissionFixtureSource, resolvePermissionFixture } from './permission-fixtures.js';
-import { createFakeScenarioDriver } from './scenarios.js';
 import { createSettingsShortcut } from './settings-shortcut.js';
 import { DesktopShell } from './shell.js';
 import { enforceSingleInstance } from './single-instance.js';
 import type { TrayMenuItem } from './tray.js';
 import { WindowGate } from './window-gate.js';
-import { createFakeObservationInteraction, createFakeWindowDemoDriver } from './window-feed.js';
+import { createFakeWindowDemoDriver } from './window-demo.js';
 
 /**
  * Electron entry point.
@@ -38,6 +40,29 @@ import { createFakeObservationInteraction, createFakeWindowDemoDriver } from './
  * created, so a losing instance never registers a tray item, an IPC handler or
  * a window. Everything after that is composition — the behaviour lives in
  * `shell.ts` and its collaborators.
+ *
+ * PR-029 replaced one fake boundary here: **the agent**. What the panel talks to
+ * is now `@pilot/interaction`'s real state machine driving a real
+ * `PiAgentSession` over a real Pi `Agent`. Text in, streamed answer out.
+ *
+ * What is still fake, and who takes each one:
+ *
+ * | boundary        | today                             | owner   |
+ * | --------------- | --------------------------------- | ------- |
+ * | permissions     | `FakePermissionAdapter`           | PR-028  |
+ * | window list     | `FakeWindowAdapter`               | PR-028  |
+ * | screen capture  | mocked port + `FakeScreenContext` | PR-028/030 |
+ * | speech in       | `FakeSpeechInputAdapter`          | PR-032  |
+ * | speech out      | silent adapter                    | PR-033  |
+ * | model           | Pi's faux provider                | PR-037  |
+ * | persistence     | none (in-memory session)          | PR-036  |
+ *
+ * Every one of them is reachable without editing source:
+ *
+ *   PILOT_MODEL_FIXTURE=faux-text-only pnpm dev   # the capability gate refuses
+ *   PILOT_PERMISSION_FIXTURE=denied pnpm dev      # onboarding states
+ *   PILOT_HOTKEY_FIXTURE=permission-missing pnpm dev
+ *   PILOT_SPEECH_DISCLOSURE=remote pnpm dev
  */
 
 const logger = createLogger({
@@ -59,11 +84,40 @@ if (!singleInstance.isPrimary) {
   // in flight and continuing would briefly create a second tray icon.
   logger.info('exiting as secondary instance');
 } else {
-  // Still entirely on the PR-001 fakes: no platform, agent or voice code is
-  // wired up yet. PR-029 replaces this controller with the real
-  // `PilotInteractionController`; PR-011's adapter replaces the permission
-  // adapter below. Everything PR-008…PR-010 built reads from these two.
-  const controller = new FakeInteractionController();
+  const conversationId = asConversationId(`conv-${String(Date.now())}`);
+
+  // The model. There is no model access on this machine (docs/handoff.md §2),
+  // so this is Pi's own faux provider behind a real `Models` collection —
+  // runbook amendments 2 and 7. The line is logged rather than assumed: a build
+  // that is not talking to a real model must say so where anyone can see it.
+  const modelSource = createDevelopmentModelSource({
+    fixture: resolveDevelopmentModelFixture(process.env['PILOT_MODEL_FIXTURE']),
+  });
+  logger.info('model source', { description: modelSource.description });
+
+  // The agent (PR-029). The capability gate (PR-020) runs inside this call,
+  // before Pi's `Agent` exists and before any tool is registered, so a refusal
+  // costs zero provider requests.
+  const agentRuntime = createAgentRuntime({ conversationId, source: modelSource, logger });
+
+  // The interaction controller (PR-006/024/025/026/027), real at last. The
+  // recogniser it is given is still mocked; it is constructed here rather than
+  // inside the runtime so the replay bar can make recognition *fail*, which is
+  // the one §16 case a command cannot express.
+  const speechInput = new FakeSpeechInputAdapter();
+  const { controller } = createInteractionRuntime({
+    agent: agentRuntime.session,
+    conversationId,
+    speechInput,
+    logger,
+  });
+
+  if (!agentRuntime.capability.ok) {
+    // Say it now rather than when the user asks their first question. The
+    // machine's `error` state keeps the text box live (system-design §16), and
+    // the refusal carries its own `userMessage` and remedy.
+    controller.send({ type: 'failure', error: agentRuntime.capability.error });
+  }
 
   // Permission onboarding (PR-008). The fixture the app boots into is chosen by
   // the environment so every state is reachable without editing source:
@@ -83,6 +137,16 @@ if (!singleInstance.isPrimary) {
     }),
     fixtures,
     logger,
+  });
+
+  // The real machine gates on permissions (`needs-permission` outranks every
+  // other resting state), so the gate's snapshot has to reach it. Until one
+  // arrives the controller holds `null`, which means "nothing reported yet" and
+  // deliberately does not block — never "granted".
+  permissions.subscribe((state) => {
+    if (state.snapshot !== null) {
+      controller.send({ type: 'permissions-changed', permissions: state.snapshot });
+    }
   });
 
   // Conversation and developer diagnostics (PR-010). Built before the window
@@ -112,15 +176,18 @@ if (!singleInstance.isPrimary) {
     logger,
   });
   // Availability only. Turning `hotkey-down`/`hotkey-up` into
-  // `push-to-talk-down`/`push-to-talk-up` is runbook follow-up 6, owned by
+  // `push-to-talk-down`/`push-to-talk-up` is runbook follow-up 19, owned by
   // PR-032; wiring it here would put the same mapping in two places.
   void hotkeyAdapter.start();
 
   // Window picker and observation controls (PR-009). Still the PR-001 fake
   // adapter: PR-011's real enumeration cannot run here, and PR-012 owns the
-  // capture that a selection will eventually start.
+  // capture that a selection will eventually start. What *is* real now is the
+  // interaction side — `report` is `controller.send`, so `windows-changed`,
+  // `window-closed`, `screen-locked` and `screen-unlocked` are answered by the
+  // transition table rather than by a copy of it (runbook follow-ups 10, 11).
   const windowAdapter = new FakeWindowAdapter();
-  const observationInteraction = createFakeObservationInteraction(controller);
+  const observationInteraction = createObservationInteraction(controller);
   const windows = new WindowGate({
     windows: windowAdapter,
     interaction: {
@@ -138,10 +205,13 @@ if (!singleInstance.isPrimary) {
     adapter: windowAdapter,
     selected: () => controller.snapshot().selectedWindow,
   });
-  const conversationFixtureDriver = createFakeConversationDriver({
+  // The panel's "Replay" bar. Since PR-029 it holds real conversations against
+  // the real controller instead of replaying scripted view states.
+  const conversationFixtureDriver = createLiveConversationDriver({
     controller,
     gate: conversation,
-    clock: replayClock,
+    speech: speechInput,
+    logger,
   });
 
   // Set by `electron-vite dev`, absent in every built app. When it is present
@@ -168,7 +238,6 @@ if (!singleInstance.isPrimary) {
       permissions,
       windows,
       conversation,
-      scenarioDriver: createFakeScenarioDriver(controller),
       windowDemoDriver,
       conversationFixtureDriver,
       appInfo: { version: app.getVersion(), platform: process.platform },
@@ -199,6 +268,7 @@ if (!singleInstance.isPrimary) {
     logger.info('shell ready', {
       trayAvailable: trayAvailability.available,
       panelVisible: shell.panel.isVisible(),
+      agent: agentRuntime.capability.ok ? 'ready' : 'refused',
     });
   };
 
@@ -213,7 +283,10 @@ if (!singleInstance.isPrimary) {
   app.on('activate', () => shell?.reveal());
 
   app.on('before-quit', () => {
-    void shell?.dispose();
+    // The shell disposes the controller, which aborts anything in flight; the
+    // session itself is disposed here because the shell does not own it.
+    // PR-036 adds `store.close()` next to this line.
+    void shell?.dispose().then(() => agentRuntime.dispose());
     shell = null;
   });
 }

@@ -16,8 +16,7 @@ import {
 import { PermissionGate } from '../main/permission-gate.js';
 import { createPermissionFixtureSource } from '../main/permission-fixtures.js';
 import { createSettingsShortcut } from '../main/settings-shortcut.js';
-import { WindowGate } from '../main/window-gate.js';
-import { createFakeObservationInteraction } from '../main/window-feed.js';
+import { WindowGate, type ObservationInteraction } from '../main/window-gate.js';
 import { buildDiagnosticsView, diagnosticsDataStrings } from '../diagnostics/view-model.js';
 import { buildObservationView } from '../observation/view-model.js';
 import { buildPermissionOnboardingView } from '../permissions/view-model.js';
@@ -102,9 +101,23 @@ async function rig(options: {
   await conversation.refresh();
 
   const windowAdapter = new FakeWindowAdapter();
+  // The gate is here only so the conversation view has a real observation view
+  // to embed. This walkthrough never closes or retitles a window, so `report`
+  // is a documented no-op rather than a second copy of the transition table's
+  // window rows — that copy was PR-009's and PR-029 deleted it (runbook
+  // follow-up 10). The sequence it used to demonstrate lives in
+  // `src/observation/demo.ts`, which drives the real controller.
+  const observationInteraction: ObservationInteraction = {
+    snapshot: () => controller.snapshot(),
+    subscribe: controller.subscribe,
+    dispatch: (command) => {
+      controller.dispatch(command);
+    },
+    report: () => undefined,
+  };
   const windows = new WindowGate({
     windows: windowAdapter,
-    interaction: createFakeObservationInteraction(controller),
+    interaction: observationInteraction,
     permissions,
     now: () => 1_700_000_000_000,
   });

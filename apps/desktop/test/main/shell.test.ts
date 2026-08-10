@@ -20,7 +20,6 @@ import {
   conversationGetChannel,
   demoConversationChannel,
   demoPermissionFixtureChannel,
-  demoScenarioChannel,
   demoWindowEventChannel,
   interactionDispatchChannel,
   panelSetVisibleChannel,
@@ -40,14 +39,13 @@ import type {
   WindowGateState,
 } from '../../src/ipc/schemas.js';
 import { unavailableReason } from '../../src/main/settings-shortcut.js';
-import { createFakeScenarioDriver, DEMO_FAILURE } from '../../src/main/scenarios.js';
 import { DesktopShell } from '../../src/main/shell.js';
 import {
   conversationHarness,
   FakePanelHost,
   FakeTrayHost,
   permissionHarness,
-  windowHarness,
+  scriptedWindowHarness,
 } from './support.js';
 
 /**
@@ -60,7 +58,6 @@ import {
 
 function shell(
   options: {
-    withScenarioDriver?: boolean;
     withPermissionFixtures?: boolean;
     withWindowDemoDriver?: boolean;
     withConversationFixtures?: boolean;
@@ -77,7 +74,11 @@ function shell(
     ...(options.withPermissionFixtures === false ? { withFixtures: false } : {}),
     now: () => 1_700_000_000_000,
   });
-  const windows = windowHarness({
+  // Scripted, not real: these tests set view states by hand (`speaking`,
+  // `thinking`) and no command produces those on demand. The transition-table
+  // behaviour they would otherwise stand in for is asserted against the real
+  // controller in `window-gate.test.ts` and `renderer/windows.test.tsx`.
+  const windows = scriptedWindowHarness({
     permissions: permissions.gate,
     controller,
     now: () => 1_700_000_000_000,
@@ -96,9 +97,6 @@ function shell(
     quit: () => quits.push(1),
     ids: createIdFactory(createCounterIdSource()),
     now: () => 1_700_000_000_000,
-    ...(options.withScenarioDriver === false
-      ? {}
-      : { scenarioDriver: createFakeScenarioDriver(controller) }),
     ...(options.withWindowDemoDriver === false ? {} : { windowDemoDriver: windows.demo }),
     ...(options.withConversationFixtures === false
       ? {}
@@ -218,46 +216,6 @@ describe('DesktopShell', () => {
       ),
     ).toEqual({ visible: false });
     expect(instance.panel.isVisible()).toBe(false);
-  });
-
-  it('renders each fake scenario, including the failure state', async () => {
-    const { instance } = shell();
-
-    for (const scenario of ['idle', 'listening', 'thinking', 'speaking', 'observing'] as const) {
-      const payload = successPayload(
-        await instance.router.handle(request(demoScenarioChannel.name, scenario), { senderId: 1 }),
-      ) as { state: string; lastError: unknown };
-      expect(payload.lastError).toBeNull();
-    }
-
-    const failed = successPayload(
-      await instance.router.handle(request(demoScenarioChannel.name, 'error'), { senderId: 1 }),
-    ) as { state: string; lastError: { code: string; userMessage: string } | null };
-
-    expect(failed.state).toBe('error');
-    expect(failed.lastError?.code).toBe(DEMO_FAILURE.code);
-    expect(failed.lastError?.userMessage).toBe(DEMO_FAILURE.userMessage);
-  });
-
-  it('rejects an unknown scenario name', async () => {
-    const { instance } = shell();
-
-    const response = await instance.router.handle(request(demoScenarioChannel.name, 'exfiltrate'), {
-      senderId: 1,
-    });
-
-    expect(response.ok).toBe(false);
-    expect(response.ok === false && response.error.code).toBe('invalid-request');
-  });
-
-  it('reports scenarios as unsupported when no driver is wired in', async () => {
-    const { instance } = shell({ withScenarioDriver: false });
-
-    const response = await instance.router.handle(request(demoScenarioChannel.name, 'error'), {
-      senderId: 1,
-    });
-
-    expect(response.ok === false && response.error.code).toBe('unsupported-capability');
   });
 
   it('quits on request from the renderer and from the menu bar', async () => {

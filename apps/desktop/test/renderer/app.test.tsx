@@ -1,19 +1,16 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
-import { asUtteranceId, PilotError, type InteractionState } from '@pilot/shared';
+import { asUtteranceId, PilotError } from '@pilot/shared';
 import { FakeInteractionController, FIXTURE_WINDOW_RETINA } from '@pilot/platform/fakes';
 import type { PilotViewState } from '@pilot/platform';
 import { App } from '../../src/renderer/App.js';
 import type { BridgeResult, PilotBridge } from '../../src/ipc/bridge.js';
 import {
-  demoScenarioChannel,
   interactionDispatchChannel,
   viewStateChangedEvent,
   viewStateGetChannel,
 } from '../../src/ipc/channels.js';
-import { createFakeScenarioDriver } from '../../src/main/scenarios.js';
-import type { ViewScenario } from '../../src/ipc/schemas.js';
 import { INTERACTION_STATE_PRESENTATION } from '../../src/conversation/view-model.js';
 import { conversationBridge } from './conversation-bridge.js';
 import { permissionBridge } from './permission-bridge.js';
@@ -38,14 +35,13 @@ interface Harness {
 
 function harness(options: { permissionFixture?: 'granted' | 'denied' } = {}): Harness {
   const controller = new FakeInteractionController();
-  const driver = createFakeScenarioDriver(controller);
   // Permission onboarding is part of the panel now, so every harness serves it.
   // Granted by default, so the conversation surface these tests exercise is
   // the one a fully permitted Pilot shows.
   const permissions = permissionBridge({ fixture: options.permissionFixture ?? 'granted' });
   // The panel now also draws the window picker (PR-009); the bridge serves its
   // channels so these smoke tests render the whole panel, not part of it.
-  const windows = windowBridge({ controller, permissions: permissions.gate });
+  const windows = windowBridge({ permissions: permissions.gate });
   const conversation = conversationBridge({ controller });
   const listeners = new Set<(payload: unknown) => void>();
   const invocations: string[] = [];
@@ -81,8 +77,6 @@ function harness(options: { permissionFixture?: 'granted' | 'denied' } = {}): Ha
         case interactionDispatchChannel.name:
           controller.dispatch(payload as never);
           return Promise.resolve(ok(controller.snapshot()));
-        case demoScenarioChannel.name:
-          return Promise.resolve(ok(driver(payload as ViewScenario)));
         default:
           return Promise.resolve(ok({}));
       }
@@ -169,37 +163,6 @@ describe('panel', () => {
     expect(screen.getByTestId('live-transcript').textContent).toBe('what does this toggle do');
   });
 
-  it('renders every fake scenario reachable from the demo bar', async () => {
-    const test = harness();
-    connect(test.bridge);
-
-    render(<App />);
-    await screen.findByTestId('state-pill');
-
-    // Each scenario's label comes from the one place the app keeps its state
-    // copy (PR-010), so the header and the conversation cannot drift apart.
-    const expected: Readonly<Record<ViewScenario, InteractionState>> = {
-      idle: 'idle',
-      listening: 'listening',
-      thinking: 'thinking',
-      speaking: 'speaking',
-      observing: 'observing',
-      error: 'error',
-    };
-
-    for (const [scenario, state] of Object.entries(expected) as [
-      ViewScenario,
-      InteractionState,
-    ][]) {
-      screen.getByTestId(`scenario-${scenario}`).click();
-      await waitFor(() => {
-        expect(screen.getByTestId('state-pill').textContent).toBe(
-          INTERACTION_STATE_PRESENTATION[state].label,
-        );
-      });
-    }
-  });
-
   it('shows the failure banner with a typed code in the error state', async () => {
     const test = harness();
     connect(test.bridge);
@@ -207,7 +170,14 @@ describe('panel', () => {
     render(<App />);
     await screen.findByTestId('state-pill');
 
-    screen.getByTestId('scenario-error').click();
+    // PR-029 removed the "Fake state" bar: with the real controller there is no
+    // door that forces a view state, and there should not be one. The error
+    // state is reached the way the app reaches it — something failed.
+    test.controller.fail(
+      new PilotError('helper-unavailable', 'The Pilot helper process is not running', {
+        userMessage: 'Pilot lost contact with its screen helper. Observation is unavailable.',
+      }).toJSON(),
+    );
 
     await waitFor(() => {
       expect(screen.getByTestId('error-banner')).toBeTruthy();
@@ -227,7 +197,11 @@ describe('panel', () => {
         userMessage: 'Pilot could not understand that action.',
       }),
     );
-    screen.getByTestId('scenario-idle').click();
+    const input = screen.getByTestId('composer-input') as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+    setter?.call(input, 'what does this toggle do');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    screen.getByTestId('composer-submit').click();
 
     await waitFor(() => {
       expect(screen.getByTestId('error-code').textContent).toBe('invalid-request');
