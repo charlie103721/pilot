@@ -26,6 +26,9 @@ public enum HelperProtocol {
         case permissionsAttribution = "permissions.attribution"
         case windowsList = "windows.list"
         case windowsGet = "windows.get"
+        // PR-013
+        case accessibilitySample = "accessibility.sample"
+        case accessibilityElementAt = "accessibility.element-at"
     }
 
     public static let readyEventName = "helper.ready"
