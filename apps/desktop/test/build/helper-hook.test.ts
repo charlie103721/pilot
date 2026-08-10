@@ -31,11 +31,20 @@ let stagingDir: string;
 let result: { status: number | null; stdout: string; stderr: string };
 let manifest: HelperManifest;
 
+/**
+ * Generous because the cost depends on the host. Where there is no Swift
+ * toolchain the hook stages a placeholder and returns in milliseconds; on a
+ * Mac it runs a real `swift build -c release`, which is minutes from cold.
+ * The 10s default was sized for the first case by a machine that could not
+ * reach the second.
+ */
+const BUILD_HOOK_TIMEOUT_MS = 600_000;
+
 beforeAll(() => {
   stagingDir = mkdtempSync(join(tmpdir(), 'pilot-helper-'));
   result = spawnSync(process.execPath, [script, '--out', stagingDir], { encoding: 'utf8' });
   manifest = JSON.parse(readFileSync(join(stagingDir, 'helper.json'), 'utf8')) as HelperManifest;
-});
+}, BUILD_HOOK_TIMEOUT_MS);
 
 afterAll(() => {
   rmSync(stagingDir, { recursive: true, force: true });
@@ -44,14 +53,14 @@ afterAll(() => {
 describe('the Swift helper build hook', () => {
   it('succeeds and stages a helper file whether or not Swift is available', () => {
     expect(result.status, result.stderr).toBe(0);
-    const staged = statSync(join(stagingDir, 'pilot-helper'));
+    const staged = statSync(join(stagingDir, 'PilotHelper'));
     expect(staged.size).toBeGreaterThan(0);
     // Something has to be able to spawn it.
     expect(staged.mode & 0o111).not.toBe(0);
   });
 
   it('records in the manifest which of the two it staged, and why', () => {
-    expect(manifest.name).toBe('pilot-helper');
+    expect(manifest.name).toBe('PilotHelper');
     expect(['native', 'placeholder']).toContain(manifest.kind);
     if (manifest.kind === 'placeholder') {
       // A skip with no stated reason is the failure mode this guards against.
@@ -76,7 +85,7 @@ describe('the Swift helper build hook', () => {
     if (manifest.kind !== 'placeholder') {
       return;
     }
-    const run = spawnSync(join(stagingDir, 'pilot-helper'), [], { encoding: 'utf8' });
+    const run = spawnSync(join(stagingDir, 'PilotHelper'), [], { encoding: 'utf8' });
     expect(run.status).not.toBe(0);
     expect(run.stderr).toContain('placeholder');
     expect(run.stderr).toContain(manifest.reason ?? '');

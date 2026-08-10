@@ -33,7 +33,7 @@ const REQUIRED_APP_FILES = [
 ];
 
 /** Files that must be beside the asar, as real files on disk. */
-const REQUIRED_RESOURCE_FILES = ['helper/pilot-helper', 'helper/helper.json'];
+const REQUIRED_RESOURCE_FILES = ['helper/PilotHelper', 'helper/helper.json'];
 
 function fail(message) {
   process.stderr.write(`[pilot:verify] FAIL: ${message}\n`);
@@ -105,14 +105,14 @@ export function verifyBundle(bundle) {
     }
   }
 
-  const helperPath = join(bundle.resources, 'helper', 'pilot-helper');
+  const helperPath = join(bundle.resources, 'helper', 'PilotHelper');
   if (existsSync(helperPath)) {
     const mode = statSync(helperPath).mode;
     if ((mode & 0o111) === 0) {
-      problems.push('helper/pilot-helper is not executable');
+      problems.push('helper/PilotHelper is not executable');
     }
     if (statSync(helperPath).size === 0) {
-      problems.push('helper/pilot-helper is empty');
+      problems.push('helper/PilotHelper is empty');
     }
   }
 

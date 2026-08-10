@@ -164,14 +164,14 @@ describe.skipIf(!hasElectron)('the development build, from a clean tree', () => 
   });
 
   it('puts the helper payload inside the produced bundle, not just in the config', () => {
-    const helper = join(resourcesDir, 'helper', 'pilot-helper');
+    const helper = join(resourcesDir, 'helper', 'PilotHelper');
     expect(existsSync(helper), `expected a helper at ${helper}`).toBe(true);
     expect(statSync(helper).size).toBeGreaterThan(0);
     expect(statSync(helper).mode & 0o111).not.toBe(0);
 
     // The helper is spawned as a child process, so it must be a real file
     // beside the archive rather than an entry inside it.
-    expect([...asarEntries].some((entry) => entry.includes('pilot-helper'))).toBe(false);
+    expect([...asarEntries].some((entry) => entry.includes('PilotHelper'))).toBe(false);
 
     const manifest = JSON.parse(
       readFileSync(join(resourcesDir, 'helper', 'helper.json'), 'utf8'),

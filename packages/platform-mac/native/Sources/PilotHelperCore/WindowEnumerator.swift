@@ -47,14 +47,25 @@ public final class SystemWindowService: WindowService {
     ) -> (window: WindowRecord?, display: DisplayRecord?, screenLocked: Bool) {
         let locked = Self.screenIsLocked()
         let displays = activeDisplays()
-        // `.optionIncludingWindow` is what makes `relativeToWindow` mean "this
-        // window". Without it the id is ignored and the call returns the whole
-        // list, so taking `.first` would answer with an arbitrary window — a
-        // wrong answer that looks exactly like a right one.
-        let options: CGWindowListOption = [.optionIncludingWindow, .excludeDesktopElements]
+        // Resolved from the same enumeration `snapshot()` uses, then filtered
+        // by `windowNumber`, so a window this helper listed is always a window
+        // it can still get.
+        //
+        // `.optionIncludingWindow` is the obvious call here and it is wrong:
+        // measured on macOS 26, it resolves a window only while that window is
+        // on screen and returns an empty list for every other one. `snapshot()`
+        // deliberately omits `.optionOnScreenOnly` so a user can select a
+        // window that is not frontmost, so the two disagreed about almost the
+        // whole desktop — 173 of 175 windows on the machine this was found on.
+        //
+        // Filtering by id rather than taking `.first` is load-bearing: the
+        // unfiltered list is the whole desktop, and `.first` would answer with
+        // an arbitrary window — a wrong answer that looks exactly like a right
+        // one.
+        let options: CGWindowListOption = [.excludeDesktopElements]
         guard
-            let raw = CGWindowListCopyWindowInfo(options, CGWindowID(number)) as? [[String: Any]],
-            let info = raw.first,
+            let raw = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]],
+            let info = raw.first(where: { ($0[WindowInfoKey.number] as? Int) == number }),
             let parsed = WindowParser.parse(
                 info, bundleIdentifier: { self.bundleIdentifier(for: $0) })
         else {
@@ -147,7 +158,7 @@ public final class SystemWindowService: WindowService {
 
     /// Backing pixels per point, from the display mode.
     ///
-    /// `CGDisplayModeGetPixelWidth / CGDisplayModeGetWidth` rather than
+    /// `CGDisplayMode.pixelWidth / CGDisplayMode.width` rather than
     /// `NSScreen.backingScaleFactor`: it is CoreGraphics only, so it does not
     /// depend on this process having an AppKit connection to the window
     /// server. Falls back to 1 rather than guessing 2.
@@ -155,8 +166,8 @@ public final class SystemWindowService: WindowService {
         guard let mode = CGDisplayCopyDisplayMode(display) else {
             return 1
         }
-        let points = CGDisplayModeGetWidth(mode)
-        let pixels = CGDisplayModeGetPixelWidth(mode)
+        let points = mode.width
+        let pixels = mode.pixelWidth
         if points <= 0 || pixels <= 0 {
             return 1
         }

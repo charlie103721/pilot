@@ -1,4 +1,6 @@
+import { existsSync } from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
+import { helperBinaryCandidates } from '@pilot/platform-mac';
 import {
   asFrameId,
   asObservationId,
@@ -112,11 +114,25 @@ describe('the platform choice', () => {
     expect(
       describePlatformChoice({ env: { PILOT_PLATFORM: 'fakes' }, platform: 'darwin' }),
     ).toEqual({ kind: 'fakes', reason: 'PILOT_PLATFORM=fakes' });
-    // On a Mac with no helper built, the reason names every path searched
-    // rather than reporting a capture failure later.
-    const noHelper = describePlatformChoice({ env: {}, platform: 'darwin' });
-    expect(noHelper.kind).toBe('fakes');
-    expect(noHelper.reason).toContain('no helper binary');
+    // The darwin branch depends on whether this machine has actually built the
+    // Swift helper, so the expectation is derived from that rather than
+    // assumed. Written on Linux, where the helper could never exist, this
+    // asserted the fakes case unconditionally and failed the first time it ran
+    // on a Mac with a built helper — which is the case it most needed to allow.
+    const onDarwin = describePlatformChoice({ env: {}, platform: 'darwin' });
+    const built = helperBinaryCandidates({ env: {} }).some((candidate) =>
+      existsSync(candidate.path),
+    );
+    if (built) {
+      expect(onDarwin.kind).toBe('macos');
+      expect(onDarwin.reason).toContain('helper binary');
+    } else {
+      // The reason names every path searched: a Mac running on fakes because
+      // the helper was never built must not look like a Mac whose capture is
+      // broken.
+      expect(onDarwin.kind).toBe('fakes');
+      expect(onDarwin.reason).toContain('no helper binary');
+    }
   });
 });
 
