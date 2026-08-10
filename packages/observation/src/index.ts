@@ -30,8 +30,12 @@
  * - Recorded fixtures for downstream lanes and the demos, and synthetic
  *   *screenshots* that really encode and decode ({@link renderSyntheticScreen}).
  *
- * The `ScreenContextService` facade (PR-019) builds on this and is deliberately
- * absent. Frames arrive through the `ObservationAdapter` contract from
+ * - {@link PilotScreenContextService} — the `ScreenContextService` of
+ *   system-design §5: `question` / `current` / `before-and-after` selection,
+ *   lineage validation, an abortable fresh capture, typed errors from PR-017's
+ *   rule table and compact content-free metadata (PR-019).
+ *
+ * Frames arrive through the `ObservationAdapter` contract from
  * `@pilot/platform`; this package never captures anything itself.
  */
 export * from './clock.js';
@@ -54,4 +58,5 @@ export * from './image-codec.js';
 export * from './image-processor.js';
 export * from './image-fixtures.js';
 export * from './policy-enforcer.js';
+export * from './screen-context.js';
 export * from './fixtures.js';

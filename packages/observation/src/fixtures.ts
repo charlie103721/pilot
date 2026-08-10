@@ -30,7 +30,15 @@ import type { SceneSignalsPatch, SceneTransition } from './scene-tracker.js';
 import type { FrameIngestResult, PointerIngestResult } from './observation-core.js';
 import { FakeImageProcessor } from './image-pipeline.js';
 import { ObservationRateLimiter } from './observation-rate.js';
-import { RetentionGuard } from './retention.js';
+import { RetentionGuard, type ImageCache } from './retention.js';
+import {
+  MutableScreenContextInputs,
+  PilotScreenContextService,
+  type CacheableImageProcessor,
+  type ScreenContextConditions,
+  type ScreenObservationMetadata,
+  type ScreenObservationRefusal,
+} from './screen-context.js';
 import { DEFAULT_SCREEN_CONTEXT_POLICY, type ScreenContextPolicy } from './screen-policy.js';
 import {
   ScreenPolicyEnforcer,
@@ -819,4 +827,145 @@ function applyWindowEvent(windows: FakeWindowAdapter, event: WindowEvent): void 
       windows.notifyWindowListChanged();
       return;
   }
+}
+
+// ---------------------------------------------------------------------------
+// PR-019: screen context facade harness
+// ---------------------------------------------------------------------------
+
+export interface ScreenContextHarness {
+  readonly clock: AdjustableClock;
+  readonly core: ObservationCore;
+  readonly session: ObservationSession;
+  readonly adapters: ReplayAdapters;
+  readonly policy: ScreenContextPolicy;
+  readonly images: CacheableImageProcessor;
+  readonly rateLimiter: ObservationRateLimiter;
+  readonly enforcer: ScreenPolicyEnforcer;
+  readonly retention: RetentionGuard;
+  readonly inputs: MutableScreenContextInputs;
+  readonly service: PilotScreenContextService;
+  /** How many fresh captures the harness has been asked for. */
+  readonly freshCaptures: { count: number };
+}
+
+export interface ScreenContextHarnessOptions {
+  readonly policy?: ScreenContextPolicy;
+  readonly fixture?: RecordedObservationFixture;
+  /** Defaults to a {@link FakeImageProcessor}; the demo passes the real one. */
+  readonly images?: CacheableImageProcessor;
+  /** Conditions the session cannot know. Defaults to both permissions granted. */
+  readonly conditions?: ScreenContextConditions;
+  /**
+   * Fresh capture for `moment: 'current'`. Omit and the facade is wired with no
+   * capture source at all, which is the state PR-028 replaces.
+   */
+  readonly captureFresh?: (signal?: AbortSignal) => Promise<CapturedFrame>;
+  readonly onObservation?: (metadata: ScreenObservationMetadata) => void;
+  readonly onRefusal?: (refusal: ScreenObservationRefusal) => void;
+}
+
+/**
+ * Every piece of the observation lane, wired the way PR-028 will wire it, on
+ * one fake clock (PR-019).
+ *
+ * Deliberately assembled from the same parts as {@link createPolicyHarness}
+ * rather than wrapping it: the policy harness pins its image processor to the
+ * fake so its tests can read `.calls`, and this one has to accept the real
+ * pipeline as well.
+ */
+export function createScreenContextHarness(
+  options: ScreenContextHarnessOptions = {},
+): ScreenContextHarness {
+  const policy = options.policy ?? DEFAULT_SCREEN_CONTEXT_POLICY;
+  const fixture = options.fixture ?? createSceneLineageFixture();
+  const clock = createFakeClock(fixture.startedAt);
+  const ids = createIdFactory(createCounterIdSource());
+  const core = new ObservationCore({ clock, ids, policy });
+  const adapters: ReplayAdapters = {
+    observation: new FakeObservationAdapter({ frames: fixture.frames }),
+    accessibility: new FakeAccessibilityAdapter(),
+    windows: new FakeWindowAdapter(),
+  };
+  const session = new ObservationSession({
+    core,
+    clock,
+    policy,
+    observation: adapters.observation,
+    accessibility: adapters.accessibility,
+    windows: adapters.windows,
+  });
+  const images: CacheableImageProcessor = options.images ?? new FakeImageProcessor();
+  const rateLimiter = new ObservationRateLimiter({ clock, policy });
+  const enforcer = new ScreenPolicyEnforcer({ clock, policy, images, ids, rateLimiter });
+  const retention = new RetentionGuard({
+    core,
+    policy,
+    rateLimiter,
+    ...(typeof images.clear === 'function' ? { images: images as ImageCache } : {}),
+  });
+  const inputs = new MutableScreenContextInputs(
+    options.conditions ?? {
+      permissions: { screenRecording: 'granted', accessibility: 'granted' },
+    },
+  );
+  const freshCaptures = { count: 0 };
+  const captureFresh = options.captureFresh;
+  const service = new PilotScreenContextService({
+    clock,
+    session,
+    policy,
+    images,
+    enforcer,
+    retention,
+    inputs,
+    ...(captureFresh === undefined
+      ? {}
+      : {
+          capture: (signal?: AbortSignal) => {
+            freshCaptures.count += 1;
+            return captureFresh(signal);
+          },
+        }),
+    ...(options.onObservation === undefined ? {} : { onObservation: options.onObservation }),
+    ...(options.onRefusal === undefined ? {} : { onRefusal: options.onRefusal }),
+  });
+
+  return {
+    clock,
+    core,
+    session,
+    adapters,
+    policy,
+    images,
+    rateLimiter,
+    enforcer,
+    retention,
+    inputs,
+    service,
+    freshCaptures,
+  };
+}
+
+/**
+ * Replays a fixture into a screen-context harness and stops at the question
+ * moment, so the ring holds frames around `fixture.questionAt`.
+ */
+export async function primeScreenContextHarness(
+  harness: ScreenContextHarness,
+  fixture: RecordedObservationFixture,
+  options: AdapterReplayOptions = {},
+): Promise<AdapterReplayReport> {
+  return replayFixtureThroughAdapters(
+    {
+      clock: harness.clock,
+      core: harness.core,
+      session: harness.session,
+      adapters: harness.adapters,
+      transitions: [],
+      frameOutcomes: [],
+    },
+    fixture,
+    { until: fixture.questionAt, ...options },
+  );
 }
