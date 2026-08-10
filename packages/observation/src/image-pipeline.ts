@@ -6,21 +6,27 @@ import {
   type PixelRect,
   type PixelSize,
 } from '@pilot/shared';
+// Type-only, and therefore erased: the real processor imports this module for
+// the contract, and this module names its statistics type. No runtime cycle.
+import type { ImageRenderStats } from './image-processor.js';
 
 /**
- * The PR-018 seam.
+ * The image-pipeline seam.
  *
- * §10 step 5 — "crop, annotate, resize, and encode" — is the image pipeline,
- * and it is explicitly **not** this PR. PR-017 owns the order the steps run in,
- * the parameters policy hands to step 5, and the limits its output has to
- * satisfy; PR-018 owns the pixels.
+ * §10 step 5 — "crop, annotate, resize, and encode" — is the image pipeline.
+ * PR-017 owns the order the steps run in, the parameters policy hands to step
+ * 5, and the limits its output has to satisfy; PR-018 owns the pixels.
  *
  * The seam is one interface plus a deterministic fake, exactly as PR-016 did
- * for the content fingerprint: everything upstream can be built, tested and
- * demonstrated before a single pixel is touched, and PR-018 replaces the fake
+ * for the content fingerprint: everything upstream could be built, tested and
+ * demonstrated before a single pixel was touched, and PR-018 replaced the fake
  * without any caller changing.
  *
- * Contract for PR-018's implementation:
+ * **PR-018 has landed.** {@link PilotImageProcessor} in `image-processor.ts` is
+ * the real implementation; {@link FakeImageProcessor} stays, because the policy
+ * tests exercise counts, byte ceilings and rejection paths and have no business
+ * paying for a JPEG decode to do it. The contract PR-018 was written against,
+ * and still honours:
  *
  * - Honour `crop`, then `maxEdge`, then encode. Never upscale.
  * - Paint every rect in `redactions` **before** anything is encoded or handed
@@ -55,6 +61,16 @@ export interface ImageRenderRequest {
    * permitted when compression makes small text unreadable."
    */
   readonly preferLossless: boolean;
+  /**
+   * Byte ceiling the policy will enforce on the result (PR-018, additive).
+   *
+   * The *number* stays a policy decision — it is `image.maxImageBytes` — and
+   * the policy still rejects an image that exceeds it. Passing it down lets the
+   * pipeline choose an encoding that fits instead of producing a lossless image
+   * the enforcer must then throw away. Absent means "no hint"; the pipeline
+   * then optimises purely for legibility.
+   */
+  readonly maxBytes?: number;
 }
 
 export interface RenderedImage {
@@ -67,6 +83,15 @@ export interface RenderedImage {
   readonly purpose: ObservationImagePurpose;
   /** How many redaction rects were actually painted. */
   readonly redactionsApplied: number;
+  /**
+   * What the pipeline did and what it cost (PR-018, additive and optional).
+   *
+   * Content-free by construction — sizes, byte counts, stage timings and the
+   * encoding decision, never a pixel. The demo prints it, and it is how the
+   * §17 150 ms preprocessing budget is *measured* rather than assumed. The fake
+   * below does not supply it, so every reader must handle `undefined`.
+   */
+  readonly stats?: ImageRenderStats;
 }
 
 export interface ImageProcessor {

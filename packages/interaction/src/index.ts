@@ -24,8 +24,16 @@
  * `speak` effects under one stream id, and `SpeechOutputBinding` plays them in
  * order and reports one completion for the whole answer.
  *
- * What it deliberately does not own: the end-to-end interruption integration
- * (PR-027) and real STT/TTS (PR-014). Each of those is a port with a fake
+ * PR-027 closes the loop with interruption and cancellation (system-design
+ * §15): cancellation effects are performed on their own queue so stopping
+ * speech never waits for work in front of it (§17, under 300 ms), every
+ * question submission and screen observation carries an `AbortSignal` that is
+ * fired the moment Pilot stops waiting for it, and a stalled answer can be
+ * woken by an injected `Scheduler` — the only delay in the lane, and still not
+ * a timer the machine owns.
+ *
+ * What it deliberately does not own: real STT/TTS (PR-014) and the cross-process
+ * wiring to a live Pi session (PR-035). Each of those is a port with a fake
  * behind it.
  */
 export * from './inputs.js';
@@ -33,6 +41,7 @@ export * from './effects.js';
 export * from './rejection.js';
 export * from './context.js';
 export * from './segmentation.js';
+export * from './scheduler.js';
 export * from './table.js';
 export * from './machine.js';
 export * from './ports.js';

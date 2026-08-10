@@ -197,6 +197,11 @@ export function representativeInput(
       return { type, runId, error: SAMPLE_ERROR };
     case 'observation-finished':
       return { type, observationId };
+    case 'phrase-timeout':
+      // The identity of a waiting fragment. `0` when nothing is waiting, which
+      // is every state this drives to — so the guard discards it, which is the
+      // behaviour the table test should see.
+      return { type, pendingSince: context.pendingAnswerSince ?? 0 };
     case 'speech-started':
     case 'speech-finished':
     case 'speech-stopped':

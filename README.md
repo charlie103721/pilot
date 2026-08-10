@@ -230,8 +230,41 @@ are the ones that refuse to look at anything but the selected window.
 
 The policy is data (`packages/observation/src/screen-policy.ts`) and its
 execution order is an explicit seven-step sequence
-(`packages/observation/src/policy-enforcer.ts`). Steps 5 and 6 of §10 — the
-actual image work — sit behind the `ImageProcessor` seam that PR-018 fills in.
+(`packages/observation/src/policy-enforcer.ts`). Step 5 of §10 — the actual
+image work — sits behind the `ImageProcessor` seam that PR-018 fills in.
+
+## Demo (PR-018 — image processing pipeline)
+
+Produce the approved full-frame and pointer-crop artefacts from fixture images:
+
+```sh
+pnpm build && pnpm --filter @pilot/observation demo:image
+# artefacts land in packages/observation/artifacts/ ; pass `--out <dir>` to move them
+```
+
+It renders a deterministic synthetic billing-settings window at a Retina
+(2400×1600 at 2×) and a standard-DPI (1000×700 at 1×) capture size, then runs
+each §10 step-5 scenario through the real pipeline: a full frame passed through
+untouched, a 2× capture reduced to the 1440 px policy edge, a frame with the
+password field masked, pointer crops at the centre and clamped into a corner, a
+before/after pair, and a photographic window. For each it prints the output
+dimensions, the byte size, the encoding it chose and why, and what it cost.
+
+Two sections are measurements rather than illustrations:
+
+- **Double-JPEG legibility**, the risk recorded in `docs/handoff.md` §5, on a
+  pointer crop taken at a deliberately non-block-aligned offset. The second JPEG
+  generation roughly doubles the luma error on the crop; encoding it losslessly
+  costs nothing extra.
+- **The §17 preprocessing budget**, measured for every combination of capture
+  size, source encoding and secure-field-in-view. The pipeline is inside 150 ms
+  for the capture size the policy actually requests, except when the source
+  frame is JPEG, where the pure-JavaScript decode alone is ~165 ms.
+
+There is **no native image dependency**: PNG goes through Node's own `zlib`,
+JPEG through pure-JS `jpeg-js`, and BGRA through a channel swap. The reasoning,
+including why `sharp` was not adopted, is at the top of
+`packages/observation/src/image-codec.ts`.
 
 ## Demo (PR-006 — interaction state machine)
 
@@ -277,6 +310,30 @@ Deterministic: injected clock, counter identifiers, scripted agent and
 synthesiser. The segmentation rule and every case it deliberately refuses to
 split are documented at the top of
 `packages/interaction/src/segmentation.ts`.
+
+## Demo (PR-027 — interruption and cancellation)
+
+```sh
+pnpm demo:interrupt
+```
+
+Interrupts Pilot in eight different places and prints, for each, the four
+places late output could resurface and does not: the panel transcript, the
+synthesiser, the machine's rejections and the bindings' discards. The scenes
+are an interruption while thinking; one while speaking, with the next sentence
+already queued; one during `observe_screen`, which is *steered* rather than
+aborted so the capture can unwind (system-design §15); a run that completes
+after it was aborted; two interruptions in quick succession; one that lands
+between the answer and its first spoken word; one that lands while the question
+is still being submitted, where there is no run id to interrupt and the
+submission's own `AbortSignal` is what stops it; and a run that stalls
+mid-sentence, whose waiting fragment is spoken by an injected scheduler with no
+run event at all.
+
+Deterministic: injected clock, counter identifiers, scripted agent and
+synthesiser, and a manual scheduler — the machine still owns no timers, and
+nothing anywhere waits on real time.
+
 ## Demo (PR-007 — development build baseline)
 
 ```sh

@@ -25,6 +25,7 @@
     "demo:windows": "pnpm --filter @pilot/desktop run demo:windows",
     "demo:voice": "pnpm build && pnpm --filter @pilot/interaction run demo:voice",
     "demo:response": "pnpm build && pnpm --filter @pilot/interaction run demo:response",
+    "demo:interrupt": "pnpm build && pnpm --filter @pilot/interaction run demo:interrupt",
     "clean": "tsc --build tsconfig.json --clean && rm -rf apps/desktop/dist apps/desktop/release apps/desktop/resources"
   },
   "devDependencies": {
