@@ -22,10 +22,12 @@
   "scripts": {
     "demo": "node ./dist/demo.js",
     "demo:scene": "node ./dist/scene-demo-cli.js",
-    "demo:policy": "node ./dist/policy-demo-cli.js"
+    "demo:policy": "node ./dist/policy-demo-cli.js",
+    "demo:image": "node ./dist/image-demo-cli.js"
   },
   "dependencies": {
     "@pilot/platform": "workspace:*",
-    "@pilot/shared": "workspace:*"
+    "@pilot/shared": "workspace:*",
+    "jpeg-js": "0.4.4"
   }
 }
