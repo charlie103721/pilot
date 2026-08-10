@@ -40,6 +40,15 @@ export interface InteractionContext {
   /** The utterance whose transcript has already been accepted, for duplicates. */
   readonly finalizedUtteranceId: UtteranceId | null;
 
+  /**
+   * Push-to-talk start and end timestamps (system-design §6: "the interaction
+   * controller records push-to-talk start and end timestamps"). PR-024 anchors
+   * the question envelope on `utteranceEndedAt`; both are `null` until an
+   * utterance has begun. Recorded here, never read from a wall clock.
+   */
+  readonly utteranceStartedAt: number | null;
+  readonly utteranceEndedAt: number | null;
+
   readonly liveTranscript: string | null;
   /** Answer text accumulated for the active utterance but not yet spoken. */
   readonly pendingAnswer: string;
@@ -134,6 +143,8 @@ export function createInteractionContext(options: CreateContextOptions): Interac
     activeSpeechId: null,
     activeObservationId: null,
     finalizedUtteranceId: null,
+    utteranceStartedAt: null,
+    utteranceEndedAt: null,
     liveTranscript: null,
     pendingAnswer: '',
     transcript: [],
