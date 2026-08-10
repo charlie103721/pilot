@@ -30,25 +30,123 @@ Linux**; see `packages/platform-mac/README.md` for the Mac-only steps.
 
 `pnpm install` also downloads the Electron runtime binary
 (`apps/desktop/scripts/ensure-electron.js`). That download is optional: lint,
-typecheck, test and build all pass without it, and only launching the app needs
-it. Set `PILOT_SKIP_ELECTRON_DOWNLOAD=1` to skip it.
+typecheck, test and build all pass without it, and only launching or packaging
+the app needs it. Set `PILOT_SKIP_ELECTRON_DOWNLOAD=1` to skip it.
 
 ## Verification
 
-Run from the repository root. These four commands are the only gate — there is
-no CI workflow (runbook §5, amendment 5).
+Run from the repository root. These commands are the only gate — there is no CI
+workflow (runbook §5, amendment 5).
 
 ```sh
 pnpm install
 pnpm lint       # eslint + prettier --check
 pnpm typecheck  # tsc over every package's src and test files
-pnpm test       # vitest
-pnpm build      # tsc --build over the project references
+pnpm test       # vitest, including a clean build + packaged-bundle check
+pnpm build      # shared libraries (tsc) + the three Electron bundles
 ```
+
+## Running the app
+
+From a clean checkout:
+
+```sh
+nvm use                 # Node 24
+pnpm install
+pnpm dev                # electron-vite dev server + Electron, hot reload
+```
+
+`pnpm dev` puts Pilot in the menu bar and hot-reloads renderer edits; main and
+preload edits restart the process. To run the built app instead of the dev
+server:
+
+```sh
+pnpm build
+pnpm start
+```
+
+Headless launch check (Linux, needs `xvfb-run`; prints a single OK line):
+
+```sh
+pnpm smoke                                      # the built dist/
+pnpm --filter @pilot/desktop run smoke:packaged # the packaged bundle
+```
+
+### Build layout
+
+| Command | What it does |
+| --- | --- |
+| `pnpm build` | `tsc --build` for `packages/*`, then the desktop app |
+| `pnpm --filter @pilot/desktop run build:app` | stages the helper, then electron-vite → `apps/desktop/dist/{main,preload,renderer}` |
+| `pnpm --filter @pilot/desktop run build:helper` | the native helper hook alone → `apps/desktop/resources/helper/` |
+| `pnpm package` | `build:app`, then electron-builder `--dir`, then the bundle check |
+
+electron-vite bundles all three Electron processes from TypeScript source
+(`apps/desktop/electron.vite.config.ts`). It does not typecheck — `pnpm
+typecheck` does that — and it inlines every dependency, so the packaged
+`app.asar` contains no `node_modules`. The preload is emitted as CommonJS
+because the panel runs with `sandbox: true`, and the renderer's Content Security
+Policy is shipped unchanged; both are asserted by
+`apps/desktop/test/build/development-build.test.ts`.
+
+## Packaging
+
+```sh
+pnpm package
+```
+
+produces an unpacked development bundle under `apps/desktop/release/` and then
+verifies it by opening it (`apps/desktop/scripts/verify-bundle.js`): the app
+entry points must be inside `app.asar`, and the native helper must be a real
+executable beside it.
+
+Known limits of this configuration — all deliberate:
+
+- **Development signing only.** `mac.identity` is null, hardened runtime is off.
+- **No notarization.** Recorded as a known gap against the MVP-01 definition of
+  done (runbook §7; there is no Developer ID account). A packaged app therefore
+  needs `xattr -dr com.apple.quarantine` or a right-click → Open on any machine
+  that did not build it, and TCC grants are re-prompted whenever the signature
+  changes.
+- **`--dir` only.** No dmg, no installer; PR-042 owns the release packaging.
+- **Host architecture only**, because the bundle reuses the Electron runtime in
+  `node_modules` rather than downloading a second copy.
+
+### The native macOS helper
+
+Screen capture, Accessibility, speech and the global push-to-talk key live in a
+Swift executable that ships inside the app bundle
+(`packages/platform-mac/native`, owned by PR-003). Packaging stages it into
+`Contents/Resources/helper/`.
+
+`apps/desktop/scripts/build-helper.js` runs before every app build:
+
+- **on macOS with Swift and the native package present** — it runs `swift build
+  -c release` and stages the real binary;
+- **anywhere else** (this repo's Linux development machines, or before PR-003
+  lands) — it stages a placeholder, records the reason in
+  `helper/helper.json`, and says so on stdout. The placeholder is a real
+  executable that exits 78 with an explanation if anything runs it, so a bundle
+  missing its helper fails loudly rather than looking healthy.
+
+On the Mac, to build a bundle that contains the **real** helper:
+
+```sh
+nvm use && pnpm install
+swift build -c release --package-path packages/platform-mac/native   # optional: check it alone
+pnpm --filter @pilot/desktop run build:helper -- --require-native     # fails if Swift is missing
+pnpm package
+pnpm --filter @pilot/desktop exec node scripts/verify-bundle.js       # expect `helper: native`
+open apps/desktop/release/mac-arm64/Pilot.app
+```
+
+`--require-native` is the difference that matters: without it the hook falls
+back to the placeholder, and a bundle that cannot observe the screen is
+indistinguishable from one that can until someone tries it.
 
 ## Demo (PR-001)
 
-1. Run the complete workspace check above; all four commands must pass.
+1. Run the complete workspace check above; every command must pass.
 2. Run one fake adapter contract test on its own:
 
    ```sh
@@ -61,11 +159,9 @@ pnpm build      # tsc --build over the project references
 
 ## Demo (PR-002 — desktop shell)
 
-Build first (`pnpm build`), then:
-
 ```sh
 pnpm dev                                    # launch the shell
-pnpm --filter @pilot/desktop run smoke      # headless launch check (Linux, Xvfb)
+pnpm build && pnpm smoke                    # headless launch check (Linux, Xvfb)
 ```
 
 `pnpm dev` puts Pilot in the menu bar. Use the menu bar item to show and hide
@@ -117,3 +213,20 @@ The transition table itself is checked in as
 `packages/interaction/test/transition-table.expected.ts`: one line per
 (state × input) pair, asserted against the machine by
 `packages/interaction/test/table.test.ts`.
+## Demo (PR-007 — development build baseline)
+
+```sh
+pnpm package                                       # build + bundle + verify
+pnpm --filter @pilot/desktop run smoke:packaged    # launch the bundle headlessly
+```
+
+The first command prints which helper went into the bundle. On Linux that line
+reads `helper: PLACEHOLDER (host-is-not-macos)`, which is the honest answer:
+this machine has no Swift toolchain and no ScreenCaptureKit. The second command
+starts the packaged executable — not `dist/` — under Xvfb and waits for the
+renderer to complete a validated IPC round trip, so it proves the asar, the
+packaged paths and the bundled Electron runtime agree.
+
+What Linux does **not** prove, and what needs the Mac: the Swift build itself,
+the helper actually running, TCC prompts, the menu bar item, and anything
+visual. See "Packaging" above for the exact Mac commands.

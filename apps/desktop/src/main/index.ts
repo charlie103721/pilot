@@ -45,6 +45,15 @@ if (!singleInstance.isPrimary) {
   // is wired up yet. PR-008…PR-010 replace this controller.
   const controller = new FakeInteractionController();
 
+  // Set by `electron-vite dev`, absent in every built app. When it is present
+  // the panel loads from the dev server so edits hot-reload; otherwise it loads
+  // the file emitted next to this one.
+  const rendererDevUrl = process.env['ELECTRON_RENDERER_URL'];
+  const rendererSource =
+    rendererDevUrl === undefined
+      ? { file: resolveFromMain('../renderer/index.html') }
+      : { url: rendererDevUrl };
+
   const start = (): void => {
     const trayHost = createElectronTrayHost({
       onSelect: (id: TrayMenuItem['id']) => shell?.tray.select(id),
@@ -53,7 +62,7 @@ if (!singleInstance.isPrimary) {
     shell = new DesktopShell({
       panelHost: createElectronPanelHost({
         preloadPath: resolveFromMain('../preload/index.cjs'),
-        rendererPath: resolveFromMain('../renderer/index.html'),
+        renderer: rendererSource,
       }),
       trayHost,
       controller,

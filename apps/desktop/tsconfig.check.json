@@ -8,6 +8,14 @@
     "declarationMap": false,
     "sourceMap": false
   },
-  // Everything that runs under Node/Electron privileges, plus its tests.
-  "include": ["src/main/**/*.ts", "src/preload/**/*.ts", "src/ipc/**/*.ts", "test/main/**/*.ts"]
+  // Everything that runs under Node/Electron privileges, plus its tests and the
+  // build configuration that produces it.
+  "include": [
+    "src/main/**/*.ts",
+    "src/preload/**/*.ts",
+    "src/ipc/**/*.ts",
+    "test/main/**/*.ts",
+    "test/build/**/*.ts",
+    "electron.vite.config.ts"
+  ]
 }

@@ -7,3 +7,9 @@ packages:
 # binary from its own postinstall instead (see apps/desktop/scripts).
 onlyBuiltDependencies:
   - esbuild
+
+# Windows installer tooling arrives through electron-builder. Pilot is a macOS
+# app and never builds a Windows target, so its install script is skipped on
+# purpose rather than left as a prompt on every install.
+ignoredBuiltDependencies:
+  - electron-winstaller

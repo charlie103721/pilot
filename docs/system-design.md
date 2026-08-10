@@ -15,12 +15,12 @@ This document defines the logical architecture for Pilot's macOS MVP and the pla
 4. macOS uses ScreenCaptureKit and Accessibility APIs through an embedded native helper.
 5. Windows will use Windows Graphics Capture and UI Automation through a Windows implementation of the same interfaces.
 6. Continuous capture is local and bounded; model observation is on demand.
-7. Pi Agent Core owns the agent loop and conversation state.
+7. Pi Agent Core owns the agent loop. Pilot owns conversation state and its persistence — Pi holds messages in memory only (see §8).
 8. Pi's model/provider package owns provider normalization and supported authentication flows.
 9. The app owns screen state, screen policy, privacy enforcement, and image retention.
-10. Raw screenshots are not persisted by default.
+10. Raw screenshots are never persisted, and that guarantee is **Pilot's, not Pi's**. Pi's own default is to serialize image blocks to disk verbatim on every session backend, with no flag to disable it. Pilot is the only writer to the session store, and its single write path strips image content before it reaches disk.
 
-Pi dependencies must be pinned to exact versions. The current package scope is `@earendil-works`; exact constructors and session APIs must be validated against the pinned release during implementation.
+Pi dependencies must be pinned to exact versions. The current package scope is `@earendil-works`. Validated against 0.84.1 by the PR-005 spike: `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, and `@earendil-works/pi-session-backend-sqlite-node` — note that the SQLite backend was renamed from `pi-storage-sqlite-node`, whose last release (0.83.0) pulls in a duplicate, incompatible copy of the runtime and must not be used. Findings and their evidence are recorded in `docs/pi-notes.md`.
 
 ## 3. Logical architecture
 
@@ -226,12 +226,26 @@ STT and TTS are adapters. The macOS defaults may use Apple frameworks; Windows r
 
 ### Responsibilities owned by Pi
 
+Corrected against the pinned 0.84.1 release by the PR-005 spike; see
+`docs/pi-notes.md` §4 and §6.1 for the evidence.
+
 - Model invocation and streaming.
 - Tool-call loop.
-- Recent conversation messages.
-- Steering, interruption, and follow-up queue behavior.
 - Provider-normalized image and tool-result messages.
-- Session compaction primitives.
+- Steering, interruption, and follow-up *primitives* (`steer`, `followUp`,
+  `abort`) — but there is no interruption event, and an abort during a tool call
+  is reported as `stopReason: "error"`. Pilot owns the semantics.
+- Compaction *primitives* only. They operate on session `Entry[]`, not the
+  `AgentMessage[]` the agent holds.
+
+`AgentHarness` — the resumable, session-backed API that would have owned the
+conversation loop — is an unimplemented stub in 0.84.1: every method returns
+`unavailable`. It is a trap, because `create()` succeeds and failure appears
+only on first use. Pilot therefore drives the low-level `Agent` and owns run
+identity, persistence, compaction triggering, and crash recovery.
+
+Conversation messages live in `Agent.state.messages` **in memory only**. Pi does
+not persist them; the durable `Session` is a separate object Pilot must drive.
 
 ### Responsibilities owned by Pilot
 
@@ -388,7 +402,7 @@ Persistent session storage contains text messages, summaries, scene metadata, an
 
 ## 12. Model and provider layer
 
-Pilot uses Pi's model/provider package rather than Vercel AI SDK. The provider layer supplies normalized streaming, model metadata, supported authentication, and image/tool capability information.
+Pilot uses Pi's model/provider package rather than Vercel AI SDK. The provider layer supplies normalized streaming, model metadata, and supported authentication. It does **not** supply tool-capability information (see below).
 
 Each configured model profile includes:
 
@@ -406,6 +420,20 @@ export interface ModelProfile {
 ```
 
 Before starting a visual conversation, Pilot validates `supportsVision` and `supportsTools`. A non-vision model may use accessibility and OCR text only, but the UI must label this degraded mode. Authentication secrets are retrieved from secure storage at request time and never sent to the renderer.
+
+Two corrections from the PR-005 spike (`docs/pi-notes.md` §6.3, §6.4):
+
+- **`supportsTools` cannot be derived from Pi.** Pi's `Model` carries no
+  tool-support metadata at all — `compat.supportsStrictTools` is constrained
+  sampling, not tool support. It is Pilot-configured. `supportsVision` *is*
+  derivable, from `Model.input`.
+- **This gate is a correctness requirement, not an optimization.** A model
+  without vision does not error when handed an image; `pi-ai` silently ignores
+  it. Without the gate the user receives a confident answer about a screen the
+  model never saw.
+- **`authMode` is not a Pi fact.** Pi attaches auth to the provider, not the
+  model, and one provider may expose both `apiKey` and `oauth`. `authMode`
+  records which credential Pilot chose.
 
 ## 13. Persistence
 

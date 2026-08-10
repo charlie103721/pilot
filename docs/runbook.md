@@ -162,6 +162,37 @@ include them:
    config (electron-vite, builder config, root scripts); parallel worktrees
    would conflict. Foundations fan-out is therefore 003/004/005/006 parallel,
    with 002 → 007 as a sequential pair alongside them.
+7. **Model access is Codex subscription** (user decision, 2026-08-10). PR-005
+   verified Pi 0.84.1 supports it (`openai-codex`, `isSubscription: true`).
+   Sign-in happens on the user's Mac; PR-037 must use the **device-code flow**,
+   because browser login binds local port 1455 and does not open a browser.
+   No API key exists in the Linux environment, so Phase 3 integration
+   (PR-029+) runs on mocks until that sign-in happens.
+8. **Mac verification is deferred** (user decision, 2026-08-10): keep building
+   Mac-gated code unverified and batch it. Accepted risk: the Swift helper has
+   never been compiled, and PR-011…PR-015 accumulate on top of it. Keep a
+   running list of what the Mac batch must cover (§10).
+9. **`docs/system-design.md` is corrected in place** when a spike disproves it
+   (user decision, 2026-08-10), citing the evidence doc. Done for §2.7/§2.10,
+   §8 and §12 from `docs/pi-notes.md`. Do not leave a known-wrong statement
+   standing in a doc marked authoritative.
+
+## 5a. Pending Mac batch
+
+Everything below needs the user's Mac. Nothing else is blocked on it.
+
+| What | Command / action | From |
+| --- | --- | --- |
+| Compile the Swift helper | `swift build --package-path native` in `packages/platform-mac` | PR-003 |
+| Swift unit tests | `swift test --package-path native` | PR-003 |
+| Helper demo against the real binary | `pnpm --filter @pilot/platform-mac demo` | PR-003 |
+| Codex sign-in probe | `docs/pi-notes.md` §9.1 | PR-005 |
+| Desktop shell visual demo | `pnpm dev` — menu bar item, panel, fake states | PR-002 |
+
+A Swift compile failure is a **PR-003 defect**: send the compiler output and it
+gets fixed, not worked around. Nothing in `native/` touches ScreenCaptureKit,
+Accessibility or entitlements yet, so this batch should raise no TCC prompt —
+it isolates "does the helper build and talk" from "does macOS trust it".
 
 ## 6. Verification commands
 
