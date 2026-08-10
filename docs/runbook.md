@@ -19,6 +19,8 @@ run it.
 | `dp/m1.md` | Engineering plan: decisions, ownership/effort, phase details |
 | `docs/implementation.md` | **The execution plan**: 44 PRs (PR-001…PR-044) with scope, owner lane, size, dependencies, demo per PR |
 | `docs/runbook.md` | This file — how to actually run the delivery |
+| `docs/pi-notes.md` | PR-005 spike findings: the verified reality of pinned Pi 0.84.1 |
+| `docs/handoff.md` | Open items needing the user, accepted gaps, and decisions taken on their behalf |
 
 Precedence: `docs/system-design.md` for architecture, `dp/m1.md` for
 engineering decisions, `docs/implementation.md` for PR scope/order, this
@@ -176,6 +178,14 @@ include them:
    (user decision, 2026-08-10), citing the evidence doc. Done for §2.7/§2.10,
    §8 and §12 from `docs/pi-notes.md`. Do not leave a known-wrong statement
    standing in a doc marked authoritative.
+10. **PR-022 is split into PR-022a (pruning and image limits) and PR-022b
+    (compaction orchestration)**, per the PR-005 finding that Pi supplies no
+    compaction orchestrator and its primitives operate on session `Entry[]`
+    rather than the agent's `AgentMessage[]`. PR-023 grows from S to M for the
+    same reason — it owns the whole `Agent ↔ Session` bridge, restore-on-launch,
+    the `undefined`-payload trap and the SQLite writer lease.
+11. **Anything needing the user goes in `docs/handoff.md`**, not scattered
+    through PR reports. Keep it current as lanes land.
 
 ## 5a. Pending Mac batch
 
@@ -253,18 +263,57 @@ created during PR-043.
 
 ## 8. Current status
 
-- Nothing implemented yet. Repo contains docs, `dp/m1.md`, `.nvmrc`, and this
-  runbook.
-- 2026-08-10: execution started on branch
-  `claude/implementation-md-approach-21bepa` (Linux session). Node 24.19.0
-  installed via `/opt/nvm` and set as default; pnpm 10.33 confirmed; Pi
-  packages re-verified on npm. PR-001 dispatched.
-- Next action: **PR-001** (solo, on `main`), then fan out PR-002…PR-007 in
-  parallel worktrees (per amendment 6: 003/004/005/006 parallel, 002 → 007
-  sequential pair).
-- After PR-001, keep a running status section here (or in commit history) so
-  any session can resume: which PRs are merged, which are in flight, and any
-  contract-change follow-ups pending.
+Keep this current. A fresh session should be able to resume from here plus
+`git log --oneline | grep 'PR-'`.
+
+### Phase 1 — COMPLETE (2026-08-10)
+
+All seven foundation PRs are merged to `main`, each through its own pull
+request. Environment: Node 24.19.0 (installed via `/opt/nvm`, set as default),
+pnpm 10.33.
+
+| PR | What landed | PR # |
+| --- | --- | ---: |
+| 001 | Workspace, contracts, fakes (no CI) | — |
+| 002 | Desktop shell: Electron lifecycle, tray, panel, validated IPC | #3 |
+| 003 | Native helper transport: framed stdio v1, supervision | #6 |
+| 004 | Observation core: frame ring, pointer timeline, scene tracker | #2 |
+| 005 | Pi capability spike — see `docs/pi-notes.md` | #5 |
+| 006 | Interaction state machine: 330-cell total transition table | #4 |
+| 007 | Development build baseline: electron-vite, packaging | #7 |
+
+Verified from a clean tree (all `dist/` removed) after Phase 1: `pnpm lint`,
+`typecheck`, `test` (33 files, 415 tests), `build` all pass, and all four
+demos run — observation, interaction, agent `observe_screen`, helper
+transport. The packaged bundle launches headlessly and completes a validated
+IPC round trip (`pnpm --filter @pilot/desktop run smoke:packaged`).
+
+### Phase 2 — in flight
+
+Five lanes running concurrently in worktrees: PR-016 (observation), PR-020
+(agent runtime), PR-024 (interaction), PR-008 (desktop), PR-011 (platform-mac,
+written blind per amendment 8).
+
+### Cross-lane issues found while merging — read before adding a lane
+
+1. **Root config collides on every merge.** `tsconfig.json`,
+   `tsconfig.base.json`, `vitest.config.ts`, `package.json` and `README.md`
+   conflict each time. Every collision so far has been a **union, not a
+   choice** — each lane needs its own project reference, path alias and vitest
+   entry. Resolve as a union, then re-run the full §6 gate; a clean merge does
+   not imply a working tree.
+2. **A contract change can pass typecheck and still break the app.** PR-006
+   added `dismiss-error` to `InteractionCommand`; the desktop's zod validator
+   did not gain it, so the renderer could never dispatch it and the `error`
+   state had no exit. `z.ZodType<T>` does not catch this — a narrower union
+   stays assignable. The command-schema test now keys samples by
+   `InteractionCommand['type']` via a `Record` so TypeScript fails the build.
+   **Use that pattern for any new discriminated-union contract.**
+3. **Lint was nondeterministic** until `.claude/` was excluded: `eslint .`
+   descended into other agents' half-written worktrees.
+4. **Do not trust a subagent's "all green" report.** Re-run the gate yourself
+   after merging. PR-004's agent reported lint passing, and in its isolated
+   worktree that was true — the failure only appeared with other lanes running.
 
 ## 9. Quick start for a new session
 
