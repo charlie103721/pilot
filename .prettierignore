@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+pnpm-lock.yaml
+*.tsbuildinfo
+
+# Design documents are hand-formatted; PR-001 does not reflow them.
+docs/
+dp/
+*.md

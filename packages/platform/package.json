@@ -1,0 +1,31 @@
+{
+  "name": "@pilot/platform",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Platform adapter interfaces, cross-block service contracts, and deterministic fakes.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./fakes": {
+      "types": "./dist/fakes/index.d.ts",
+      "import": "./dist/fakes/index.js",
+      "default": "./dist/fakes/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@pilot/shared": "workspace:*",
+    "zod": "^4.4.3"
+  }
+}

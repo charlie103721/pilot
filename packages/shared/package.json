@@ -1,0 +1,25 @@
+{
+  "name": "@pilot/shared",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared identifiers, geometry, errors, IPC envelopes, privacy-safe logging, and domain types.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  }
+}
