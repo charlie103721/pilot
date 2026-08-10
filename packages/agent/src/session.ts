@@ -29,6 +29,14 @@ import {
   type CapabilityConfidence,
   type CapabilityReport,
 } from './capability.js';
+import {
+  createCompactionController,
+  type CompactionController,
+  type CompactionOutcome,
+  type CompactionPolicy,
+  type CompactionState,
+  type NowFn,
+} from './compaction.js';
 import { markFailedToolResults, toolFailureError } from './tool-result.js';
 import {
   pruneVisualContextByPolicy,
@@ -123,6 +131,15 @@ export interface PiAgentSessionOptions {
    * can only shrink the context further, never widen a per-purpose limit.
    */
   readonly keepMostRecentImages?: number;
+  /**
+   * Compaction orchestration (system-design §11), on by default.
+   *
+   * The three §11 triggers are evaluated at every turn boundary and history
+   * older than the retained tail is folded into a truthful summary before the
+   * next provider request. `enabled: false` turns the whole thing off; the
+   * session then behaves exactly as it did in PR-022a.
+   */
+  readonly compaction?: SessionCompactionOptions;
   readonly idFactory?: IdFactory;
   /** Renders an envelope into the user turn. Defaults to {@link renderQuestionEnvelope}. */
   readonly renderEnvelope?: (envelope: QuestionEnvelope) => string;
@@ -132,6 +149,21 @@ export interface PiAgentSessionOptions {
    * Carried through from the profile store so diagnostics can say which.
    */
   readonly toolSupport?: CapabilityConfidence;
+}
+
+/** Per-session compaction settings (system-design §11). */
+export interface SessionCompactionOptions {
+  /** Defaults to `true`. */
+  readonly enabled?: boolean;
+  /** Defaults to `DEFAULT_COMPACTION_POLICY` — §11's numbers verbatim. */
+  readonly policy?: CompactionPolicy;
+  /**
+   * Defaults to `model.contextWindow`. Override to model a smaller budget than
+   * the provider advertises, which is what the demo does.
+   */
+  readonly contextWindow?: number;
+  /** Injected clock for the summary message's timestamp. */
+  readonly now?: NowFn;
 }
 
 /** Default text rendering of a question envelope (system-design §8). */
@@ -196,6 +228,8 @@ export class PiAgentSession implements AgentSession {
   readonly #transcript: TranscriptSink | undefined;
   readonly #renderEnvelope: (envelope: QuestionEnvelope) => string;
   readonly #unsubscribePi: () => void;
+  readonly #compaction: CompactionController | undefined;
+  readonly #visualContext: VisualContextOptions;
 
   #active: ActiveRun | null = null;
   #persistedCount = 0;
@@ -231,6 +265,32 @@ export class PiAgentSession implements AgentSession {
         ? {}
         : { maxTotalImages: options.keepMostRecentImages }),
     };
+    this.#visualContext = visualContext;
+    // Compaction (§11). Evaluated at turn boundaries, applied here. `prune` is
+    // handed to the controller so "estimated context usage" measures the
+    // request the provider would really receive — post-fold, post-prune —
+    // which is also what makes the 60% trigger self-limiting.
+    const prune = (messages: readonly AgentMessage[]): AgentMessage[] =>
+      pruneVisualContextByPolicy(messages, visualContext);
+    this.#compaction =
+      options.compaction?.enabled === false
+        ? undefined
+        : createCompactionController({
+            contextWindow: options.compaction?.contextWindow ?? options.model.contextWindow,
+            prune,
+            ...(options.compaction?.policy === undefined
+              ? {}
+              : { policy: options.compaction.policy }),
+            ...(options.compaction?.now === undefined ? {} : { now: options.compaction.now }),
+            ...(options.visualContext?.policy === undefined
+              ? {}
+              : { screenPolicy: options.visualContext.policy }),
+            ...(options.visualContext?.summaryFor === undefined
+              ? {}
+              : { summaryFor: options.visualContext.summaryFor }),
+          });
+    const compaction = this.#compaction;
+
     this.#agent = new Agent({
       streamFn: (model, context, streamOptions) =>
         options.models.streamSimple(model, context, streamOptions),
@@ -239,11 +299,20 @@ export class PiAgentSession implements AgentSession {
         model: options.model,
         tools: (options.tools ?? []) as AgentTool<never>[],
       },
-      // Pi contract: transformContext must not throw. pruneVisualContextByPolicy
-      // is total by construction *and* falls back to the count-based pruner.
-      // This is the only place image blocks are held back from the provider;
-      // `this.#agent.state.messages` keeps every original block (§11).
-      transformContext: async (messages) => pruneVisualContextByPolicy(messages, visualContext),
+      // Pi contract: transformContext must not throw. Both halves are total:
+      // `apply` catches and falls back to the untouched list, and
+      // `pruneVisualContextByPolicy` is total by construction *and* falls back
+      // to the count-based pruner.
+      //
+      // Order matters. Compaction folds history into a summary first, then
+      // pruning enforces the image budget on what is left — so an image inside
+      // folded history disappears with the history rather than leaving a
+      // replacement record behind for a turn nobody can see any more.
+      //
+      // Neither step touches `this.#agent.state.messages`: the transcript keeps
+      // every original message and every original image block (§11).
+      transformContext: async (messages) =>
+        prune(compaction === undefined ? messages : compaction.apply(messages)),
       // Pilot tools return typed failure results instead of throwing, so that
       // `details` survives for the UI (see `tool-result.ts`). This hook is what
       // makes Pi agree they failed: it sets `isError` on the tool-result
@@ -263,6 +332,39 @@ export class PiAgentSession implements AgentSession {
   /** Read-only view of the in-memory transcript. Exposed for tests and diagnostics. */
   get messages(): readonly AgentMessage[] {
     return this.#agent.state.messages;
+  }
+
+  /**
+   * What compaction has folded so far (system-design §11).
+   *
+   * `undefined` when compaction is disabled. PR-023 reads this to persist the
+   * durable conversation summary alongside the transcript; note that
+   * `boundaryIndex` indexes {@link messages}, which compaction never modifies,
+   * so the summary and the transcript can be restored independently.
+   */
+  get compaction(): CompactionState | undefined {
+    return this.#compaction?.state;
+  }
+
+  /**
+   * The most recent compaction decision, including the triggers that fired and
+   * the token estimate they fired against.
+   *
+   * `context-compacted` carries only the summary text, so this is how PR-010's
+   * diagnostics panel — and the demo — can say *why* the context was folded, or
+   * why it was not.
+   */
+  get lastCompaction(): CompactionOutcome | undefined {
+    return this.#compaction?.lastOutcome;
+  }
+
+  /** The provider-facing context as it would be sent right now. Diagnostics only. */
+  activeContext(): AgentMessage[] {
+    const folded =
+      this.#compaction === undefined
+        ? [...this.#agent.state.messages]
+        : this.#compaction.apply(this.#agent.state.messages);
+    return pruneVisualContextByPolicy(folded, this.#visualContext);
   }
 
   async submit(envelope: QuestionEnvelope, signal?: AbortSignal): Promise<AgentRunHandle> {
@@ -311,6 +413,13 @@ export class PiAgentSession implements AgentSession {
     signal?.addEventListener('abort', onExternalAbort, { once: true });
 
     this.#emit({ type: 'run-started', runId, utteranceId: envelope.utteranceId });
+
+    // Recorded *before* `prompt()`, because `messages.length` is exactly the
+    // index the user message is about to occupy. That index is what lets a
+    // compaction summary say which goal belongs to which folded turn without
+    // re-parsing the rendered envelope — `renderEnvelope` is pluggable
+    // (PR-024 ships a different one), so parsing it back would be a trap.
+    this.#compaction?.noteQuestion(envelope, this.#agent.state.messages.length);
 
     void this.#agent
       .prompt(this.#renderEnvelope(envelope))
@@ -427,15 +536,43 @@ export class PiAgentSession implements AgentSession {
       }
       case 'turn_end': {
         void this.#persistNewMessages();
+        this.#maybeCompact(runId);
         return;
       }
       case 'agent_end': {
         void this.#persistNewMessages();
+        // Before settling: a caller that awaits `completed` and immediately
+        // reads `activeContext()` must see the compaction this run caused.
+        this.#maybeCompact(runId);
         this.#settle(run, this.#terminalEvent(runId));
         return;
       }
       default:
         return;
+    }
+  }
+
+  /**
+   * Runs compaction if any §11 trigger fired (system-design §11).
+   *
+   * Called at every turn boundary rather than only at the end of a run: one run
+   * can contain many turns and many observations, so waiting for `agent_end`
+   * would let a long tool-using run blow past the limits it is supposed to
+   * respect.
+   *
+   * Synchronous and total. The summary is extractive, so there is no provider
+   * call to await and nothing that can reject; a compaction that failed here
+   * would corrupt the next request's context, which is a far worse failure than
+   * a slightly large one.
+   */
+  #maybeCompact(runId: RunId): void {
+    const controller = this.#compaction;
+    if (controller === undefined) {
+      return;
+    }
+    const outcome = controller.maybeCompact(this.#agent.state.messages);
+    if (outcome.kind === 'compacted') {
+      this.#emit({ type: 'context-compacted', runId, summary: outcome.summary.text });
     }
   }
 
