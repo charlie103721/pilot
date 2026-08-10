@@ -22,6 +22,7 @@ import {
   PilotQuestionEnvelopeFactory,
   type ObservationControlPort,
   type QuestionAnchorSource,
+  type QuestionEnvelopeFactory,
 } from '@pilot/interaction';
 import type { ObservationInteraction } from './window-gate.js';
 
@@ -42,11 +43,15 @@ import type { ObservationInteraction } from './window-gate.js';
  *  - **observation** — {@link createMockObservationControlPort} and, on the
  *    agent side, `FakeScreenContextService` (PR-028 / PR-030).
  *
- * The pointer anchor source is mocked too, and that is not a detail: with no
- * recorded pointer, every envelope is `grounding: 'pointer-unknown'`, which is
- * exactly the case runbook follow-up 1 is about. `renderAnchoredQuestionEnvelope`
- * (wired in `agent-runtime.ts`) is what stops that reaching the model as a
- * position at `-1, -1`.
+ * The pointer anchor source was mocked too, and that was not a detail: with no
+ * recorded pointer, every envelope was `grounding: 'pointer-unknown'`, which is
+ * exactly the case runbook follow-up 1 is about. **PR-031 replaced it** —
+ * `main/question-anchor.ts` builds the factory over the real `ObservationCore`
+ * and the app passes it as {@link InteractionRuntimeOptions.envelopes}. The
+ * default here is still the empty recording, because the scripted desktop
+ * suites want a question with no pointer behind it, and because
+ * `renderAnchoredQuestionEnvelope` (wired in `agent-runtime.ts`) has to keep
+ * proving that an unknown pointer never reaches the model as `-1.000`.
  */
 
 /**
@@ -150,8 +155,23 @@ export interface InteractionRuntimeOptions {
   readonly conversationId: ConversationId;
   readonly speechInput?: SpeechInputAdapter;
   readonly speechOutput?: SpeechOutputAdapter;
-  /** Mocked until PR-031 hands over the real pointer timeline. */
+  /**
+   * The pointer timeline behind the envelope's `pointer` field. `FakeQuestion
+   * AnchorSource` (an empty recording) unless a caller supplies one; PR-031
+   * supplies the real one indirectly, through {@link envelopes}.
+   */
   readonly anchors?: QuestionAnchorSource;
+  /**
+   * The whole envelope factory (PR-031).
+   *
+   * `anchors` alone is not enough for the question anchor, because setting
+   * `ScreenContextInputs.anchor` has to happen at the same instant the envelope
+   * is built and from the same resolved sample — `main/question-anchor.ts`
+   * therefore owns both, and hands the composed factory in here. Additive and
+   * optional: a caller that passes neither still gets PR-024's factory over the
+   * empty recording, which is what the scripted desktop suites want.
+   */
+  readonly envelopes?: QuestionEnvelopeFactory;
   readonly observation?: ObservationControlPort;
   readonly clock?: { now(): number };
   readonly logger?: Logger;
@@ -181,9 +201,11 @@ export function createInteractionRuntime(options: InteractionRuntimeOptions): In
     speechInput,
     speechOutput,
     agent: options.agent,
-    envelopes: new PilotQuestionEnvelopeFactory({
-      anchors: options.anchors ?? new FakeQuestionAnchorSource(),
-    }),
+    envelopes:
+      options.envelopes ??
+      new PilotQuestionEnvelopeFactory({
+        anchors: options.anchors ?? new FakeQuestionAnchorSource(),
+      }),
     observation,
     conversationId: options.conversationId,
     // Nothing has reported a permission snapshot yet. `null` means "not known",

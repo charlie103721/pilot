@@ -123,6 +123,19 @@ PILOT_HELPER_BINARY="$(pwd)/packages/platform-mac/native/.build/debug/PilotHelpe
 
 #    And press **Look now** with no question in flight, which is the same
 #    observation without the model in the way.
+
+# 9. PR-031 — POINT AND ASK. This is the one the product exists for, and it is
+#    the first time a real pointer or a real accessibility element has ever been
+#    read by anything in this project. Run it after step 8.
+#    First the stub-driven walkthrough, which already passes on Linux:
+pnpm demo:ask
+
+#    Then the real thing. Pick a window, PUT THE POINTER ON A SPECIFIC CONTROL
+#    inside it — a button, a toggle, a labelled field — leave it there, and type
+#    "what is this?". Then repeat with the pointer somewhere else in the same
+#    window, and then with the pointer over a DIFFERENT application's window.
+PILOT_HELPER_BINARY="$(pwd)/packages/platform-mac/native/.build/debug/PilotHelper" \
+  PILOT_LOG_LEVEL=debug pnpm dev
 ```
 
 Notes:
@@ -409,10 +422,12 @@ Also worth capturing while you are there:
   16 MiB; if a normal UI window produces frames over ~1.8 MB the ring will hold
   under three seconds and that is worth reporting, because the trade would then
   need revisiting.
-- Whether the **pointer target** is ever identified. The observation metadata's
-  `targetRole` stays null until PR-031 wires the question anchor, but the
-  pointer *timeline* records the element on every sample; `PILOT_LOG_LEVEL=debug`
-  shows whether grounding is degraded.
+- Whether the **pointer target** is ever identified. ~~The observation
+  metadata's `targetRole` stays null until PR-031 wires the question anchor~~ —
+  **PR-031 wired it**, so `targetRole` is populated for a question asked with
+  the pointer inside the selected window, and step 9 is where that is checked
+  properly. The pointer *timeline* records the element on every sample either
+  way; `PILOT_LOG_LEVEL=debug` shows whether grounding is degraded.
 
 ### What to look for in step 8 (PR-030)
 
@@ -449,6 +464,53 @@ Also worth capturing while you are there: whether a real model calls
 `observe_screen` **at all** without being told to, and how often. Nothing here
 can answer that — the demo and the tests script the call.
 
+### What to look for in step 9 (PR-031)
+
+This is the first time anything in Pilot has read a **real pointer** or
+hit-tested a **real accessibility element**, and it is what the whole product
+rests on. Five things, in order:
+
+1. **Is the pointer crop centred on the control you were pointing at?** Not
+   "near it" — look at the image the model received. `PILOT_LOG_LEVEL=debug`
+   logs `question anchored` with `insideWindow`, `skewMs` and `targetRole` at
+   submission, and `observation allowed` with `targetRole` when the tool runs.
+   **This is the single most valuable observation in the whole batch**: every
+   test and every demo here proves only that the crop is centred on the pointer
+   sample the anchor selected, and nothing has ever checked that sample against
+   a real screen. A crop centred half a window away means the §5 coordinate
+   conversion is wrong (step 6 item 2 asks about the same thing from the other
+   side, and answering it there first will save time).
+2. **Does `targetRole` name the control you were pointing at?** Expect
+   `AXButton`, `AXCheckBox`, `AXTextField` and so on, with a label that matches
+   what you can read on screen. All `null` while `trusted=true` means
+   `AXUIElementCopyElementAtPosition` is not behaving as PR-013 assumes — the
+   same finding as step 6 item 4, now with a consumer. Try a **password field**
+   too: the anchor carries `isSecure` into §10's redaction step, so this is
+   where "best effort masking" either happens or is revealed never to.
+3. **`skewMs` at the moment you ask.** It is `anchor sample time − submission
+   time` and it is bounded at ±1000 ms; anything near that bound means the
+   30 Hz pointer poller is not keeping up on a real Mac, and the question is
+   being grounded on where the pointer was up to a second earlier.
+4. **Point at something, then move the mouse away *before* pressing enter.**
+   The answer must describe where the pointer was when you submitted, which is
+   the §6 rule. Then do the opposite — ask, then move the mouse while the model
+   is looking — and check the answer still describes the original spot.
+5. **Put the pointer over a different application's window and ask.** Two cases
+   and they behave differently on purpose. *Outside* the selected window's
+   frame: the panel and the log should show `insideWindow=false`, `targetRole`
+   `null`, and the model is told "outside the selected window; no element was
+   identified". *Inside* the frame but over a floating palette, a notification
+   or another app's window stacked on top: the point is inside `[0,1]`, so the
+   foreign-application rule is what has to fire — `targetRole` `null` again.
+   **If either one names the other application's control, stop and report it**;
+   that is a privacy breach rather than a bug, and it is the failure runbook
+   cross-lane issue 12 records this PR having already found once.
+
+Also worth capturing: how often a real window's ring actually holds a frame at
+or before the anchor. `moment: 'question'` refuses with `frame-unavailable`
+when it does not, and on a motionless window that is the same assumption step 6
+item 4 is about — from the third side.
+
 **Fallback in use:** Mac-gated code is written unverified and batched here
 (runbook amendment 8, user decision). Accepted risk: PR-011 through PR-015
 accumulate on top of an uncompiled helper. PR-011 additionally ships an
@@ -474,6 +536,17 @@ the real `PilotScreenContextService`, a real image reaches the provider's inbox
 (`pnpm demo:look`, `apps/desktop/test/main/model-observation.test.ts`) — and
 inherits both gaps at once: the image is the stub's bytes and the provider is
 Pi's faux one. Step 8 is what produces that answer.
+PR-031 makes the question *point at something* — the §6 anchor is resolved at
+submission and handed to that same facade, so `moment: 'question'` selects the
+frame from when the question was asked, the crop is taken around the anchor and
+the element under it reaches the model (`pnpm demo:ask`,
+`apps/desktop/test/main/question-anchor.test.ts`). It inherits both gaps and
+adds a third, which is the most important one in this file: **no real pointer
+has ever been read and no real accessibility element has ever been
+hit-tested**, so nothing anywhere has checked that the crop is centred on what
+the user was actually pointing at. The frames it crops are real decodable
+screenshots rendered by `renderSyntheticScreen`, because the stub's own frames
+do not decode. Step 9 is what produces that answer.
 
 ---
 
@@ -532,6 +605,18 @@ session should be watched for both, and for the third question underneath them:
 whether a JPEG/PNG of a 1440-px window is legible enough for the model to read
 small UI text at all. PR-043's grounding checklist is where that gets measured;
 until then it is unknown, not assumed.
+
+**PR-031 adds the question the whole product turns on: does the model answer
+about the thing you were pointing at?** The envelope now carries a real
+coordinate and a real element role, `moment: 'question'` selects the frame from
+when the question was asked, and `view: 'pointer'` hands over a crop centred on
+the anchor. What the faux provider cannot say is whether any of that *helps*:
+it does not read the image and its answers are scripted, so nothing here shows
+whether a model prefers the crop to the full frame, whether it uses
+`pointer target: AXButton — …` at all, or whether it notices
+"the window changed while the question was being asked". Watch the first real
+session for all three, and for the failure that would be invisible in a
+transcript: an answer that is confidently about the wrong control.
 
 ---
 
@@ -635,6 +720,12 @@ reversible; raise any that look wrong.
 | **The model and the user share one `ScreenContextService` instance, not two** (PR-030) | `createAgentRuntime({ screenContext: observation.screenContext })` passes the object the interaction port already drives, rather than building a second facade over the same session. Consequence worth knowing: §10's rate limiter (2 observations/second) counts a model look and a "Look now" **together**, so a user who presses Look now twice while the model is looking will see a `policy-rejected` refusal. That is the intended reading — the limit exists to bound how much of the screen leaves the machine, and it would be meaningless if a second caller had its own budget — and it also means one scene lineage, one retention guard and one decoded frame. `pnpm demo:look` §6 shows the refusal happening. **Say if you would rather the user's own looks were exempt**; it is a second rate limiter, and it would be a deliberate weakening of a §10 bound. |
 | **A "Look now" refusal is rewritten into PR-021's shape, but a curated sentence survives** (PR-030) | The tool already attaches `describeObserveScreenFailure`'s sentence and a `retryable` flag; the manual path threw whatever the facade threw, and `PilotError.userMessage` defaults to the *technical* message. `main/observation-failure.ts` now maps every manual refusal onto the same coarse failure kind — but keeps the `userMessage` when the producer wrote a distinct one, because PR-017's §10 rule table is more specific than the eleven coarse kinds: `unmaskable-secure-region` ("Pilot cannot hide a password field it cannot locate") would otherwise be flattened into `protected-content` ("This application blocks screen capture"), which is coarser *and false*. Cost: the two paths can show two different sentences for the same code. **Say if you would rather one sentence per failure kind everywhere**; it is deleting one conditional. |
 | **The failure mapping happens in the main process and crosses IPC as data** (PR-030) | `describeObserveScreenFailure` lives in `@pilot/agent`, which pulls Pi in with it, and the panel's view models are bundled into Chromium — so importing it renderer-side would have put a Pi type in the renderer, which PR-029 recorded as the thing to keep out. The mapping runs where the refusal is produced and the result rides on `SerializedPilotError.details`, which `serializedPilotErrorSchema` already validates, so **no IPC contract changed**. `src/observation/failure-view.ts` is the renderer-safe reader, and a compile-time assertion in `main/observation-failure.ts` fails the build if the two ever disagree about the tool's name. |
+| **`QuestionAnchorSource` stays on the interaction side** (PR-031, deciding runbook follow-up 3) | PR-024 asked whether it belongs on `ScreenContextService` instead and called the adapter mechanical. It stays where it is, and the adapter (`createObservationAnchorSource`, 25 lines in the composition root) stays too. The deciding reason is not effort: `ScreenContextService` is the *entire* surface `observe_screen` may reach screen state through, so three pointer-timeline methods on it would give the model's tool a raw read of pointer history — accessibility roles and labels included — that bypasses §10's seven-step policy. The second reason is that it would be a contract change to a system-design §5 interface inside an integration PR, which the phase rules exclude. The third is that writing the adapter was worth it: the predicted identity function is not quite one (`PointerTimeline.select` has a `scene-mismatch` failure the port has no name for, and `core.selectPointer` scopes to the current scene by default), and both differences are now stated in one place instead of being discovered later. **Say if you would rather have it on `ScreenContextService`** — still mechanical, and it becomes a `packages/` change rather than an app one. |
+| **The anchor's element is retained separately from the pointer timeline** (PR-031) | The timeline keeps a `GroundedPointer`, whose `accessibilityTarget` is a summary — role, label, normalised bounds — with any secure value already dropped. §10's redaction step needs two fields that summary does not carry, `isSecure` and screen-point `bounds`, so handing it to the facade would have quietly disabled masking of a password field under the user's own pointer. `PointerTargetLog` (`main/question-anchor.ts`) keeps the platform's own `AccessibilityNode` beside the timeline, keyed by the instant of the sample it belongs to, bounded at 4096 records, **and it refuses to retain anything for a pointer outside the selected window** — so there is nothing to leak rather than a filter that could be got wrong. It is dropped by the retention guard in the same call that empties the ring: a role and a label read off a screen are screen content (§13). |
+| **The pending anchor is withdrawn when the question is answered, and the record is kept** (PR-031) | `moment: 'current'` still reads the anchor — for its pointer, its `requestedScene` and its element — so a "Look now" pressed after an answer would otherwise be grounded on the previous question's pointer and told to validate a scene reference nobody asked about. The live anchor is therefore cleared the moment the machine stops waiting for an utterance. What is *not* cleared is the diagnostic record of what the last question was grounded on (`lastAnchor()`), because that is what the panel and the demo want to show afterwards. |
+| **A question that cannot be anchored is still a question** (PR-031) | No pointer sample, no scene, or a scene belonging to a window other than the selected one: each drops the anchor and records why (`lastSkip()`), and the question is submitted anyway. The envelope already says so in words (`grounding: 'pointer-unknown'`, with a note), the facade reads a `null` anchor as "a look at now" — which is what an unanchored question is — and system-design §16 keeps the text box the way out of every degraded state. The alternative, refusing to submit, would make a momentarily-missing pointer look like a broken Pilot. |
+| **The app now sends `ownerPid` with every pointer grounding** (PR-031, runbook cross-lane issue 12) | `AccessibilityGroundingTarget.ownerPid` is optional and **both** of PR-013's defences against describing another application's element are conditional on it. PR-028 omitted it, which cost nothing until PR-031 made the element reach a prompt — and then it put a label from the *other* stub window straight into the model's request. `ownerPidFor` reads the pid off `MacWindowAdapter.lastSnapshot` structurally, so a `WindowAdapter` without that getter still works and simply falls back to the geometric check. **The real fix is `ownerPid` on the window contract** (runbook follow-up 29); until it lands, any new caller of `ground`/`groundFast` must pass it by hand, and nothing in the type system will say so. |
+| **`ScreenContextAnchor.at` is the pointer sample's instant, not the submission's** (PR-031) | `screenContextAnchor` (PR-019) projects `QuestionAnchor.at`, which is when the anchoring *sample* was taken, and the facade selects the frame at or before it. In the app the two are within the same skew bound the envelope uses (±1000 ms, and in practice a few milliseconds at 30 Hz), so it behaves as "the screen when you asked". It was left as PR-019 wrote it rather than overridden with `askedAt`: selecting a frame at or before the sample the question is grounded on is the more defensible reading, and changing another lane's projection inside an integration PR is what the phase rules exclude. **Consequence worth knowing:** on a Mac where pointer sampling falls behind, `moment: 'question'` selects an older frame than it needs to — §1 step 9 item 3 asks for the number. |
 | **`ObservationView` gained `looking`, and `capturing` was left alone** (PR-030) | system-design §14 asks the user be able to see Pilot looking at their screen. PR-009's indicator answers a different question — "may Pilot watch this window" — and it is the app's single answer to it, so it was not touched and no seventh indicator state was added. `looking` is a second boolean, true in exactly the one interaction state (`observing-screen`) that both the model's tool call and "Look now" pass through. Both are rendered, side by side, because "Pilot may watch this" and "Pilot is reading this right now" are different promises and collapsing them would make the more sensitive one invisible. |
 
 ---
@@ -657,6 +748,7 @@ reversible; raise any that look wrong.
 | Phase 3 — integration (028…036) | In progress. **PR-029 is merged**: the desktop app holds real, multi-turn, interruptible text conversations through a real `PiAgentSession` — against a faux provider, because §2 is still open. Observation, speech, permissions, the window list and persistence are still fake. The remaining steps mostly need the Mac (§1) and a signed-in model (§2). |
 | Phase 3 — integration (028…036) | In progress. **PR-028 is merged**: the observation boundary is real. The window picker, the permission states and the capture lifecycle run on `MacWindowAdapter`, `MacPermissionAdapter`, `MacAccessibilityAdapter` and `MacObservationAdapter`, the frames land in a real `ObservationCore` ring, and PR-019's `PilotScreenContextService` answers behind it — verified end to end against the Node helper stub, and **never once against macOS** (§1 step 7). Speech, the model, persistence and the agent-side `observe_screen` (PR-030) are still fake. |
 | Phase 3 — integration (028…036) | In progress. **PR-030 is merged**: the model can see the selected window. `observe_screen` reaches PR-019's real `PilotScreenContextService` — the same instance "Look now" drives — and a real image reaches the provider's inbox; the observing state is visible while it happens and a refusal reaches the user as a sentence. Selected-window-only was re-proved against the real service. **Never once against macOS, and never once against a real model** (§1 step 8, §2): the pixels are the Node helper stub's and the tool call is scripted. Speech, persistence, the question anchor and the model itself are still fake. |
+| Phase 3 — integration (028…036) | In progress. **PR-031 is merged: point-and-ask works.** The §6 question anchor is resolved at submission from the real pointer timeline and handed to the same `PilotScreenContextService` the tool holds, so `moment: 'question'` answers from the frame that was on screen when the question was asked, `view: 'pointer'` crops around the anchor, and the element under it reaches the model as `targetRole`. `FakeQuestionAnchorSource` is gone from the real path and `ScreenContextInputs` has no unwired input left. It also fixed a real leak PR-028 left (runbook cross-lane issue 12). **Never once against macOS, and never once against a real model**: no real pointer has ever been read and no real accessibility element has ever been hit-tested (§1 step 9, §2). Speech, persistence and the model itself are still fake. |
 | Phase 4 — providers (037…039) | Not started. PR-037 (Codex) is the one the user's decision selects. |
 | Phase 5 — hardening and release (040…044) | Not started. |
 
@@ -712,6 +804,15 @@ demo executed against the merged tree.
   as the exact sentence the UI must show, and `secureBasis: 'none'` means
   "macOS did not mark this", never "this is safe". **The product must not
   describe this as redaction of secrets; it is redaction of recognised fields.**
+  **PR-031 is what connected it.** Until this PR the flag had no consumer in the
+  app: `ScreenContextInputs.anchor` was never set, so `pointerTarget` never
+  reached §10's redaction step and no mask was ever computed from a real
+  element. It does now — the anchor carries the platform's own
+  `AccessibilityNode`, `isSecure` and screen-point `bounds` and all — so §1 step
+  9 item 2 (point at a real password field and ask) is the first observation
+  that can tell whether the redaction path fires at all. If it never does, the
+  chain is: no `AXSecureTextField` → no `isSecure` → no mask → a password in a
+  pointer crop, with the caveat text still promising best effort.
 - **The helper has no run loop, and speech frameworks may want one** (PR-014).
   `HelperRuntime.run` blocks the main thread in `read()` for the life of the
   process. Anything Apple delivers on the main queue therefore never fires.
