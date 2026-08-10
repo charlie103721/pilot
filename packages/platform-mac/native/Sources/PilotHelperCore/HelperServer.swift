@@ -15,18 +15,26 @@ public enum HelperOutcome {
 /// PR-003 implemented transport only: `health` (the host's startup handshake
 /// and liveness probe) and `echo` (which round-trips the binary body so the
 /// length-prefixed payload path is exercised before PR-012 needs it). PR-011
-/// added the permission and window operations.
+/// added the permission and window operations; PR-014 added the speech ones.
 ///
-/// `handle(frame:)` remains a function of its input and its two injected
-/// services, so the XCTest target exercises every branch — including the
-/// permission and window ones — without a window server, a TCC prompt or a
-/// spawned process.
+/// `handle(frame:)` remains a function of its input and its injected services,
+/// so the XCTest target exercises every branch — including the permission,
+/// window and speech ones — without a window server, a TCC prompt, a
+/// microphone or a spawned process.
+///
+/// The speech operations are the first whose answers were *collected
+/// asynchronously*: recognition and synthesis callbacks append to a
+/// lock-protected queue and `speech.*.poll` drains it. None of that touches
+/// this loop, so stdout still has exactly one writer — the property PR-003's
+/// framing and supervision depend on.
 public final class HelperServer {
     public let helperVersion: String
     private let processIdentifier: Int
     private let startedAt: Date
     private let permissions: PermissionService
     private let windows: WindowService
+    private let speechInput: SpeechInputService
+    private let speechOutput: SpeechOutputService
     private var eventCounter = 0
 
     /// The services default to the live ones, so `main.swift` is unchanged and
@@ -36,13 +44,17 @@ public final class HelperServer {
         processIdentifier: Int = Int(ProcessInfo.processInfo.processIdentifier),
         startedAt: Date = Date(),
         permissions: PermissionService = SystemPermissionService(),
-        windows: WindowService = SystemWindowService()
+        windows: WindowService = SystemWindowService(),
+        speechInput: SpeechInputService = SystemSpeechInputService(),
+        speechOutput: SpeechOutputService = SystemSpeechOutputService()
     ) {
         self.helperVersion = helperVersion
         self.processIdentifier = processIdentifier
         self.startedAt = startedAt
         self.permissions = permissions
         self.windows = windows
+        self.speechInput = speechInput
+        self.speechOutput = speechOutput
     }
 
     private var uptimeMilliseconds: Int {
@@ -186,7 +198,170 @@ public final class HelperServer {
                     "screenLocked": outcome.screenLocked,
                 ]
             )
+        case .speechInputAvailability:
+            let locale = request.payload["locale"] as? String
+            return success(
+                request: request,
+                payload: speechInput.availability(locale: locale).jsonObject
+            )
+        case .speechInputStart:
+            guard let utteranceId = request.payload["utteranceId"] as? String,
+                !utteranceId.isEmpty,
+                let onDevice = request.payload["onDevice"] as? Bool
+            else {
+                return failure(
+                    request: request,
+                    code: "invalid-request",
+                    domain: "ipc",
+                    message: "speech.input.start requires utteranceId and onDevice"
+                )
+            }
+            do {
+                let outcome = try speechInput.start(
+                    utteranceId: utteranceId,
+                    onDevice: onDevice,
+                    locale: request.payload["locale"] as? String
+                )
+                return success(request: request, payload: outcome.jsonObject)
+            } catch let error as SpeechServiceError {
+                return speechFailure(request: request, error: error)
+            } catch {
+                return speechFailure(
+                    request: request,
+                    error: SpeechServiceError(
+                        code: .interalUnclassified,
+                        message: error.localizedDescription
+                    )
+                )
+            }
+        case .speechInputStop:
+            guard let utteranceId = request.payload["utteranceId"] as? String else {
+                return failure(
+                    request: request,
+                    code: "invalid-request",
+                    domain: "ipc",
+                    message: "speech.input.stop requires an utteranceId"
+                )
+            }
+            // `accepted: false` is a normal answer, not an error: a recogniser
+            // that endpointed early has already closed this utterance.
+            return success(
+                request: request,
+                payload: ["accepted": speechInput.stop(utteranceId: utteranceId)]
+            )
+        case .speechInputCancel:
+            guard let utteranceId = request.payload["utteranceId"] as? String else {
+                return failure(
+                    request: request,
+                    code: "invalid-request",
+                    domain: "ipc",
+                    message: "speech.input.cancel requires an utteranceId"
+                )
+            }
+            return success(
+                request: request,
+                payload: ["accepted": speechInput.cancel(utteranceId: utteranceId)]
+            )
+        case .speechInputPoll:
+            guard let since = (request.payload["sinceSequence"] as? NSNumber)?.intValue else {
+                return failure(
+                    request: request,
+                    code: "invalid-request",
+                    domain: "ipc",
+                    message: "speech.input.poll requires a sinceSequence"
+                )
+            }
+            return success(
+                request: request,
+                payload: speechInput.poll(since: since).inputJSONObject
+            )
+        case .speechOutputAvailability:
+            let outcome = speechOutput.availability()
+            return success(
+                request: request,
+                payload: [
+                    "available": outcome.available,
+                    "voices": outcome.voices.map { $0.jsonObject },
+                ]
+            )
+        case .speechOutputSpeak:
+            guard let speechId = request.payload["speechId"] as? String, !speechId.isEmpty,
+                let text = request.payload["text"] as? String, !text.isEmpty
+            else {
+                return failure(
+                    request: request,
+                    code: "invalid-request",
+                    domain: "ipc",
+                    message: "speech.output.speak requires speechId and text"
+                )
+            }
+            do {
+                let queued = try speechOutput.speak(
+                    speechId: speechId,
+                    text: text,
+                    voice: request.payload["voice"] as? String,
+                    rate: (request.payload["rate"] as? NSNumber)?.doubleValue
+                )
+                return success(request: request, payload: ["accepted": true, "queued": queued])
+            } catch let error as SpeechServiceError {
+                return speechFailure(request: request, error: error)
+            } catch {
+                return speechFailure(
+                    request: request,
+                    error: SpeechServiceError(
+                        code: .synthesisFailed,
+                        message: error.localizedDescription
+                    )
+                )
+            }
+        case .speechOutputStop:
+            let speechId = request.payload["speechId"] as? String
+            return success(
+                request: request,
+                payload: ["stopped": speechOutput.stop(speechId: speechId)]
+            )
+        case .speechOutputPoll:
+            guard let since = (request.payload["sinceSequence"] as? NSNumber)?.intValue else {
+                return failure(
+                    request: request,
+                    code: "invalid-request",
+                    domain: "ipc",
+                    message: "speech.output.poll requires a sinceSequence"
+                )
+            }
+            return success(
+                request: request,
+                payload: speechOutput.poll(since: since).outputJSONObject
+            )
         }
+    }
+
+    /// Speech failures answer with the host's own speech error codes, so a
+    /// refusal to record arrives as `speech-unavailable` rather than as a
+    /// generic transport error the UI cannot act on.
+    private func speechFailure(
+        request: HelperRequest,
+        error: SpeechServiceError
+    ) -> HelperOutcome {
+        let code: String
+        switch error.code {
+        case .permissionDenied:
+            code = "permission-denied"
+        case .recognizerUnavailable, .onDeviceUnavailable, .voiceUnavailable:
+            code = "speech-unavailable"
+        case .cancelled:
+            code = "cancelled"
+        case .synthesisFailed:
+            code = "speech-output-failed"
+        default:
+            code = "speech-input-failed"
+        }
+        return failure(
+            request: request,
+            code: code,
+            domain: error.code == .permissionDenied ? "permission" : "speech",
+            message: "\(error.code.rawValue): \(error.message)"
+        )
     }
 
     private func permissionKind(from request: HelperRequest) -> PermissionKind? {

@@ -7,9 +7,12 @@ macOS platform package.
 - **PR-011** adds the first two adapters on top of it: permissions — including
   parent-bundle attribution validation — and window enumeration with lifecycle
   events.
+- **PR-014** adds speech: Apple Speech transcription with an on-device
+  preference and a renderable privacy disclosure, and `AVSpeechSynthesizer`
+  playback with prompt interruption.
 
-Capture (PR-012), Accessibility grounding (PR-013), speech (PR-014) and
-push-to-talk (PR-015) come next.
+Capture (PR-012), Accessibility grounding (PR-013) and push-to-talk (PR-015)
+come next.
 
 > **Nothing under `native/` has ever been compiled.** There is no Swift
 > toolchain and no Mac on the development machine (`docs/runbook.md` amendment
@@ -27,11 +30,16 @@ src/protocol/messages.ts           JSON message envelopes (request/response/even
 src/protocol/operation-kit.ts      the operation type and its constructor
 src/protocol/operations.ts         the closed operation set
 src/protocol/permission-ops.ts     permission operations and their schemas
+src/protocol/speech-ops.ts         speech operations and their schemas
 src/protocol/window-ops.ts         window operations and their schemas
 src/transport/channel.ts           framing bound to a pair of streams
 src/transport/helper-transport.ts  spawn, restart, correlation, deadlines
 src/permissions/attribution.ts     the attribution verdict table
 src/permissions/mac-permission-adapter.ts
+src/speech/disclosure.ts           the on-device decision and its disclosure
+src/speech/errors.ts               typed errors for every speech failure
+src/speech/mac-speech-input-adapter.ts
+src/speech/mac-speech-output-adapter.ts
 src/windows/window-model.ts        stable window ids and domain mapping
 src/windows/window-diff.ts         lifecycle events, by snapshot diff
 src/windows/mac-window-adapter.ts
@@ -41,6 +49,7 @@ native/                            SwiftPM package producing `PilotHelper`
 test/support/helper-stub.ts        Node stand-in that speaks the same protocol
 test/demo.ts                       the PR-003 demo
 test/demo-permissions.ts           the PR-011 demo
+test/demo-speech.ts                the PR-014 demo
 ```
 
 ## Wire format
@@ -102,11 +111,23 @@ message metadata stays printable and log-safe.
 | `permissions.attribution` | `{ expected }` | `{ evidence }` | none | 011 |
 | `windows.list` | `{ includeAllLayers? }` | `{ windows, displays, screenLocked, titlesWithheld, capturedAt }` | none | 011 |
 | `windows.get` | `{ windowNumber }` | `{ window, display, screenLocked }` | none | 011 |
+| `speech.input.availability` | `{ locale? }` | `{ facts, microphone, speechRecognition }` | none | 014 |
+| `speech.input.start` | `{ utteranceId, onDevice, locale? }` | `{ started, onDevice, locale }` | none | 014 |
+| `speech.input.stop` | `{ utteranceId }` | `{ accepted }` | none | 014 |
+| `speech.input.cancel` | `{ utteranceId }` | `{ accepted }` | none | 014 |
+| `speech.input.poll` | `{ sinceSequence }` | `{ events, sequence, dropped, recording, activeUtteranceId }` | none | 014 |
+| `speech.output.availability` | `{}` | `{ available, voices }` | none | 014 |
+| `speech.output.speak` | `{ speechId, text, voice?, rate? }` | `{ accepted, queued }` | none | 014 |
+| `speech.output.stop` | `{ speechId? }` | `{ stopped }` | none | 014 |
+| `speech.output.poll` | `{ sinceSequence }` | `{ events, sequence, dropped, speaking, activeSpeechId }` | none | 014 |
 
 `health` doubles as the startup handshake: `start()` does not resolve until the
 helper answers it.
 
-PR-011 did **not** bump `HELPER_PROTOCOL_VERSION`. Appending operations is
+Every `speech.*` row says `none` under **Binary**, and that is load-bearing
+rather than incidental — see [Speech](#speech).
+
+PR-011 and PR-014 did **not** bump `HELPER_PROTOCOL_VERSION`. Appending operations is
 backwards compatible in both directions: an unknown operation is already a
 typed `invalid-request` on the helper, and an unregistered response is already
 a typed `invalid-request` on the host.
@@ -267,6 +288,113 @@ Bump `HELPER_PROTOCOL_VERSION` (and `FrameConstants.protocolVersion`) only for
 a change that is not backwards compatible; both sides reject a version they do
 not know with `protocol-version-mismatch`.
 
+## Speech
+
+### Raw audio never leaves the helper process
+
+`docs/system-design.md` §13 lists raw microphone buffers under *memory-only*
+and raw audio under *never logged*. The design honours that by giving the audio
+nowhere to go rather than by remembering not to move it:
+
+| Guarantee | How it is enforced | Where it is asserted |
+| --- | --- | --- |
+| No audio crosses the helper boundary | every `speech.*` operation declares `requestBinary: false, responseBinary: false`, and the transport rejects a binary payload on an operation that does not accept one | `test/speech-privacy.test.ts` |
+| No audio reaches disk | the Swift speech sources contain no file, `URLSession` or `AVAudioFile` API at all, and use `SFSpeechAudioBufferRecognitionRequest` rather than the URL-based request that reads audio from a file | source scan in the same test |
+| Audio has exactly one destination | one `.append(buffer)` in the whole tree — the `AVAudioEngine` tap into the recognition request | source scan in the same test |
+| Nothing transcript-shaped is logged | a full transcription and playback run under a logger set to `onViolation: 'throw'` | the same test |
+
+Transcripts are treated the same way as audio. `@pilot/shared`'s logger already
+redacts fields named `transcript`; the adapters simply never pass one, and log
+ids, event kinds and reasons instead.
+
+### On-device preference, and the disclosure when it cannot be honoured
+
+`SFSpeechRecognizer` recognises speech remotely by default. When a Mac cannot
+handle a locale on device, the microphone audio is uploaded to Apple and the
+API says nothing about it — same transcript, no flag on the result, no
+observable difference except that it stops working offline.
+
+So Pilot does not *infer* that recognition stayed local. It **requires** it:
+`requiresOnDeviceRecognition` makes recognition fail rather than fall back, and
+that flag is the only guarantee macOS offers. Reading
+`supportsOnDeviceRecognition` and hoping is an inference, not a guarantee, and
+this package never makes it.
+
+The helper reports facts; the host decides (`src/speech/disclosure.ts`), the
+same split PR-011 used for attribution and for the same reason — the decision
+is then testable on Linux:
+
+| Recogniser | `requireOnDevice` | Outcome | `destination` | `leavesDevice` |
+| --- | --- | --- | --- | --- |
+| absent or offline | either | refuse | `unknown` | `false` |
+| supports on device | either | record locally | `on-device` | `false` |
+| no on-device support | `true` | **refuse** | `remote-service` | `true` |
+| no on-device support | `false` | record, disclosed | `remote-service` | `true` |
+
+Every row produces a `SpeechRecognitionDisclosure` (`@pilot/shared`) with a
+headline, a detail and a machine-readable reason — data the renderer draws,
+exactly like PR-008's permission catalogue. It reaches consumers three ways:
+`availability()`, the optional `disclosure()` method on `SpeechInputAdapter`,
+and `details.disclosure` on the `speech-unavailable` error raised by a refusal,
+so the refusal can explain itself instead of reading as a malfunction.
+
+`requireOnDevice` defaults to `true`, which is what PR-025's binding sends and
+what PR-008's onboarding copy promises the user ("If this Mac can only
+recognise speech by sending audio away, Pilot refuses and asks you to type
+instead").
+
+### Why the host polls for transcripts
+
+Recognition is asynchronous, but the helper's stdio loop is single-threaded and
+blocking. Pushing events would mean a second thread writing frames concurrently
+with the request loop — a write lock and a second failure surface, in Swift
+that cannot be compiled here. PR-011 declined that for window lifecycle;
+PR-014 declines it for the same reason.
+
+Callbacks therefore append to a lock-protected queue inside the helper and the
+host drains it with `speech.*.poll` (60 ms while an utterance is open or
+something is speaking; the poller stops when neither is true). A drain is
+idempotent — it asks for everything after `sinceSequence` — so a poll lost to a
+deadline is simply repeated. Overflow drops the *oldest* event and reports a
+cumulative count, because the oldest entry of an overflowing queue is a stale
+partial and the newest is the transcript.
+
+The two places where latency is the requirement do not poll at all:
+
+- **Stopping speech** (§17 budgets below 300 ms) is a request whose response
+  names every utterance the synthesiser discarded, so `stopped` is emitted from
+  that response. One round trip, no interval.
+- **Starting recognition** returns the on-device decision in its own response.
+
+### Teardown is idempotent on both sides
+
+Apple Speech endpoints on its own, so a `final` routinely arrives *before*
+push-to-talk is released; it can deliver a second `isFinal`; and a cancelled
+task can still call its handler. PR-025's binding absorbs all of that one layer
+up, but the native layer does not lean on it:
+
+- `stop()` and `cancel()` for an utterance that is not open **resolve**; they do
+  not throw. (PR-025 found the defect: a recogniser that finished early made
+  `stop-listening` throw, the throw became `failure`, and an already-submitted
+  question landed the user in `error`.)
+- At most one terminal event per utterance reaches a caller. The adapter keeps
+  a bounded ledger of ended utterances; the helper keeps its own
+  (`SpeechTerminalLedger`).
+- A recogniser that finalises early releases the microphone there and then,
+  rather than waiting for a `stop` that may never come.
+- A helper that dies with an utterance open fails that utterance immediately
+  rather than leaving a caller waiting for a transcript that cannot arrive.
+
+### One synthesis queue, one stop
+
+`AVSpeechSynthesizer` owns its queue and offers no way to remove one entry, so
+stopping any utterance flushes all of them. That is reported rather than
+hidden: `stop(id)` returns every discarded id and the adapter emits `stopped`
+for each, so nothing upstream waits on a chunk that will never be spoken.
+Handing consecutive chunks (PR-026) to that native queue is also what keeps
+sentence-to-sentence playback gapless — the host is not in the loop between
+them.
+
 ## Failure modes
 
 Nothing hangs and nothing is dropped silently. Every failure is a typed
@@ -288,6 +416,12 @@ Nothing hangs and nothing is dropped silently. Every failure is a typed
 | macOS credits permissions to the helper or another bundle | `permission-attribution-mismatch` (PR-011) |
 | System Settings could not be opened | `platform-unavailable` (PR-011) |
 | helper omits a permission from its snapshot | `invalid-request` (PR-011) |
+| Microphone or Speech Recognition not granted | `permission-denied` / `permission-restricted` / `permission-unknown`, with `details.kind` (PR-014) |
+| recognition would have to leave the Mac and the caller required on device | `speech-unavailable`, with `details.disclosure` (PR-014) |
+| no recogniser for the locale, or the recogniser is offline | `speech-unavailable` (PR-014) |
+| recognition heard nothing, lost the microphone, or failed | `speech-input-failed` (PR-014) |
+| the Mac has no synthesis voice | `speech-unavailable` (PR-014) |
+| synthesis failed or was lost mid-utterance | `speech-output-failed` (PR-014) |
 
 Restarts use exponential backoff (250 ms × 2ⁿ, capped at 5 s) with a budget of
 5 restarts per 60 s window; exceeding it puts the transport in `failed` and
@@ -322,11 +456,18 @@ restart with backoff, restart-budget exhaustion and shutdown escalation, plus
 (PR-011) all four permissions in all four states, every attribution verdict,
 window enumeration, the lifecycle diff and the failure paths of both adapters.
 
+PR-014 extends the stub into a **scripted, deliberately misbehaving
+recogniser**: it finalises before the key is released, finalises twice, calls
+back after `cancel()`, attributes a result to a superseded utterance and fails
+halfway through — because Apple Speech does all five. A stub that quietly
+refused to reproduce them would make the host's defences untestable.
+
 Demos (require `pnpm build` first, because they run against `dist/`):
 
 ```sh
 pnpm --filter @pilot/platform-mac demo               # PR-003 transport
 pnpm --filter @pilot/platform-mac demo:permissions   # PR-011 permissions and windows
+pnpm --filter @pilot/platform-mac demo:speech        # PR-014 speech
 ```
 
 The first prints the health handshake, a typed echo, a 256 KiB binary fixture
@@ -336,9 +477,18 @@ crash report → restart cycle.
 The second prints the four permissions in each of the four states, the
 attribution verdict, the whole verdict table evaluated on synthetic evidence,
 the enumerated windows with geometry, and a scripted lifecycle sequence
-(retitle → move+resize → close → screen lock). Both print which target they
-selected on their first line; if it says "Node stub", the Swift build did not
-land where it was expected.
+(retitle → move+resize → close → screen lock).
+
+The third prints the on-device decision table, a held recording transcribed
+partial-by-partial, a recogniser that finalises early, a double final, a
+callback after cancel, a mid-utterance failure, the privacy refusal and its
+disclosure, both permission denials, two spoken chunks interrupted mid-sentence
+with the measured `stop()` round trip, and a Mac with no voice. Against the
+stub **nothing is recorded and nothing is audible**; it says so, and it ends
+with the list of what it could not demonstrate.
+
+All three print which target they selected on their first line; if it says
+"Node stub", the Swift build did not land where it was expected.
 
 ### What is *not* verified anywhere
 
@@ -361,11 +511,39 @@ Stated plainly, because none of it has run:
 - Whether macOS withholds window titles the way `titlesWithheld` assumes.
 - Whether the `/usr/bin/open` settings URLs land on the right panes.
 
+New with PR-014, and none of it exercised either:
+
+- **Nothing has been recorded and nothing has been spoken.** No microphone has
+  been opened, no `AVAudioEngine` started, no utterance synthesised.
+  `SFSpeechRecognizer`, `SFSpeechAudioBufferRecognitionRequest`,
+  `AVAudioEngine`, `AVSpeechSynthesizer` and `AVSpeechSynthesisVoice` are
+  entirely unexercised.
+- **Whether `requiresOnDeviceRecognition` really keeps the audio local.** The
+  whole privacy story rests on Apple's documented behaviour — that it fails
+  rather than falling back — and that has not been observed.
+- **Whether `SFSpeechRecognizer.queue` is enough.** The helper's main thread is
+  blocked in the stdio read loop and runs no run loop, so a callback delivered
+  on the main queue would never fire. The recogniser's queue is set explicitly
+  to avoid that; if it turns out not to be sufficient, the fallback is to move
+  the stdio loop off the main thread.
+- **Whether `AVSpeechSynthesizerDelegate` fires at all** in a process with no
+  run loop. `SystemSpeechOutputService` therefore does not depend on it: a
+  poll-time reconciliation against `isSpeaking` ends utterances the delegate
+  never reported. If the delegate works, the reconciliation finds nothing to
+  do. **If neither works, TTS completion never arrives** — this is the single
+  most important thing to watch for in `demo:speech` on a Mac.
+- **The Apple Speech error numbers are folklore.** `kAFAssistantErrorDomain` is
+  undocumented; `SpeechErrorMapper` degrades an unrecognised number to
+  `recognizer-failed`, which is still a correct typed failure.
+- Whether `addsPunctuation`, `taskHint` and `AVSpeechSynthesisVoiceQuality`
+  behave as assumed, and whether an early `endAudio()` really yields a final.
+
 The Swift that *is* covered by `swift test` is the pure logic: the permission
 state mappers, the settings-URL table, the bundle-path walk, the
 `CGWindowListCopyWindowInfo` dictionary parser, display assignment, JSON
-serialisation, and every PR-011 operation dispatched through `HelperServer`
-with stub services.
+serialisation, the speech event queue, the terminal ledger, the speech error
+classifier, the rate mapper, and every PR-011 and PR-014 operation dispatched
+through `HelperServer` with stub services.
 
 ### On the Mac (Swift, batched per runbook §2)
 
@@ -379,21 +557,23 @@ cd packages/platform-mac
 swift build --package-path native            # debug
 swift build --package-path native -c release # release
 
-# 2. Run the Swift unit tests (frame codec, server behaviour, PR-011 pure logic).
+# 2. Run the Swift unit tests (frame codec, server behaviour, PR-011 and
+#    PR-014 pure logic).
 swift test --package-path native
 
-# 3. Run both demos against the real helper instead of the Node stub.
+# 3. Run all three demos against the real helper instead of the Node stub.
 cd ../..
 pnpm build
 pnpm --filter @pilot/platform-mac demo
 pnpm --filter @pilot/platform-mac demo:permissions
+pnpm --filter @pilot/platform-mac demo:speech
 ```
 
 Step 3 needs no configuration: `resolveHelperBinary()` finds
 `native/.build/debug/PilotHelper` on its own. Set `PILOT_HELPER_BINARY` to
-point somewhere else, or `--configuration release` output. Both demos print
-which target they chose on their first line; if it says "Node stub", the Swift
-build did not land where it was expected.
+point somewhere else, or `--configuration release` output. All three demos
+print which target they chose on their first line; if it says "Node stub", the
+Swift build did not land where it was expected.
 
 Expected results: `swift build` produces `native/.build/debug/PilotHelper`;
 `swift test` passes; `demo`'s sections 1–4 and 6 behave exactly as they do
@@ -401,21 +581,48 @@ against the stub (section 5 is skipped — the Swift helper has no crash-on-dema
 operation).
 
 A `swift build` failure in PR-003 code is a PR-003 defect; in the files below
-it is a PR-011 defect. Either way, report the compiler output rather than
-working around it. New in PR-011, and therefore new compile risk:
+it is a PR-011 or PR-014 defect. Either way, report the compiler output rather
+than working around it. New compile risk:
 
 ```text
-Sources/PilotHelperCore/PermissionModel.swift    pure — Foundation only
-Sources/PilotHelperCore/Attribution.swift        pure — Foundation only
-Sources/PilotHelperCore/WindowModel.swift        pure — Foundation only
-Sources/PilotHelperCore/PermissionProbes.swift   AVFoundation, Speech, ApplicationServices, CoreGraphics, Darwin
-Sources/PilotHelperCore/WindowEnumerator.swift   CoreGraphics, AppKit
+Sources/PilotHelperCore/PermissionModel.swift    pure — Foundation only          PR-011
+Sources/PilotHelperCore/Attribution.swift        pure — Foundation only          PR-011
+Sources/PilotHelperCore/WindowModel.swift        pure — Foundation only          PR-011
+Sources/PilotHelperCore/PermissionProbes.swift   AVFoundation, Speech, ApplicationServices, CoreGraphics, Darwin   PR-011
+Sources/PilotHelperCore/WindowEnumerator.swift   CoreGraphics, AppKit            PR-011
+Sources/PilotHelperCore/SpeechModel.swift        pure — Foundation only          PR-014
+Sources/PilotHelperCore/SpeechServices.swift     AVFoundation, Speech            PR-014
 ```
 
-The three pure files are the ones the tests cover; the two framework files are
-the risk. `PermissionProbes.swift` uses `dlsym` for
+The pure files are the ones the tests cover; the framework files are the risk.
+`PermissionProbes.swift` uses `dlsym` for
 `responsibility_get_pid_responsible_for_pid`, which is SPI — if it does not
 resolve, attribution reports `inferred` rather than failing.
+
+### What `demo:speech` will do on a Mac
+
+Unlike the stub run, this one **opens the microphone and makes noise**, and it
+prompts if Microphone or Speech Recognition has not been granted. Watch for, in
+order:
+
+1. **Section 1**: `onDevice`. `true` means this Mac can recognise the locale
+   locally and nothing leaves. `false` on an English-locale Mac would be a
+   surprise worth reporting — it means Pilot refuses to listen by default.
+2. **Section 2**: whether partial transcripts appear at all. If the section
+   prints only a `final`, or nothing, the recognition callbacks are not
+   reaching the helper's queue — the `SFSpeechRecognizer.queue` question above.
+   This is the most likely single point of failure in the whole PR.
+3. **Sections 3–5**: whether the *real* recogniser reproduces the scripted
+   misbehaviour. Report what it actually does; the host handles all of it
+   either way, and the answer is worth having written down.
+4. **Section 9**: whether both chunks are audible, whether the second follows
+   the first without a gap, and whether the interruption is audibly immediate.
+   The printed `stop()` round trip is only the IPC cost — the number that
+   matters against the 300 ms budget is when the sound actually stops.
+5. **Section 9 again**: whether `finished` is ever reported for a chunk left to
+   play out. If it never arrives, neither the delegate nor the `isSpeaking`
+   reconciliation is working, and PR-026's buffer will stall on the first
+   chunk.
 
 ### What `demo:permissions` will now raise on a Mac
 

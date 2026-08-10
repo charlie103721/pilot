@@ -13,6 +13,17 @@ import {
   permissionSnapshotOperation,
   permissionStatusOperation,
 } from './permission-ops.js';
+import {
+  speechInputAvailabilityOperation,
+  speechInputCancelOperation,
+  speechInputPollOperation,
+  speechInputStartOperation,
+  speechInputStopOperation,
+  speechOutputAvailabilityOperation,
+  speechOutputPollOperation,
+  speechOutputSpeakOperation,
+  speechOutputStopOperation,
+} from './speech-ops.js';
 import { windowGetOperation, windowListOperation } from './window-ops.js';
 
 /**
@@ -20,11 +31,12 @@ import { windowGetOperation, windowListOperation } from './window-ops.js';
  * "restricted to explicit operations").
  *
  * PR-003 shipped transport only: `health` and `echo`. PR-011 appends the
- * permission and window operations. The transport itself never grows a generic
- * "run anything" call, and `HELPER_PROTOCOL_VERSION` is unchanged — adding
- * operations is backwards compatible in both directions, because an unknown
- * operation is already a typed `invalid-request` on the helper and an
- * unregistered response is already a typed `invalid-request` on the host.
+ * permission and window operations; PR-014 appends the speech ones. The
+ * transport itself never grows a generic "run anything" call, and
+ * `HELPER_PROTOCOL_VERSION` is unchanged — adding operations is backwards
+ * compatible in both directions, because an unknown operation is already a
+ * typed `invalid-request` on the helper and an unregistered response is
+ * already a typed `invalid-request` on the host.
  */
 
 export {
@@ -96,6 +108,16 @@ export const HELPER_OPERATIONS = {
   permissionAttribution: permissionAttributionOperation,
   windowList: windowListOperation,
   windowGet: windowGetOperation,
+  // PR-014
+  speechInputAvailability: speechInputAvailabilityOperation,
+  speechInputStart: speechInputStartOperation,
+  speechInputStop: speechInputStopOperation,
+  speechInputCancel: speechInputCancelOperation,
+  speechInputPoll: speechInputPollOperation,
+  speechOutputAvailability: speechOutputAvailabilityOperation,
+  speechOutputSpeak: speechOutputSpeakOperation,
+  speechOutputStop: speechOutputStopOperation,
+  speechOutputPoll: speechOutputPollOperation,
 } as const;
 
 export const HELPER_OPERATION_NAMES: readonly string[] = Object.values(HELPER_OPERATIONS).map(

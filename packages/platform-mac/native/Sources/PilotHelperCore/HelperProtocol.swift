@@ -26,6 +26,16 @@ public enum HelperProtocol {
         case permissionsAttribution = "permissions.attribution"
         case windowsList = "windows.list"
         case windowsGet = "windows.get"
+        // PR-014
+        case speechInputAvailability = "speech.input.availability"
+        case speechInputStart = "speech.input.start"
+        case speechInputStop = "speech.input.stop"
+        case speechInputCancel = "speech.input.cancel"
+        case speechInputPoll = "speech.input.poll"
+        case speechOutputAvailability = "speech.output.availability"
+        case speechOutputSpeak = "speech.output.speak"
+        case speechOutputStop = "speech.output.stop"
+        case speechOutputPoll = "speech.output.poll"
     }
 
     public static let readyEventName = "helper.ready"

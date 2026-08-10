@@ -207,16 +207,20 @@ the two in step.
 | Codex sign-in probe | `docs/pi-notes.md` §9.1 | PR-005 | no |
 | Desktop shell visual demo | `pnpm dev` — menu bar item, panel, fake states | PR-002 | no |
 | **TCC attribution + real permissions and windows** | `pnpm --filter @pilot/platform-mac demo:permissions`, then again with `PILOT_HELPER_BINARY` pointing inside the packaged `.app` | PR-011 | **yes** |
+| **Real speech: transcription, on-device recognition and audible playback** | `pnpm --filter @pilot/platform-mac demo:speech` — opens the microphone and makes noise; run after the permissions row | PR-014 | **yes** |
 
-A Swift compile failure is a **PR-003 defect** in the transport files and a
+A Swift compile failure is a **PR-003 defect** in the transport files, a
 **PR-011 defect** in `PermissionModel.swift`, `Attribution.swift`,
-`WindowModel.swift`, `PermissionProbes.swift` and `WindowEnumerator.swift`:
-either way, send the compiler output and it gets fixed, not worked around.
+`WindowModel.swift`, `PermissionProbes.swift` and `WindowEnumerator.swift`, and
+a **PR-014 defect** in `SpeechModel.swift` and `SpeechServices.swift`: either
+way, send the compiler output and it gets fixed, not worked around.
 
-Every row but the last raises **no TCC prompt** — that separation is
+Every row but the last two raises **no TCC prompt** — that separation is
 deliberate, isolating "does the helper build and talk" from "does macOS trust
-it". The last row is the second question, and it is the one that settles the
-top structural risk in the plan (§7). What to look for is spelled out in
+it". The permissions row is the second question, and it is the one that settles
+the top structural risk in the plan (§7). The speech row is the only one that
+opens the microphone or produces sound, and part of its answer is audible
+rather than printed. What to look for in both is spelled out in
 `docs/handoff.md` §1.
 
 ## 6. Verification commands
@@ -358,6 +362,8 @@ Open items a later PR must close. Each was raised by the lane that found it.
 | 2 | **`QuestionEnvelope.pointer` uses a sentinel, not `null`.** system-design §8 types it as a required numeric pair, so "no pointer was recorded" is carried as `UNKNOWN_NORMALIZED_POINT` (`-1,-1`, deliberately outside `[0,1]`) plus `grounding: 'pointer-unknown'`, read through `envelopePointerKnown()`. Making it nullable is the cleaner shape and needs a coordinated change across two readers. | PR-029 or a focused contract PR |
 | 3 | **`QuestionAnchorSource` is declared on the interaction side** because no contract exposed scene plus pointer-by-instant/interval to that lane. It mirrors `PointerTimeline.select`/`.between` including the tie-break, so PR-031's adapter is the identity function. If it belongs on `ScreenContextService` instead, moving it is mechanical. | PR-031 |
 | 4 | **The panel must offer text input in the `error` state.** PR-025 changed the transition table so `error + submit-text` is accepted (system-design §16: "STT fails → … then offer text input"); a failed recogniser is exactly what puts the machine in `error`. `isTextFallbackAvailable(state)` (exported from `@pilot/interaction`, derived from the table) is the affordance test the renderer should use — if the panel disables its text box whenever `state === 'error'`, the documented fallback is unreachable in the app even though the machine allows it. | PR-010 or PR-032 |
+| 5 | **Voice input is not gated on TCC attribution.** `MacSpeechInputAdapter` reads the Microphone and Speech Recognition states from the helper's own probes and refuses when either is not `granted`. It does **not** run PR-011's attribution check, which is what turns "the OS says granted" into "the grant reaches this process" — coupling the two adapters would have meant a dependency and an extra round trip on every push-to-talk. If attribution is wrong, voice input will report `granted` and then fail to hear anything, exactly the silent wrong answer PR-011 exists to prevent. The wiring PR should establish attribution once through `MacPermissionAdapter` before enabling the voice path. | PR-032 |
+| 6 | **`SpeechInputAdapter.disclosure()` has no route to the renderer.** PR-014 added the optional method and the `SpeechRecognitionDisclosure` shape in `@pilot/shared` (with a zod schema, so it can cross IPC as it stands), but nothing surfaces it. Left unwired, a Mac that cannot recognise the user's language locally simply refuses to listen with a message nobody sees, which reads as a broken microphone. | PR-032, with PR-010 for the panel |
 
 ## 9. Quick start for a new session
 
