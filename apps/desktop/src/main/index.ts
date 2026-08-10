@@ -1,11 +1,20 @@
 import { app, ipcMain, type IpcMainInvokeEvent } from 'electron';
 import { createIdFactory, createJsonSink, createLogger } from '@pilot/shared';
 import {
+  FakeHotkeyAdapter,
   FakeInteractionController,
   FakePermissionAdapter,
   FakeWindowAdapter,
 } from '@pilot/platform/fakes';
 import { IPC_TRANSPORT } from '../ipc/channels.js';
+import { ConversationGate } from './conversation-gate.js';
+import {
+  createFakeConversationDriver,
+  createFakeSpeechDisclosureSource,
+  createReplayClock,
+  resolveHotkeyAvailability,
+  resolveSpeechDisclosure,
+} from './conversation-fixtures.js';
 import {
   createElectronPanelHost,
   createElectronSingleInstanceHost,
@@ -51,8 +60,9 @@ if (!singleInstance.isPrimary) {
   logger.info('exiting as secondary instance');
 } else {
   // Still entirely on the PR-001 fakes: no platform, agent or voice code is
-  // wired up yet. PR-009 and PR-010 replace this controller; PR-011 replaces
-  // the permission adapter below with the real TCC-backed one.
+  // wired up yet. PR-029 replaces this controller with the real
+  // `PilotInteractionController`; PR-011's adapter replaces the permission
+  // adapter below. Everything PR-008…PR-010 built reads from these two.
   const controller = new FakeInteractionController();
 
   // Permission onboarding (PR-008). The fixture the app boots into is chosen by
@@ -75,13 +85,51 @@ if (!singleInstance.isPrimary) {
     logger,
   });
 
+  // Conversation and developer diagnostics (PR-010). Built before the window
+  // gate so every command the window gate dispatches passes through
+  // `noteCommand` too — a question abandoned by changing the observed window is
+  // the same abort as one abandoned with the Interrupt button.
+  //
+  //   PILOT_HOTKEY_FIXTURE=permission-missing pnpm dev   # no way to speak
+  //   PILOT_SPEECH_DISCLOSURE=remote pnpm dev            # audio would leave
+  const replayClock = createReplayClock();
+  const hotkeyAdapter = new FakeHotkeyAdapter({
+    availability: resolveHotkeyAvailability(process.env['PILOT_HOTKEY_FIXTURE']),
+  });
+  const conversation = new ConversationGate({
+    interaction: controller,
+    hotkey: hotkeyAdapter,
+    // PR-032 replaces this with `MacSpeechInputAdapter`; the route to the panel
+    // is what PR-010 owed (runbook follow-up 13).
+    ...(() => {
+      const speech = createFakeSpeechDisclosureSource(
+        resolveSpeechDisclosure(process.env['PILOT_SPEECH_DISCLOSURE']),
+      );
+      return speech === undefined ? {} : { speech };
+    })(),
+    demoFixtures: true,
+    now: () => replayClock.now(),
+    logger,
+  });
+  // Availability only. Turning `hotkey-down`/`hotkey-up` into
+  // `push-to-talk-down`/`push-to-talk-up` is runbook follow-up 6, owned by
+  // PR-032; wiring it here would put the same mapping in two places.
+  void hotkeyAdapter.start();
+
   // Window picker and observation controls (PR-009). Still the PR-001 fake
   // adapter: PR-011's real enumeration cannot run here, and PR-012 owns the
   // capture that a selection will eventually start.
   const windowAdapter = new FakeWindowAdapter();
+  const observationInteraction = createFakeObservationInteraction(controller);
   const windows = new WindowGate({
     windows: windowAdapter,
-    interaction: createFakeObservationInteraction(controller),
+    interaction: {
+      ...observationInteraction,
+      dispatch: (command) => {
+        conversation.noteCommand(command);
+        observationInteraction.dispatch(command);
+      },
+    },
     permissions,
     demoEvents: true,
     logger,
@@ -89,6 +137,11 @@ if (!singleInstance.isPrimary) {
   const windowDemoDriver = createFakeWindowDemoDriver({
     adapter: windowAdapter,
     selected: () => controller.snapshot().selectedWindow,
+  });
+  const conversationFixtureDriver = createFakeConversationDriver({
+    controller,
+    gate: conversation,
+    clock: replayClock,
   });
 
   // Set by `electron-vite dev`, absent in every built app. When it is present
@@ -114,8 +167,10 @@ if (!singleInstance.isPrimary) {
       controller,
       permissions,
       windows,
+      conversation,
       scenarioDriver: createFakeScenarioDriver(controller),
       windowDemoDriver,
+      conversationFixtureDriver,
       appInfo: { version: app.getVersion(), platform: process.platform },
       quit: () => app.quit(),
       ids: createIdFactory(),

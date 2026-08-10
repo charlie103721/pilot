@@ -7,6 +7,9 @@ import {
 import {
   acknowledgementSchema,
   appInfoSchema,
+  conversationActionSchema,
+  conversationFixtureSchema,
+  conversationGateStateSchema,
   emptyPayloadSchema,
   interactionCommandSchema,
   panelVisibilitySchema,
@@ -86,9 +89,12 @@ export const panelSetVisibleChannel = defineChannel({
 });
 
 /**
- * Drives the fake shell into a named visible state. PR-002 only — the real
- * states come from the interaction lane, and this channel is removed when
- * PR-010 wires the real controller.
+ * Drives the fake shell into a named visible state. The real states come from
+ * the interaction lane; this channel goes away when PR-029 replaces the fake
+ * controller with `PilotInteractionController`. PR-010 kept it: a *single*
+ * forced state and a replayed conversation (`pilot:demo/conversation`) answer
+ * different questions, and the first is still the only way to check one state's
+ * rendering in isolation.
  */
 export const demoScenarioChannel = defineChannel({
   name: 'pilot:demo/apply-scenario',
@@ -160,6 +166,42 @@ export const demoWindowEventChannel = defineChannel({
   response: windowGateStateSchema,
 });
 
+/**
+ * The conversation panel's own state: developer telemetry, push-to-talk
+ * availability and the speech-recognition disclosure. Read on mount and
+ * whenever the panel reopens.
+ */
+export const conversationGetChannel = defineChannel({
+  name: 'pilot:conversation/get',
+  direction: 'renderer-to-main',
+  request: emptyPayloadSchema,
+  response: conversationGateStateSchema,
+});
+
+/**
+ * Every conversation-panel action that is not a command to the interaction
+ * controller — clearing the ring buffer, opening the diagnostics surface — as
+ * one validated discriminated union, so a new affordance cannot arrive without
+ * a validator behind it.
+ */
+export const conversationActChannel = defineChannel({
+  name: 'pilot:conversation/act',
+  direction: 'renderer-to-main',
+  request: conversationActionSchema,
+  response: conversationGateStateSchema,
+});
+
+/**
+ * Replays a named fixture conversation. Development builds only — a build with
+ * a real agent and recogniser has no fixtures and the handler refuses.
+ */
+export const demoConversationChannel = defineChannel({
+  name: 'pilot:demo/conversation',
+  direction: 'renderer-to-main',
+  request: conversationFixtureSchema,
+  response: conversationGateStateSchema,
+});
+
 export const quitChannel = defineChannel({
   name: 'pilot:app/quit',
   direction: 'renderer-to-main',
@@ -199,6 +241,17 @@ export const windowsChangedEvent = defineEventChannel({
   payload: windowGateStateSchema,
 });
 
+/**
+ * Pushed whenever the telemetry ring buffer or a voice fact changes. An event
+ * rather than something the panel polls for, because the ring is written from
+ * the view-state stream: polling would show a diagnostics surface that lags the
+ * conversation it is describing.
+ */
+export const conversationChangedEvent = defineEventChannel({
+  name: 'pilot:conversation/changed',
+  payload: conversationGateStateSchema,
+});
+
 /** Every request channel, in registration order. */
 export const REQUEST_CHANNELS = [
   appInfoChannel,
@@ -209,9 +262,12 @@ export const REQUEST_CHANNELS = [
   permissionsActChannel,
   windowsGetChannel,
   windowsActChannel,
+  conversationGetChannel,
+  conversationActChannel,
   demoScenarioChannel,
   demoPermissionFixtureChannel,
   demoWindowEventChannel,
+  demoConversationChannel,
   quitChannel,
 ] as const;
 
@@ -221,6 +277,7 @@ export const EVENT_CHANNELS = [
   panelVisibilityEvent,
   permissionsChangedEvent,
   windowsChangedEvent,
+  conversationChangedEvent,
 ] as const;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the catalogue is heterogeneous by design; lookups re-validate through the channel's own schemas.

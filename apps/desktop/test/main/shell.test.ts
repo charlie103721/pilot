@@ -15,6 +15,10 @@ import {
 } from '@pilot/platform/fakes';
 import {
   appInfoChannel,
+  conversationActChannel,
+  conversationChangedEvent,
+  conversationGetChannel,
+  demoConversationChannel,
   demoPermissionFixtureChannel,
   demoScenarioChannel,
   demoWindowEventChannel,
@@ -30,11 +34,21 @@ import {
   windowsChangedEvent,
   windowsGetChannel,
 } from '../../src/ipc/channels.js';
-import type { PermissionGateState, WindowGateState } from '../../src/ipc/schemas.js';
+import type {
+  ConversationGateState,
+  PermissionGateState,
+  WindowGateState,
+} from '../../src/ipc/schemas.js';
 import { unavailableReason } from '../../src/main/settings-shortcut.js';
 import { createFakeScenarioDriver, DEMO_FAILURE } from '../../src/main/scenarios.js';
 import { DesktopShell } from '../../src/main/shell.js';
-import { FakePanelHost, FakeTrayHost, permissionHarness, windowHarness } from './support.js';
+import {
+  conversationHarness,
+  FakePanelHost,
+  FakeTrayHost,
+  permissionHarness,
+  windowHarness,
+} from './support.js';
 
 /**
  * The composed shell.
@@ -49,6 +63,7 @@ function shell(
     withScenarioDriver?: boolean;
     withPermissionFixtures?: boolean;
     withWindowDemoDriver?: boolean;
+    withConversationFixtures?: boolean;
     trayFailure?: Error;
   } = {},
 ) {
@@ -67,6 +82,7 @@ function shell(
     controller,
     now: () => 1_700_000_000_000,
   });
+  const conversation = conversationHarness({ controller });
   const quits: number[] = [];
 
   const instance = new DesktopShell({
@@ -75,6 +91,7 @@ function shell(
     controller,
     permissions: permissions.gate,
     windows: windows.gate,
+    conversation: conversation.gate,
     appInfo: { version: '9.9.9', platform: 'linux' },
     quit: () => quits.push(1),
     ids: createIdFactory(createCounterIdSource()),
@@ -83,9 +100,12 @@ function shell(
       ? {}
       : { scenarioDriver: createFakeScenarioDriver(controller) }),
     ...(options.withWindowDemoDriver === false ? {} : { windowDemoDriver: windows.demo }),
+    ...(options.withConversationFixtures === false
+      ? {}
+      : { conversationFixtureDriver: conversation.replay }),
   });
 
-  return { instance, panelHost, trayHost, controller, permissions, windows, quits };
+  return { instance, panelHost, trayHost, controller, permissions, windows, conversation, quits };
 }
 
 let sequence = 0;
@@ -489,5 +509,107 @@ describe('DesktopShell', () => {
     expect(panelHost.latest?.destroyed).toBe(true);
     expect(trayHost.latest?.destroyed).toBe(true);
     expect(controller.disposed).toBe(true);
+  });
+});
+
+describe('DesktopShell — conversation and diagnostics (PR-010)', () => {
+  it('serves the telemetry buffer and the voice facts over the same transport', async () => {
+    const { instance } = shell();
+    instance.start();
+
+    const initial = successPayload(
+      await instance.router.handle(request(conversationGetChannel.name, {}), { senderId: 1 }),
+    ) as ConversationGateState;
+
+    expect(initial.telemetry.samples).toEqual([]);
+    expect(initial.demoFixtures).toBe(true);
+    // `start()` refreshes the voice facts, so the panel never renders a
+    // push-to-talk button before knowing whether it can work.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(instance.conversation.snapshot().pushToTalk).not.toBeNull();
+  });
+
+  it('records an abort for a command that abandoned an answer, wherever it came from', async () => {
+    const { instance, controller } = shell();
+    instance.start();
+    controller.set({ state: 'speaking' });
+
+    await instance.router.handle(request(interactionDispatchChannel.name, { type: 'interrupt' }), {
+      senderId: 1,
+    });
+    // The same command from the menu bar goes through the same one path.
+    controller.set({ state: 'speaking' });
+    instance.tray.select('pause-resume');
+
+    const samples = instance.conversation.snapshot().telemetry.samples;
+    expect(
+      samples.filter((sample) => sample.metric === 'abort').map((sample) => sample.category),
+    ).toEqual(['user-interrupted', 'observation-stopped']);
+  });
+
+  it('replays a fixture conversation and pushes the ring buffer to the panel', async () => {
+    const { instance, panelHost, controller } = shell();
+    instance.start();
+    instance.panel.show();
+    const panel = panelHost.latest;
+    expect(panel).toBeDefined();
+    panel!.sent.length = 0;
+
+    const state = successPayload(
+      await instance.router.handle(request(demoConversationChannel.name, 'spoken-question'), {
+        senderId: 1,
+      }),
+    ) as ConversationGateState;
+
+    expect(state.fixture).toBe('spoken-question');
+    expect(state.telemetry.recorded).toBeGreaterThan(0);
+    expect(controller.snapshot().transcript).toHaveLength(2);
+
+    const events = panel!.sent.filter(
+      (envelope) => envelope.channel === conversationChangedEvent.name,
+    );
+    expect(events.length).toBeGreaterThan(0);
+    const published = parseEventEnvelope(conversationChangedEvent, events.at(-1)!).payload;
+    // What crossed the wire is timings and counts. The question and the answer
+    // went to the transcript, over `pilot:view-state/changed`, and nowhere near
+    // this envelope.
+    expect(JSON.stringify(published)).not.toContain('Auto Renew');
+  });
+
+  it('rejects an unknown conversation action rather than acting on it', async () => {
+    const { instance } = shell();
+
+    const response = await instance.router.handle(
+      request(conversationActChannel.name, { type: 'dump-everything' }),
+      { senderId: 1 },
+    );
+
+    expect(response.ok === false && response.error.code).toBe('invalid-request');
+  });
+
+  it('reports fixture conversations as unsupported in a build without them', async () => {
+    const { instance } = shell({ withConversationFixtures: false });
+
+    const response = await instance.router.handle(
+      request(demoConversationChannel.name, 'spoken-question'),
+      { senderId: 1 },
+    );
+
+    expect(response.ok === false && response.error.code).toBe('unsupported-capability');
+  });
+
+  it('records a shutdown abort when an answer is still in flight', async () => {
+    const { instance, controller } = shell();
+    instance.start();
+    controller.set({ state: 'thinking' });
+
+    await instance.dispose();
+
+    expect(
+      instance.conversation
+        .snapshot()
+        .telemetry.samples.some((sample) => sample.category === 'shutdown'),
+    ).toBe(true);
   });
 });
