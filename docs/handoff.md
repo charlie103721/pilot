@@ -185,6 +185,10 @@ reversible; raise any that look wrong.
 | **Replacement records say more than §11's example** (PR-022a) | §11 shows `[Observation scene-17/revision-4 removed. <summary>]` but its prose forbids a record that "claims an old screen description remains current". A past tense alone is a weak signal to a model, so every record also ends with "This is a past record of scene-17 at revision 4, not a description of the screen now", and names the scene the screen has since moved to when that is known. It also names which image went — full frame, pointer crop, or comparison half — because one observation can contribute several blocks and identical repeated sentences read as a bug. Longer than the example, and deliberately so: this is the difference between the model saying "you were on the billing page" and "you are on the billing page". |
 | **`AgentRunHandle.completed` now waits for Pi to go idle** (PR-022a) | Found by this PR's own demo. `agent_end` fires before `Agent.prompt()` unwinds, so two questions in a row — `await submit(q1).completed; await submit(q2).completed` — produced `run-failed: "Agent is already processing a prompt"` on the second and every one after. Events were always correct; only the promise resolved a tick early. `completed` now also awaits `Agent.waitForIdle()`. Nothing else changed, but any caller that relied on `completed` resolving *before* the agent settled now resolves slightly later. |
 | **`QuestionAnchorSource` declared on the interaction side** (PR-024) | No contract exposed scene plus pointer-by-instant/interval to that lane, and editing `packages/observation` mid-flight would have collided with PR-016. It mirrors `PointerTimeline` exactly, so PR-031's adapter is the identity function. Moving it onto `ScreenContextService` later is mechanical. |
+| **The screen policy grew four groups beyond the interface printed in system-design §10** (PR-017) | §10's printed `ScreenPolicy` has no field for a ring byte ceiling (§17 requires one), for pointer retention (an utterance outlives the three-second frame ring), for image byte limits (§14 requires size *and* count limits on image tool results), or for the secure-content rule (§10 step 4 and §14 require one). `ScreenContextPolicy` in `packages/observation` adds them; `toScreenPolicyContract()` projects back onto the printed shape and a test pins that projection to `MVP_SCREEN_CONTEXT_POLICY`, so the numbers cannot drift. **`packages/shared` was not changed** — three lanes were running in parallel and none of the additions needed to cross a package boundary. |
+| **New image byte ceilings were chosen, not derived** (PR-017) | Nothing in the docs states one. 4 MiB per image and 8 MiB per observation: a 1440-px JPEG at quality 0.75 is a few hundred kilobytes, so these only fire on a pathological encode, and they bound the base64 payload (4/3 inflation) at ~10.7 MiB. **Say if you want them tighter** — they are one field in a frozen record. |
+| **Secure content defaults to `redact`, and refuses when it cannot mask** (PR-017) | §14 allows masking password fields but demands the product warn that screenshots can still contain secrets. Where macOS reports a secure field *without* bounds, Pilot cannot mask it; the default (`requireMaskableBounds: true`) refuses the observation rather than shipping it under a redaction claim it does not meet. The alternative — send it and warn — is available as a one-field policy override. |
+| **`before-and-after` takes a comparison *window*, not two moments** (PR-017) | §9 says "two bounded frames around a relevant scene transition" but the tool input carries no timestamps, so someone has to choose them. The enforcer takes `comparisonWindow: {from, to}` and returns the earliest frame at or after `from` and the latest at or before `to`; PR-019 sets the window around the transition it finds in the scene lineage. The default window is the whole local buffer up to the question anchor. |
 
 ---
 
@@ -193,7 +197,7 @@ reversible; raise any that look wrong.
 | Phase | State |
 | --- | --- |
 | Phase 1 — foundations (PR-001…007) | **Complete.** All seven merged. |
-| Phase 2 — capability lanes | In progress: PR-008, PR-016, PR-020, PR-024 merged; PR-011, PR-021, PR-025 in flight. |
+| Phase 2 — capability lanes | In progress: PR-008, PR-016, PR-017, PR-020, PR-024 merged; PR-011, PR-021, PR-025 in flight. |
 | Phase 3 — integration (028…036) | Not started. Blocked on Phase 2; most steps also need the Mac (§1) and a signed-in model (§2). |
 | Phase 4 — providers (037…039) | Not started. PR-037 (Codex) is the one the user's decision selects. |
 | Phase 5 — hardening and release (040…044) | Not started. |
@@ -248,6 +252,17 @@ demo executed against the merged tree.
   entropy-coded format, and non-deterministic encoders or animation cause
   continuous false positives that keep `lastObservedRevision` permanently
   behind.
+- **Redaction is best effort, and the product must say so out loud** (PR-017).
+  The policy masks only fields the accessibility tree marks `isSecure`. A secret
+  in a plain text field, a token in a terminal, a recovery code rendered as an
+  image, or a notification banner from another app overlapping the window all
+  pass through untouched. Every allowed observation therefore carries
+  `SCREEN_REDACTION_CAVEAT` — "a screenshot can still contain secrets outside
+  recognised fields" — whether or not anything was masked, so no caller can read
+  "redaction applied" as "safe". **This sentence needs to reach the user
+  interface, not only the model**: PR-021 surfaces it to the model, and the
+  onboarding/observation UI (PR-009/PR-010) is where a person should see it.
+  Nothing in the current UI says it yet.
 - **Effort calibration** — `docs/implementation.md` PR size bands sum to
   roughly 2–3× the estimate in `dp/m1.md`. Treat any date derived from them
   with suspicion until several PRs have calibrated actual velocity.

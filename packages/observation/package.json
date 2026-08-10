@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Observation core and platform event ingest: bounded frame ring, pointer timeline, scene identity/revision/lineage, content fingerprint, question anchoring, and deterministic clear.",
+  "description": "Observation core, platform event ingest and screen policy: bounded frame ring, pointer timeline, scene identity/revision/lineage, content fingerprint, question anchoring, deterministic clear, and the system-design §10 policy with its execution order.",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -21,7 +21,8 @@
   },
   "scripts": {
     "demo": "node ./dist/demo.js",
-    "demo:scene": "node ./dist/scene-demo-cli.js"
+    "demo:scene": "node ./dist/scene-demo-cli.js",
+    "demo:policy": "node ./dist/policy-demo-cli.js"
   },
   "dependencies": {
     "@pilot/platform": "workspace:*",

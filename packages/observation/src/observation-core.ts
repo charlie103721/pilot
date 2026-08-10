@@ -47,6 +47,11 @@ import {
   type SceneScope,
 } from './scene-lineage.js';
 import {
+  toFrameRingConfig,
+  toPointerTimelineConfig,
+  type ScreenContextPolicy,
+} from './screen-policy.js';
+import {
   requireQuestionAnchor,
   resolveQuestionAnchor,
   type QuestionAnchor,
@@ -140,6 +145,13 @@ export interface ObservationCoreOptions {
   readonly ids?: IdFactory;
   /** Privacy-safe logger; defaults to a logger that discards everything. */
   readonly logger?: Logger;
+  /**
+   * Retention bounds come from the screen policy (PR-017): passing one is the
+   * supported way to build a core whose ring and timeline match §10's
+   * `localBuffer`. Explicit `frames`/`pointer` still win, so a stress test can
+   * still shrink a single bound.
+   */
+  readonly policy?: ScreenContextPolicy;
   readonly frames?: FrameRingConfig;
   readonly pointer?: PointerTimelineConfig;
   readonly lineage?: SceneLineageConfig;
@@ -167,6 +179,7 @@ export class ObservationCore {
   readonly #timeline: PointerTimeline;
   readonly #scenes: SceneTracker;
   readonly #lineage: SceneLineage;
+  readonly #policy: ScreenContextPolicy | null;
 
   #lastClear: { reason: ClearReason; at: number } | null = null;
   #clears = 0;
@@ -174,13 +187,30 @@ export class ObservationCore {
   constructor(options: ObservationCoreOptions) {
     this.#clock = options.clock;
     this.#logger = options.logger ?? nullLogger;
-    this.#ring = new FrameRing({ clock: options.clock, ...(options.frames ?? {}) });
-    this.#timeline = new PointerTimeline({ clock: options.clock, ...(options.pointer ?? {}) });
+    this.#policy = options.policy ?? null;
+    const policyFrames = options.policy === undefined ? {} : toFrameRingConfig(options.policy);
+    const policyPointer =
+      options.policy === undefined ? {} : toPointerTimelineConfig(options.policy);
+    this.#ring = new FrameRing({
+      clock: options.clock,
+      ...policyFrames,
+      ...(options.frames ?? {}),
+    });
+    this.#timeline = new PointerTimeline({
+      clock: options.clock,
+      ...policyPointer,
+      ...(options.pointer ?? {}),
+    });
     this.#scenes = new SceneTracker({
       clock: options.clock,
       ...(options.ids === undefined ? {} : { ids: options.ids }),
     });
     this.#lineage = new SceneLineage(options.lineage ?? {});
+  }
+
+  /** The screen policy the retention bounds came from, when one was injected. */
+  get policy(): ScreenContextPolicy | null {
+    return this.#policy;
   }
 
   /** Read-only access for callers that need the primitives directly (PR-016+). */
