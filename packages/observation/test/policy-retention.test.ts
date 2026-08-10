@@ -124,6 +124,11 @@ describe('clearing for each policy event', () => {
     guard.clearFor('window-loss');
 
     expect(reports).toHaveLength(1);
+    // The exact key set is the assertion: the report is shown in diagnostics,
+    // so a field carrying frame content must fail here. `imageCacheCleared`
+    // was added by PR-019 when the decoded-frame cache was wired into the
+    // guard (runbook follow-up 16) — a boolean saying whether one was
+    // configured, and no more.
     expect(Object.keys(reports[0]!).sort()).toStrictEqual([
       'at',
       'clearedBytes',
@@ -131,6 +136,7 @@ describe('clearing for each policy event', () => {
       'clearedPointerSamples',
       'empty',
       'event',
+      'imageCacheCleared',
       'lineageReset',
       'reason',
       'sceneEnded',
@@ -169,5 +175,40 @@ describe('clearing for each policy event', () => {
       expect(error.code).toBe('internal');
       expect(error.details).toMatchObject({ event: 'pause', frameCount: 2 });
     }
+  });
+
+  // PR-019, runbook follow-up 16. The frame ring is not the only place a
+  // screenshot lives: the image pipeline keeps one *decoded* frame so a
+  // `view: 'both'` request decodes its source once instead of twice. "Cleared
+  // on pause and lock" has to mean every copy, or it means nothing.
+  it('drops a wired decoded-frame cache on every retention event', () => {
+    for (const event of RETENTION_EVENTS) {
+      const fixture = createRecordedObservationFixture();
+      const clock = createFakeClock(fixture.startedAt);
+      const core = new ObservationCore({ clock, policy: DEFAULT_SCREEN_CONTEXT_POLICY });
+      let cleared = 0;
+      const guard = new RetentionGuard({
+        core,
+        images: {
+          clear: () => {
+            cleared += 1;
+          },
+        },
+      });
+      replayRecordedFixture(core, fixture, clock, { until: fixture.questionAt });
+
+      const report = guard.clearFor(event);
+
+      expect(guard.hasImageCache, event).toBe(true);
+      expect(report.imageCacheCleared, event).toBe(true);
+      expect(cleared, event).toBe(1);
+    }
+  });
+
+  it('reports honestly that no cache was wired rather than claiming one was dropped', () => {
+    const { guard } = primed();
+
+    expect(guard.hasImageCache).toBe(false);
+    expect(guard.clearFor('pause').imageCacheCleared).toBe(false);
   });
 });

@@ -485,6 +485,33 @@ export const UNKNOWN_OBSERVATION_POINTER: NormalizedPoint = {
   y: UNKNOWN_NORMALIZED_POINT.normalizedY,
 };
 
+/**
+ * Builds the typed `PilotError` a policy rule rejects with (PR-019, additive).
+ *
+ * `ScreenPolicyEnforcer.#reject` uses this, and so does anything that has to
+ * refuse *before* the enforcer runs — the facade checks a fired abort signal
+ * ahead of step 1 so a cancelled call does not spend a rate-limit slot, and it
+ * must report that with the same code, user message and `details` shape the
+ * enforcer would have produced. Exported so no caller invents a second spelling
+ * of a rule that already exists.
+ */
+export function policyRuleError(
+  rule: PolicyRule,
+  detail: string,
+  details?: Readonly<Record<string, unknown>>,
+  /** The step it actually fired in; `request-cancelled` can fire in several. */
+  step: PolicyStep = POLICY_RULE_TABLE[rule].step === 'any'
+    ? 'validate'
+    : (POLICY_RULE_TABLE[rule].step as PolicyStep),
+): PilotError {
+  const info = POLICY_RULE_TABLE[rule];
+  return new PilotError(info.code, `Screen policy [${rule}]: ${detail}`, {
+    userMessage: info.userMessage,
+    retryable: info.retryable,
+    details: { policyRule: rule, policyStep: step, ...(details ?? {}) },
+  });
+}
+
 export class ScreenPolicyEnforcer {
   readonly #clock: Clock;
   readonly #policy: ScreenContextPolicy;
@@ -1310,16 +1337,11 @@ export class ScreenPolicyEnforcer {
     redaction: RedactionReport | null,
     details?: Readonly<Record<string, unknown>>,
   ): PolicyDecision {
-    const info = POLICY_RULE_TABLE[rule];
-    const error = new PilotError(info.code, `Screen policy [${rule}]: ${detail}`, {
-      userMessage: info.userMessage,
-      retryable: info.retryable,
-      details: { policyRule: rule, policyStep: step, ...(details ?? {}) },
-    });
+    const error = policyRuleError(rule, detail, details, step);
     this.#logger.debug('observation rejected by policy', {
       rule,
       step,
-      code: info.code,
+      code: error.code,
     });
     return { allowed: false, rule, step, detail, error, steps: [...steps], redaction };
   }

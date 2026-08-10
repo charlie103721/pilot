@@ -266,6 +266,32 @@ JPEG through pure-JS `jpeg-js`, and BGRA through a channel swap. The reasoning,
 including why `sharp` was not adopted, is at the top of
 `packages/observation/src/image-codec.ts`.
 
+## Demo (PR-019 — screen context facade)
+
+Call `ScreenContextService.observe()` against recorded and fake-fresh sources —
+the whole observation lane assembled behind the system-design §5 interface:
+
+```sh
+pnpm build && pnpm --filter @pilot/observation demo:context
+```
+
+It runs every `view` × `moment` combination the `observe_screen` tool can ask
+for and prints, for each, where the frames came from and what images they
+produced; then shows which scene transition a `before-and-after` was bounded
+around and why a *revision* bound is the one that is true; a superseded scene
+reference being refused with a typed `scene-mismatch`; an abort landing while
+the platform is capturing, honoured even by an adapter that ignores its signal;
+retention dropping the frame ring **and** the pipeline's one decoded frame on
+each of the eight clear events; and the typed error every refusal carries into
+the tool. The frames are real PNG screenshots and the image pipeline runs on an
+injected stopwatch, so the byte counts are real and the output is identical on
+every machine.
+
+The facade is `packages/observation/src/screen-context.ts`. It decides which
+moment, which frames, whether the scene is still answerable, and what the
+runtime state is; every refusal is one of PR-017's rules carrying that rule's
+error code, so no code is invented that PR-021's tool has not already mapped.
+
 ## Demo (PR-006 — interaction state machine)
 
 ```sh
