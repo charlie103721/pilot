@@ -2,6 +2,9 @@ import { useState } from 'react';
 import type { InteractionState, SerializedPilotError } from '@pilot/shared';
 import type { PilotViewState } from '@pilot/platform';
 import { VIEW_SCENARIOS, type ViewScenario } from '../ipc/schemas.js';
+import { permissionsAllowObservation } from '../permissions/view-model.js';
+import { PermissionOnboarding } from './PermissionOnboarding.js';
+import { usePermissions } from './use-permissions.js';
 import { usePilotShell } from './use-pilot-shell.js';
 
 /**
@@ -9,9 +12,14 @@ import { usePilotShell } from './use-pilot-shell.js';
  *
  * Every interaction state named in mvp-01 §7 has a visible rendering, including
  * the two that are easy to leave as blank screens: `error`, and the case where
- * the panel cannot reach the main process at all. PR-008…PR-010 replace the
- * body of this panel with real onboarding, window selection and conversation
- * views; the state plumbing and the failure surfaces stay.
+ * the panel cannot reach the main process at all. PR-009 and PR-010 replace the
+ * body of this panel with window selection and conversation views; the state
+ * plumbing and the failure surfaces stay.
+ *
+ * Permission onboarding (PR-008) sits above all of it: while a permission that
+ * blocks Pilot is missing, the conversation controls are replaced by the
+ * onboarding view and an explicit reason, because offering a "hold to talk"
+ * button that cannot work is the silent failure the delivery rules forbid.
  */
 
 const STATE_LABELS: Readonly<Record<InteractionState, string>> = {
@@ -213,6 +221,7 @@ function ScenarioBar({ onApply }: { onApply: (scenario: ViewScenario) => void })
 
 export function App() {
   const shell = usePilotShell();
+  const permissions = usePermissions();
   const [dismissedCommandError, setDismissedCommandError] = useState(false);
 
   if (shell.status.kind === 'unavailable') {
@@ -234,6 +243,7 @@ export function App() {
   }
 
   const view = shell.view;
+  const canConverse = permissionsAllowObservation(permissions.view);
 
   return (
     <main className="panel" data-testid="panel">
@@ -251,14 +261,27 @@ export function App() {
         />
       )}
 
-      <Transcript view={view} />
-      <Controls
-        view={view}
-        onCommand={(command) => {
-          setDismissedCommandError(false);
-          shell.dispatch(command);
-        }}
-      />
+      <PermissionOnboarding permissions={permissions} />
+
+      {canConverse ? (
+        <>
+          <Transcript view={view} />
+          <Controls
+            view={view}
+            onCommand={(command) => {
+              setDismissedCommandError(false);
+              shell.dispatch(command);
+            }}
+          />
+        </>
+      ) : (
+        <p className="panel__note" data-testid="controls-withheld">
+          {permissions.view.readiness === 'checking'
+            ? 'Checking permissions before Pilot offers to look at a window.'
+            : 'Asking Pilot about a window is unavailable until Screen Recording is allowed.'}
+        </p>
+      )}
+
       <ScenarioBar
         onApply={(scenario) => {
           setDismissedCommandError(false);

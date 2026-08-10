@@ -25,6 +25,11 @@ import type {
 } from '@pilot/platform';
 import {
   FIXTURE_GEOMETRY_RETINA,
+  FIXTURE_PERMISSIONS_ACCESSIBILITY_DENIED,
+  FIXTURE_PERMISSIONS_DENIED,
+  FIXTURE_PERMISSIONS_GRANTED,
+  FIXTURE_PERMISSIONS_RESTRICTED,
+  FIXTURE_PERMISSIONS_SCREEN_DENIED,
   FIXTURE_PERMISSIONS_UNKNOWN,
   FIXTURE_WINDOW_RETINA,
   FakeAgentSession,
@@ -99,6 +104,61 @@ describe('fake platform adapter — PlatformAdapter contract', () => {
     unsubscribe();
     await permissions.request('microphone');
     expect(seen).toEqual(['screen-recording:granted']);
+  });
+
+  it('replaces the whole permission snapshot and notifies only what changed', async () => {
+    // The external-change path: the user edits System Settings while the app is
+    // running. PR-008's onboarding recovers from this without a restart, so the
+    // fake has to reproduce it — including not re-announcing what stayed put.
+    const permissions = new FakePermissionAdapter(FIXTURE_PERMISSIONS_DENIED);
+    const seen: string[] = [];
+    permissions.subscribe((status) => seen.push(`${status.kind}:${status.state}`));
+
+    permissions.setSnapshot(FIXTURE_PERMISSIONS_SCREEN_DENIED);
+
+    expect(seen).toEqual([
+      'accessibility:granted',
+      'microphone:granted',
+      'speech-recognition:granted',
+    ]);
+    expect((await permissions.snapshot())['screen-recording'].state).toBe('denied');
+
+    seen.length = 0;
+    permissions.setSnapshot(FIXTURE_PERMISSIONS_SCREEN_DENIED);
+    expect(seen).toEqual([]);
+  });
+
+  it('reports a prompt that policy refuses, not just a user refusal', async () => {
+    const permissions = new FakePermissionAdapter(FIXTURE_PERMISSIONS_UNKNOWN);
+    permissions.requestOutcomes.set('accessibility', 'restricted');
+
+    expect((await permissions.request('accessibility')).state).toBe('restricted');
+    expect((await permissions.request('microphone')).state).toBe('granted');
+  });
+
+  it('can fail an openSettings call instead of always succeeding', async () => {
+    const permissions = new FakePermissionAdapter(FIXTURE_PERMISSIONS_DENIED);
+    permissions.openSettingsError = new Error('no such pane');
+
+    await expect(permissions.openSettings('microphone')).rejects.toThrow('no such pane');
+    await permissions.openSettings('microphone');
+    expect(permissions.openedSettings).toEqual(['microphone']);
+  });
+
+  it('offers a fixture for each state the permission contract models', () => {
+    const states = [
+      FIXTURE_PERMISSIONS_UNKNOWN,
+      FIXTURE_PERMISSIONS_GRANTED,
+      FIXTURE_PERMISSIONS_DENIED,
+      FIXTURE_PERMISSIONS_RESTRICTED,
+    ].map((snapshot) => snapshot['screen-recording'].state);
+
+    expect(states).toEqual(['unknown', 'granted', 'denied', 'restricted']);
+    // …and the two §16 failures are separate fixtures, not one "denied" blob.
+    expect(FIXTURE_PERMISSIONS_SCREEN_DENIED['screen-recording'].state).toBe('denied');
+    expect(FIXTURE_PERMISSIONS_SCREEN_DENIED.accessibility.state).toBe('granted');
+    expect(FIXTURE_PERMISSIONS_ACCESSIBILITY_DENIED['screen-recording'].state).toBe('granted');
+    expect(FIXTURE_PERMISSIONS_ACCESSIBILITY_DENIED.accessibility.state).toBe('denied');
   });
 
   it('resolves accessibility hit tests and reports misses honestly', async () => {

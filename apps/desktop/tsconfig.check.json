@@ -9,13 +9,19 @@
     "sourceMap": false
   },
   // Everything that runs under Node/Electron privileges, plus its tests and the
-  // build configuration that produces it.
+  // build configuration that produces it. `src/permissions` is neither main nor
+  // renderer — it is the pure catalogue and view model both of them import — so
+  // it is checked here under Node lib and again by tsconfig.renderer.json under
+  // DOM lib. Anything platform-specific that leaked into it would fail one of
+  // the two.
   "include": [
     "src/main/**/*.ts",
     "src/preload/**/*.ts",
     "src/ipc/**/*.ts",
+    "src/permissions/**/*.ts",
     "test/main/**/*.ts",
     "test/build/**/*.ts",
+    "test/permissions/**/*.ts",
     "electron.vite.config.ts"
   ]
 }
