@@ -1102,6 +1102,10 @@ export class ScreenPolicyEnforcer {
         ...(marker === undefined || selected.purpose === 'window' ? {} : { marker }),
         jpegQuality: this.#policy.image.jpegQuality,
         preferLossless: false,
+        // The ceiling is still enforced below, on the bytes that come back.
+        // Passing it in only lets PR-018 pick an encoding that fits rather than
+        // hand back a lossless image this step must then reject.
+        maxBytes: this.#policy.image.maxImageBytes,
       };
 
       let rendered: RenderedImage;

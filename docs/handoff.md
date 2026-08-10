@@ -361,6 +361,11 @@ reversible; raise any that look wrong.
 | **The screen policy grew four groups beyond the interface printed in system-design §10** (PR-017) | §10's printed `ScreenPolicy` has no field for a ring byte ceiling (§17 requires one), for pointer retention (an utterance outlives the three-second frame ring), for image byte limits (§14 requires size *and* count limits on image tool results), or for the secure-content rule (§10 step 4 and §14 require one). `ScreenContextPolicy` in `packages/observation` adds them; `toScreenPolicyContract()` projects back onto the printed shape and a test pins that projection to `MVP_SCREEN_CONTEXT_POLICY`, so the numbers cannot drift. **`packages/shared` was not changed** — three lanes were running in parallel and none of the additions needed to cross a package boundary. |
 | **New image byte ceilings were chosen, not derived** (PR-017) | Nothing in the docs states one. 4 MiB per image and 8 MiB per observation: a 1440-px JPEG at quality 0.75 is a few hundred kilobytes, so these only fire on a pathological encode, and they bound the base64 payload (4/3 inflation) at ~10.7 MiB. **Say if you want them tighter** — they are one field in a frozen record. |
 | **Secure content defaults to `redact`, and refuses when it cannot mask** (PR-017) | §14 allows masking password fields but demands the product warn that screenshots can still contain secrets. Where macOS reports a secure field *without* bounds, Pilot cannot mask it; the default (`requireMaskableBounds: true`) refuses the observation rather than shipping it under a redaction claim it does not meet. The alternative — send it and warn — is available as a one-field policy override. |
+| **No native image dependency; `sharp` was not adopted** (PR-018) | PR-018 owned the recorded `sharp`-on-arm64 packaging risk and chose not to take it on. PNG goes through Node's built-in `node:zlib` (native C, already in the runtime, nothing to prebuild, and asynchronous so it runs off the JS thread); JPEG goes through `jpeg-js@0.4.4` (pure JavaScript, BSD-3, zero dependencies, no install scripts, no binaries); `bgra` is a channel swap. Nothing new to unpack from an asar and nothing architecture-specific, so **PR-042 has no image-related packaging work**. The cost is stated below and in §5: pure-JS JPEG decoding is slow. `FrameCodec` is an interface precisely so a WASM or native codec can be injected later without a caller changing. |
+| **The full frame is passed through unencoded whenever nothing has to change** (PR-018) | When a request needs no mask, no crop and no marker and the frame is already JPEG or PNG inside the 1440 px bound, the pipeline returns the capture's own bytes. This is the ordinary `view: 'window'` case. It removes the second JPEG generation entirely and costs ~0 ms. The safety conditions are all-or-nothing: anything to mask, crop or annotate takes the decode path. |
+| **PNG is chosen over JPEG for interface content** (PR-018) | mvp-01 §10 makes JPEG the default and permits PNG "when compression makes small text unreadable". The pipeline measures the image (fraction of pixels identical to their left neighbour) and encodes interface content losslessly, photographic content as JPEG. Measured in the PR-018 demo: a second JPEG generation on a pointer crop taken at a non-block-aligned offset raises the mean luma error from 1.80 to 3.20 and the share of visibly-moved pixels from 3.2% to 7.6%. Lossless costs none of that, is usually *smaller* for flat interface content, and through `zlib` is roughly an order of magnitude faster than the pure-JS JPEG encoder. **Say if you would rather always ship JPEG** — it is one constant (`DEFAULT_ENCODING_SELECTION.flatRunRatioForLossless`). |
+| **The content fingerprint was *not* replaced with a pixel-aware one** (PR-018) | PR-016 left the seam for this and asked PR-018 to consider it. It is deferred, on a measurement rather than a preference: a pixel-aware fingerprint has to decode **every sampled frame**, at 2–3 FPS, for as long as observation is on. The pure-JS JPEG decode measured ~165 ms for a policy-bounded 1440×960 frame, so at 3 FPS that is roughly half a CPU core burning continuously — a straight regression against §17's sampling budget, to fix a blind spot that PR-043 has not yet shown to matter. It becomes cheap the moment capture hands over `bgra` or `png` (see the row below), at which point the replacement is a small class behind the same `observe(frame) → ContentFingerprintUpdate` shape. Left for PR-043's evidence to decide, as §5 already says. |
+| **`ImageRenderRequest.maxBytes` and `RenderedImage.stats` were added** (PR-018) | Both additive and optional, both inside `packages/observation`. `maxBytes` is the policy's own `image.maxImageBytes` passed *down*: the number stays a policy decision and the policy still enforces it, but the pipeline can now choose an encoding that fits instead of handing back a lossless image the enforcer must reject. `stats` is a content-free record of what the pipeline did and what each stage cost, which is how the §17 budget is measured rather than assumed. `FakeImageProcessor` does not set `stats`, so every reader handles `undefined`. |
 | **`before-and-after` takes a comparison *window*, not two moments** (PR-017) | §9 says "two bounded frames around a relevant scene transition" but the tool input carries no timestamps, so someone has to choose them. The enforcer takes `comparisonWindow: {from, to}` and returns the earliest frame at or after `from` and the latest at or before `to`; PR-019 sets the window around the transition it finds in the scene lineage. The default window is the whole local buffer up to the question anchor. |
 | **Speech events are answered in `thinking` and `observing-screen`, not only in `speaking`** (PR-026) | Seven new transition cells. PR-006 only needed them in `speaking` because speech began when the run ended; once completed sentences enter TTS mid-run (system-design §7) a stream is live while the model is still working — and "Let me look at your screen" followed by an `observe_screen` call is the ordinary case, not an exotic one. Without the cells that `speech-started` is an `illegal-transition`, which writes a user-visible error. Every one of them is still behind the `activeSpeechId` identity guard. |
 | **One `SpeechId` per answer, several adapter utterances behind it** (PR-026) | system-design §15 gives a *stream* an identifier, but an answer is spoken in pieces. The binding names them `<speechId>#<n>` and reports one `speech-started` and one `speech-finished` for the whole answer, so a synthesiser that completes chunk 1 cannot end the turn mid-sentence. PR-014/PR-033 map the native callbacks onto the same chunk identifiers. |
@@ -389,6 +394,7 @@ reversible; raise any that look wrong.
 | Phase 2 — capability lanes | In progress: PR-008, PR-011, PR-016, PR-020, PR-021, PR-022a, PR-024, PR-025 merged; PR-009 ready; PR-012, PR-013, PR-014, PR-017, PR-022b, PR-026 in flight. |
 | Phase 2 — capability lanes | In progress: PR-008, PR-011, PR-016, PR-020, PR-021, PR-024, PR-025 merged; PR-012, PR-013, PR-014, PR-017, PR-022a, PR-026 in flight. |
 | Phase 2 — capability lanes | In progress. **Merged:** PR-008, PR-011, PR-016, PR-017, PR-020, PR-021, PR-022a, PR-024, PR-025, PR-026, PR-027 (the voice and interaction lane is complete). **In flight:** PR-009, PR-012, PR-013, PR-014, PR-018, PR-022b. **Remaining:** PR-010, PR-015, PR-019, PR-023. |
+| Phase 2 — capability lanes | In progress: PR-008, PR-011, PR-016, PR-017, PR-018, PR-020, PR-021, PR-022a, PR-024, PR-025 merged; PR-009, PR-012, PR-013, PR-014, PR-022b, PR-026 in flight. |
 | Phase 3 — integration (028…036) | Not started. Blocked on Phase 2; most steps also need the Mac (§1) and a signed-in model (§2). |
 | Phase 4 — providers (037…039) | Not started. PR-037 (Codex) is the one the user's decision selects. |
 | Phase 5 — hardening and release (040…044) | Not started. |
@@ -459,9 +465,56 @@ demo executed against the merged tree.
     the conversion is what should be correct. §1 step 6, item 2.
 - **`sharp` prebuilds inside packaged Electron (arm64)** — PR-018 owns image
   encoding; the packaging interaction has not been tested.
+- ~~**`sharp` prebuilds inside packaged Electron (arm64)**~~ — **CLOSED by
+  PR-018, by not taking the risk.** There is no native image dependency: PNG
+  through `node:zlib`, JPEG through pure-JS `jpeg-js`, `bgra` through a channel
+  swap. Nothing to prebuild, nothing architecture-specific, nothing for PR-042
+  to unpack from the asar. The risk it was traded for is the next bullet.
+- **Pure-JS JPEG decoding is the pipeline's one over-budget number** (PR-018,
+  measured, replaces the `sharp` risk). §17 targets under 150 ms of image
+  preprocessing per observation. Measured on the Linux development machine for
+  one full frame plus one pointer crop at the capture size the policy actually
+  requests (1440 px longest edge — `toCaptureOptions` bounds it there):
+
+  | source frame | secure field in view | total |
+  | --- | --- | ---: |
+  | `bgra` | no / yes | 74 / 102 ms |
+  | `png` | no / yes | 71 / 135 ms |
+  | `jpeg` | no / yes | **165 / 259 ms** |
+
+  The full frame is free when nothing has to change (the bytes are passed
+  through); the cost is decoding a JPEG *source* to get pixels for the crop, at
+  ~165 ms for 1440×960 in `jpeg-js`. Three ways out, cheapest first:
+
+  1. **Have PR-012 deliver `bgra` or `png` frames** rather than JPEG. This is
+     the recommended one: it removes the decode cost *and* the double-JPEG
+     generation loss below, and needs no contract change — `FrameEncoding`
+     already admits all three. A 3-second ring at 1440×960 `bgra` does not fit
+     the 16 MiB ring ceiling (§17), so `png` is the realistic choice there and
+     `bgra` the right one for a fresh `captureFresh` capture.
+  2. Inject a WASM or native codec through `FrameCodec`. One line at the
+     construction site; no caller changes.
+  3. Host the pipeline in a `worker_threads` worker (PR-019/PR-028). This does
+     not make it faster, but §17 and mvp-01 §10 require it anyway — the main and
+     renderer processes must not block on image encoding. The pipeline is a pure
+     function of bytes and numbers, with no handles and no platform state, so it
+     is worker-transferable as written.
+
+  A Mac is faster than this container, so the real numbers will be lower; the
+  ordering will not change. **Nothing is blocked on this** — it is a latency
+  target, not a correctness bound.
 - **Double-JPEG legibility of small text** — capture encodes once, the
-  processing pipeline encodes again. If grounding accuracy on small UI text
-  disappoints in PR-043, this is the first thing to check.
+  processing pipeline encodes again. **Measured by PR-018 and largely
+  mitigated.** On a pointer crop taken at a non-block-aligned offset (which is
+  every pointer crop), a second JPEG generation at q0.75 raises the mean luma
+  error against the compositor's pixels from 1.80 to 3.20 and the share of
+  pixels moved by more than 8 from 3.2% to 7.6%. The pipeline avoids paying it:
+  a full frame that needs no change is passed through unencoded, and interface
+  content is re-encoded losslessly as PNG. It is still paid on photographic
+  content, and on any frame where the model asks for a crop of a JPEG capture.
+  If grounding accuracy on small UI text disappoints in PR-043, check this
+  first, and check it together with the row above — both are solved by capture
+  handing over `bgra` or `png`.
 - **The content fingerprint cannot see a small, high-meaning change** (PR-016,
   and worth understanding because it shapes product behaviour). Scene revisions
   are minted when ≥15% of the *encoded* payload changes. A toggle flipping or a
@@ -479,7 +532,14 @@ demo executed against the merged tree.
   its old observation is current after a small change. If acceptance testing
   (PR-043) shows wrong answers after toggles and small edits, the fix is a
   pixel-aware fingerprint — `ContentFingerprinter` is a standalone injectable
-  component precisely so PR-018 can replace it behind the same interface.
+  component precisely so it can be replaced behind the same interface.
+  **PR-018 considered doing exactly that and did not**, for a reason worth
+  keeping: a pixel-aware rule must decode every sampled frame, and the pure-JS
+  JPEG decode is ~165 ms for a policy-bounded frame, which at the 2–3 FPS
+  sampling rate would burn most of a core continuously for as long as
+  observation is on. It becomes cheap as soon as capture delivers `bgra` or
+  `png` (see the JPEG-decode bullet above), so the two decisions are the same
+  decision. PR-018 left the seam untouched and the code path unused.
   Two further blind spots are documented in `content-fingerprint.ts`: the same
   edit scores very differently near the top versus the bottom of a window in an
   entropy-coded format, and non-deterministic encoders or animation cause
@@ -496,6 +556,16 @@ demo executed against the merged tree.
   interface, not only the model**: PR-021 surfaces it to the model, and the
   onboarding/observation UI (PR-009/PR-010) is where a person should see it.
   Nothing in the current UI says it yet.
+
+  PR-018 added the pixels behind the promise and nothing to the promise. Masks
+  are painted on the source frame **before** the crop and before the resize, with
+  rectangles rounded outward, so a downscale cannot leave a rim of a password
+  field outside a rounded mask; the pipeline reports how many rects it painted
+  and how many lay outside the frame entirely, rather than dropping either
+  silently; and pass-through — returning the capture's own bytes — is refused
+  outright whenever there is anything at all to mask. The pipeline still does
+  not *detect* anything: it paints what PR-013's `isSecure` flag produced, and a
+  frame with no masks remains a frame that may be full of secrets.
 - **Effort calibration** — `docs/implementation.md` PR size bands sum to
   roughly 2–3× the estimate in `dp/m1.md`. Treat any date derived from them
   with suspicion until several PRs have calibrated actual velocity.

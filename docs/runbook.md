@@ -292,7 +292,22 @@ created during PR-043.
 - Top risks (details in `dp/m1.md` §Risks): Pi API mismatch vs doc
   assumptions; TCC permission attribution for the spawned Swift helper; Codex
   subscription support in the pinned Pi release; double-JPEG small-text
-  legibility; `sharp` prebuilds inside packaged Electron (arm64).
+  legibility; ~~`sharp` prebuilds inside packaged Electron (arm64)~~.
+- **The `sharp` packaging risk is closed** (PR-018): there is no native image
+  dependency. PNG runs on Node's built-in `node:zlib`, JPEG on pure-JS
+  `jpeg-js@0.4.4`, `bgra` on a channel swap. PR-042 has no image-related
+  packaging work. What replaced it is a *latency* risk, measured and recorded in
+  `docs/handoff.md` §5: decoding a JPEG source frame in pure JavaScript costs
+  ~165 ms for a 1440×960 frame, which is the only path that misses §17's 150 ms
+  preprocessing budget. The cheapest fix is for **PR-012 to deliver `bgra` or
+  `png` frames instead of JPEG** — no contract change needed, and it also
+  removes the double-JPEG legibility risk.
+- **Double-JPEG legibility is now measured, not assumed** (PR-018): on a pointer
+  crop at a non-block-aligned offset, a second JPEG generation at q0.75 roughly
+  doubles the luma error and the share of visibly-damaged pixels. The pipeline
+  avoids paying it by passing an unchanged full frame through unencoded and by
+  encoding interface content losslessly. `pnpm --filter @pilot/observation
+  demo:image` prints the numbers.
 - **TCC attribution now has detection but not an answer** (PR-011). The adapter
   establishes which process macOS credits grants to and raises a typed
   `permission-attribution-mismatch` instead of reporting a permission Pilot
@@ -336,9 +351,13 @@ IPC round trip (`pnpm --filter @pilot/desktop run smoke:packaged`).
 
 ### Phase 2 — in flight
 
-Five lanes running concurrently in worktrees: PR-016 (observation), PR-020
-(agent runtime), PR-024 (interaction), PR-008 (desktop), PR-011 (platform-mac,
-written blind per amendment 8).
+Lanes run concurrently in worktrees. Merged so far: PR-008, PR-011, PR-016,
+PR-017, PR-018, PR-020, PR-021, PR-022a, PR-024, PR-025. In flight at the time
+PR-018 landed: PR-009, PR-012, PR-013, PR-014, PR-022b, PR-026.
+
+The observation lane (PR-016 → 017 → 018) has closed its image work: §10's
+step 5 now produces real pixels behind the `ImageProcessor` seam PR-017 left,
+with no native image dependency. PR-019 is unblocked.
 
 ### Cross-lane issues found while merging — read before adding a lane
 
@@ -441,6 +460,8 @@ Open items a later PR must close. Each was raised by the lane that found it.
 | 6 | ~~**A stalled-but-open run does not speak its tail until it ends.**~~ **Accepted and closed by PR-027**, but the app must opt in. The wake-up is a new machine input (`phrase-timeout`, guarded by `pendingAnswerSince` like every other identity) plus an injected `Scheduler` port — not a timer in the machine. `PilotInteractionController` arms it only when a `scheduler` option is passed; the default never fires and behaves exactly as PR-026 did. **Pass `createTimeoutScheduler()` (exported from `@pilot/interaction`) when the controller is constructed in the app**, or a model that stalls mid-sentence still says nothing until its run ends. | ~~PR-027~~ — remaining wiring: PR-033 / PR-035 |
 | 14 | **A new question during `observe_screen` steers the old run *and* submits a new one.** PR-006 chose `steer` in `observing-screen` so a capture can unwind (§15), but `steer` does not end the run: with the real `PiAgentSession`, the `submit-question` that follows in the same transition hits `run-already-active` and surfaces as a user-visible error ("Pilot is still working on the previous question"). It recovers — the failure teardown aborts the steered run — but the interruption did not do what the user asked. The fakes now model this faithfully (`InterruptibleAgentSession`), and `test/interruption.test.ts` pins the current behaviour so it cannot drift silently. The fix is a design decision PR-027 declined to take alone: either deliver the new question *as* the steering message (keeping `activeRunId`, no new run), or abort instead of steering once a replacement question exists. | PR-035 |
 | 15 | **The native TTS adapter must tolerate a `stop()` for a stream it never started.** PR-027 stops speech the instant an interruption lands, which can be before the first chunk of that stream reached the synthesiser. `SpeechOutputBinding` remembers the identifier and discards the chunk when it arrives, so the adapter sees a `stop()` for something it has never heard of. That must be a no-op, not an error. | PR-014 / PR-033 |
+| 16 | **`PilotImageProcessor.clear()` must be wired into the retention guard** (PR-018). The processor keeps at most one decoded frame in memory so `view: 'both'` decodes its source once instead of twice. It is memory-only and never written anywhere, but it is a decoded screenshot and must be dropped on pause, screen lock, window loss and shutdown alongside the frame ring. `RetentionGuard` takes `core`, `policy` and `rateLimiter` today; add the processor there, or call `clear()` from whatever owns both. | PR-019 |
+| 17 | **Capture should hand over `bgra` or `png`, not `jpeg`** (PR-018). No contract change: `FrameEncoding` already admits all three and `CaptureOptions` says nothing about encoding. Delivering an encoded JPEG costs ~165 ms of pure-JS decode per observation that needs a pointer crop (the only path over §17's 150 ms budget) and adds a second generation of compression loss to exactly the small text grounding depends on. `png` fits the 16 MiB ring ceiling where `bgra` does not; `bgra` is the right choice for the fresh `captureFresh` path, which does not enter the ring. Measured in `pnpm --filter @pilot/observation demo:image` §5. | PR-012, confirmed in PR-028 |
 
 ## 9. Quick start for a new session
 

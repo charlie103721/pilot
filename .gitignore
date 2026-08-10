@@ -8,6 +8,11 @@ coverage/
 release/
 apps/*/resources/
 
+# Image artefacts written by `pnpm --filter @pilot/observation demo:image`.
+# The demo regenerates them; the *approval* lives in image-demo.test.ts as
+# digests of the decoded pixels, so no binaries are committed.
+packages/observation/artifacts/
+
 # Transient git worktrees used by parallel agent sessions.
 .claude/worktrees/
 

@@ -21,13 +21,18 @@
  * - {@link RetentionGuard} — clear-on-pause/lock/window-loss/shutdown with a
  *   post-condition (PR-017).
  * - {@link ObservationRateLimiter} — the clock-driven observation rate limit.
- * - {@link ImageProcessor} — the PR-018 seam, plus a deterministic fake.
- * - Recorded fixtures for downstream lanes and the demos.
+ * - {@link ImageProcessor} — the image-pipeline seam, plus a deterministic fake.
+ * - {@link PilotImageProcessor} — §10 step 5: redact, crop, annotate, resize and
+ *   encode, with cancellation and no native image dependency (PR-018).
+ * - {@link createDefaultFrameCodec} — PNG through `node:zlib`, JPEG through
+ *   `jpeg-js`, BGRA through a channel swap; injectable, so a faster codec can
+ *   be substituted without touching a caller.
+ * - Recorded fixtures for downstream lanes and the demos, and synthetic
+ *   *screenshots* that really encode and decode ({@link renderSyntheticScreen}).
  *
- * Image processing (PR-018) and the `ScreenContextService` facade (PR-019)
- * build on this and are deliberately absent. Frames arrive through the
- * `ObservationAdapter` contract from `@pilot/platform`; this package never
- * captures anything itself.
+ * The `ScreenContextService` facade (PR-019) builds on this and is deliberately
+ * absent. Frames arrive through the `ObservationAdapter` contract from
+ * `@pilot/platform`; this package never captures anything itself.
  */
 export * from './clock.js';
 export * from './hashing.js';
@@ -44,5 +49,9 @@ export * from './observation-rate.js';
 export * from './retention.js';
 export * from './secure-content.js';
 export * from './image-pipeline.js';
+export * from './pixel-buffer.js';
+export * from './image-codec.js';
+export * from './image-processor.js';
+export * from './image-fixtures.js';
 export * from './policy-enforcer.js';
 export * from './fixtures.js';
