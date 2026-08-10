@@ -284,25 +284,7 @@ public final class HelperServer {
             guard let point = request.payload["point"] as? [String: Any],
                 let x = RectRecord.numeric(point["x"]),
                 let y = RectRecord.numeric(point["y"])
-        case .speechInputAvailability:
-            let locale = request.payload["locale"] as? String
-            return success(
-                request: request,
-                payload: speechInput.availability(locale: locale).jsonObject
-            )
-        case .speechInputStart:
-            guard let utteranceId = request.payload["utteranceId"] as? String,
-                !utteranceId.isEmpty,
-                let onDevice = request.payload["onDevice"] as? Bool
             else {
-        case .captureStart:
-            guard let settings = CaptureConfiguration.parse(request.payload) else {
-        case .hotkeyStart:
-            let payload = request.payload["binding"] as? [String: Any]
-            guard let binding = HotkeyBinding.from(payload: payload) else {
-                // A malformed binding is refused rather than defaulted: silently
-                // listening for some other key than the user configured is worse
-                // than not listening at all.
                 return failure(
                     request: request,
                     code: "invalid-request",
@@ -318,6 +300,21 @@ public final class HelperServer {
             var payload = lookup.jsonFields
             payload["axTrusted"] = accessibility.isTrusted()
             return success(request: request, payload: payload)
+        case .speechInputAvailability:
+            let locale = request.payload["locale"] as? String
+            return success(
+                request: request,
+                payload: speechInput.availability(locale: locale).jsonObject
+            )
+        case .speechInputStart:
+            guard let utteranceId = request.payload["utteranceId"] as? String,
+                !utteranceId.isEmpty,
+                let onDevice = request.payload["onDevice"] as? Bool
+            else {
+                return failure(
+                    request: request,
+                    code: "invalid-request",
+                    domain: "ipc",
                     message: "speech.input.start requires utteranceId and onDevice"
                 )
             }
@@ -341,24 +338,6 @@ public final class HelperServer {
             }
         case .speechInputStop:
             guard let utteranceId = request.payload["utteranceId"] as? String else {
-                    message: "capture.start requires windowNumber, width, height and sampleFps"
-                )
-            }
-            let outcome = capture.start(settings)
-            guard let session = outcome.session else {
-                return failure(
-                    request: request,
-                    code: outcome.failureCode,
-                    domain: "observation",
-                    message: outcome.failure ?? "capture could not start"
-                )
-            }
-            return success(request: request, payload: ["session": session.jsonObject])
-        case .captureStop:
-            let requested = request.payload["streamId"] as? String
-            return success(request: request, payload: capture.stop(streamId: requested).jsonObject)
-        case .capturePull:
-            guard let streamId = request.payload["streamId"] as? String, !streamId.isEmpty else {
                 return failure(
                     request: request,
                     code: "invalid-request",
@@ -455,6 +434,35 @@ public final class HelperServer {
             return success(
                 request: request,
                 payload: speechOutput.poll(since: since).outputJSONObject
+            )
+        case .captureStart:
+            guard let settings = CaptureConfiguration.parse(request.payload) else {
+                return failure(
+                    request: request,
+                    code: "invalid-request",
+                    domain: "ipc",
+                    message: "capture.start requires windowNumber, width, height and sampleFps"
+                )
+            }
+            let outcome = capture.start(settings)
+            guard let session = outcome.session else {
+                return failure(
+                    request: request,
+                    code: outcome.failureCode,
+                    domain: "observation",
+                    message: outcome.failure ?? "capture could not start"
+                )
+            }
+            return success(request: request, payload: ["session": session.jsonObject])
+        case .captureStop:
+            let requested = request.payload["streamId"] as? String
+            return success(request: request, payload: capture.stop(streamId: requested).jsonObject)
+        case .capturePull:
+            guard let streamId = request.payload["streamId"] as? String, !streamId.isEmpty else {
+                return failure(
+                    request: request,
+                    code: "invalid-request",
+                    domain: "ipc",
                     message: "capture.pull requires a streamId"
                 )
             }
@@ -467,6 +475,16 @@ public final class HelperServer {
                 payload: outcome.jsonObject,
                 binary: outcome.frame?.bytes ?? []
             )
+        case .hotkeyStart:
+            let payload = request.payload["binding"] as? [String: Any]
+            guard let binding = HotkeyBinding.from(payload: payload) else {
+                // A malformed binding is refused rather than defaulted: silently
+                // listening for some other key than the user configured is worse
+                // than not listening at all.
+                return failure(
+                    request: request,
+                    code: "invalid-request",
+                    domain: "ipc",
                     message: "hotkey.start requires a well-formed binding"
                 )
             }

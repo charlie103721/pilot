@@ -35,7 +35,19 @@ import { fileURLToPath } from 'node:url';
  *                      code (PR-042 packaging, release builds).
  */
 
-const HELPER_NAME = 'pilot-helper';
+/**
+ * The executable's name, used for three things that must agree: the SwiftPM
+ * product to build, the file to look for in the build directory, and the name
+ * to stage under `Resources/helper/`.
+ *
+ * The source of truth is `HELPER_EXECUTABLE_NAME` in
+ * `packages/platform-mac/src/helper-binary.ts` — the runtime resolver that has
+ * to *find* this file inside the bundle — and `native/Package.swift`, which
+ * declares the product. A literal rather than an import because this script
+ * runs before `dist/` is guaranteed to exist; `helper-name.test.ts` pins the
+ * three together so they cannot drift again.
+ */
+const HELPER_NAME = 'PilotHelper';
 const MANIFEST_NAME = 'helper.json';
 
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -47,7 +59,12 @@ function parseArgs(argv) {
   let requireNative = false;
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
-    if (arg === '--require-native') {
+    if (arg === '--') {
+      // `pnpm run build:helper -- --require-native` forwards the separator
+      // itself, so the command docs/handoff.md documents arrives here with a
+      // bare `--` in front. Skipping it is what every other CLI does.
+      continue;
+    } else if (arg === '--require-native') {
       requireNative = true;
     } else if (arg === '--out') {
       const value = argv[index + 1];
@@ -152,9 +169,9 @@ function stagePlaceholder(outDir, blocker) {
     [
       '#!/bin/sh',
       '# Staged by apps/desktop/scripts/build-helper.js. Not the real helper.',
-      `echo "pilot-helper: this bundle contains a placeholder, not the native macOS helper." >&2`,
-      `echo "pilot-helper: reason: ${blocker.code} — ${blocker.detail}" >&2`,
-      `echo "pilot-helper: build a real one on macOS with: pnpm --filter @pilot/desktop run build:helper -- --require-native" >&2`,
+      `echo "PilotHelper: this bundle contains a placeholder, not the native macOS helper." >&2`,
+      `echo "PilotHelper: reason: ${blocker.code} — ${blocker.detail}" >&2`,
+      `echo "PilotHelper: build a real one on macOS with: pnpm --filter @pilot/desktop run build:helper -- --require-native" >&2`,
       '# EX_CONFIG: the bundle is misconfigured for this use, not broken at runtime.',
       'exit 78',
       '',
