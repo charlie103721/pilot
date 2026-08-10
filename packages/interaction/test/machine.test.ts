@@ -161,7 +161,10 @@ const ILLEGAL_TRANSITIONS: readonly {
     reason: 'not-permitted',
   },
   { from: 'error', input: { type: 'push-to-talk-down' }, reason: 'illegal-transition' },
-  { from: 'error', input: { type: 'submit-text', text: 'hello' }, reason: 'illegal-transition' },
+  // `error + submit-text` is *accepted* (system-design §16, the STT fallback);
+  // only an empty one is refused. The accepted path is covered in
+  // `voice-orchestration.test.ts`.
+  { from: 'error', input: { type: 'submit-text', text: '   ' }, reason: 'empty-input' },
 ];
 
 describe('illegal transitions', () => {
