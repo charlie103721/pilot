@@ -1,34 +1,38 @@
 import { z } from 'zod';
 import { HELPER_PROTOCOL_VERSION } from './frame.js';
+import {
+  defineHelperOperation,
+  type HelperOperation,
+  type HelperOperationRequest,
+  type HelperOperationResponse,
+} from './operation-kit.js';
+import {
+  permissionAttributionOperation,
+  permissionOpenSettingsOperation,
+  permissionRequestOperation,
+  permissionSnapshotOperation,
+  permissionStatusOperation,
+} from './permission-ops.js';
+import { windowGetOperation, windowListOperation } from './window-ops.js';
 
 /**
  * The closed set of operations the helper exposes (system-design §4:
  * "restricted to explicit operations").
  *
- * PR-003 ships transport only: `health` and `echo`. PR-011 onward add
- * permissions, window enumeration, capture, pointer and speech operations by
- * appending to this table — the transport itself never grows a generic
- * "run anything" call.
+ * PR-003 shipped transport only: `health` and `echo`. PR-011 appends the
+ * permission and window operations. The transport itself never grows a generic
+ * "run anything" call, and `HELPER_PROTOCOL_VERSION` is unchanged — adding
+ * operations is backwards compatible in both directions, because an unknown
+ * operation is already a typed `invalid-request` on the helper and an
+ * unregistered response is already a typed `invalid-request` on the host.
  */
 
-export interface HelperOperation<Request, Response> {
-  readonly name: string;
-  readonly request: z.ZodType<Request>;
-  readonly response: z.ZodType<Response>;
-  /** Whether a request for this operation may attach a binary payload. */
-  readonly requestBinary: boolean;
-  /** Whether a response for this operation may attach a binary payload. */
-  readonly responseBinary: boolean;
-}
-
-export function defineHelperOperation<Request, Response>(
-  operation: HelperOperation<Request, Response>,
-): HelperOperation<Request, Response> {
-  return operation;
-}
-
-export type HelperOperationRequest<O> = O extends HelperOperation<infer R, unknown> ? R : never;
-export type HelperOperationResponse<O> = O extends HelperOperation<unknown, infer R> ? R : never;
+export {
+  defineHelperOperation,
+  type HelperOperation,
+  type HelperOperationRequest,
+  type HelperOperationResponse,
+};
 
 /** Liveness probe. Also the startup handshake — a helper that cannot answer it is not up. */
 export const healthOperation = defineHelperOperation({
@@ -84,6 +88,14 @@ export type HelperReadyEvent = z.infer<typeof helperReadyEventSchema>;
 export const HELPER_OPERATIONS = {
   health: healthOperation,
   echo: echoOperation,
+  // PR-011
+  permissionStatus: permissionStatusOperation,
+  permissionSnapshot: permissionSnapshotOperation,
+  permissionRequest: permissionRequestOperation,
+  permissionOpenSettings: permissionOpenSettingsOperation,
+  permissionAttribution: permissionAttributionOperation,
+  windowList: windowListOperation,
+  windowGet: windowGetOperation,
 } as const;
 
 export const HELPER_OPERATION_NAMES: readonly string[] = Object.values(HELPER_OPERATIONS).map(

@@ -4,6 +4,7 @@ import type {
   CapturedFrame,
   CredentialRef,
   ObservedWindow,
+  PermissionAttribution,
   PermissionKind,
   PermissionSnapshot,
   PermissionStatus,
@@ -48,15 +49,63 @@ export interface PermissionAdapter {
   /** Opens the platform settings pane for a permission, when one exists. */
   openSettings(kind: PermissionKind): Promise<void>;
   subscribe: Subscribe<PermissionStatus>;
+  /**
+   * Reports which process the operating system credits permission grants to
+   * (PR-011). Optional so that adapters written before this method existed
+   * still satisfy the interface; a caller that needs the answer must handle
+   * `undefined` as "this platform does not report attribution".
+   *
+   * An adapter that implements it must never let a failing verdict pass as a
+   * normal permission state — see `@pilot/shared`'s `isAttributionFailure`.
+   */
+  attribution?(): Promise<PermissionAttribution>;
 }
 
 // ---------------------------------------------------------------------------
 // Windows
 // ---------------------------------------------------------------------------
 
+/**
+ * What changed about a window that is still open (PR-011).
+ *
+ * Reported as a set rather than a single winner: a window dragged to another
+ * display while its document title changed produces `['title', 'position',
+ * 'display']`, and collapsing that into one label would lose information a
+ * consumer may need. "Retitled" is `title`; "moved" is `position`; "resized"
+ * is `size`.
+ */
+export const WINDOW_CHANGE_KINDS = ['title', 'position', 'size', 'display', 'visibility'] as const;
+
+export type WindowChangeKind = (typeof WINDOW_CHANGE_KINDS)[number];
+
+/**
+ * Window lifecycle events.
+ *
+ * The five variants are unchanged from PR-001. PR-011 added the optional
+ * detail fields — the union itself did not grow a member, so an existing
+ * exhaustive `switch` still compiles and still handles every case.
+ *
+ * - **appeared**: `window-list-changed` carrying `appeared`.
+ * - **closed**: `window-closed` per window, and `disappeared` on the
+ *   accompanying `window-list-changed`.
+ * - **retitled / moved / resized**: `window-changed` carrying `changes`.
+ */
 export type WindowEvent =
-  | { readonly type: 'window-list-changed' }
-  | { readonly type: 'window-changed'; readonly window: ObservedWindow }
+  | {
+      readonly type: 'window-list-changed';
+      /** Windows present now that were absent before. */
+      readonly appeared?: readonly ObservedWindow[];
+      /** Windows absent now that were present before. */
+      readonly disappeared?: readonly WindowId[];
+    }
+  | {
+      readonly type: 'window-changed';
+      readonly window: ObservedWindow;
+      /** What changed. Absent when the producer does not distinguish. */
+      readonly changes?: readonly WindowChangeKind[];
+      /** The window as it was immediately before this change. */
+      readonly previous?: ObservedWindow;
+    }
   | { readonly type: 'window-closed'; readonly windowId: WindowId }
   | { readonly type: 'screen-locked' }
   | { readonly type: 'screen-unlocked' };

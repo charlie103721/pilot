@@ -41,24 +41,83 @@ pnpm --filter @pilot/desktop exec node scripts/verify-bundle.js   # expect `help
 
 # 4. The desktop shell, visually. Linux only proves it launches headlessly.
 pnpm dev
+
+# 5. PR-011 — permissions and window enumeration. THIS ONE PROMPTS.
+#    Run it from the SwiftPM build first (attribution should read `unknown`),
+#    then from inside the packaged .app, which is the answer that matters.
+pnpm --filter @pilot/platform-mac demo:permissions
+
+PILOT_HELPER_BINARY="$(pwd)/apps/desktop/release/mac-arm64/Pilot.app/Contents/Resources/helper/PilotHelper" \
+  pnpm --filter @pilot/platform-mac demo:permissions
 ```
 
 Notes:
 
-- **A Swift compile failure is a PR-003 defect.** Send the compiler output and
-  it gets fixed, not worked around. The author could not compile it and
-  deliberately avoided constructs they were unsure of.
-- Nothing in `native/` touches ScreenCaptureKit, Accessibility or entitlements
-  yet, so this batch should raise **no TCC prompt**. That is deliberate: it
-  isolates "does the helper build and talk" from "does macOS trust it", and the
-  second question is PR-011's.
+- **A Swift compile failure is a PR-003 defect** for the transport files, and a
+  **PR-011 defect** for `PermissionModel.swift`, `Attribution.swift`,
+  `WindowModel.swift`, `PermissionProbes.swift` and `WindowEnumerator.swift`.
+  Either way, send the compiler output; it gets fixed, not worked around. The
+  authors could not compile any of it and deliberately avoided constructs they
+  were unsure of.
+- **Steps 1–4 raise no TCC prompt. Step 5 does.** That separation is
+  deliberate: it isolates "does the helper build and talk" from "does macOS
+  trust it". Do steps 1–4 first; if the helper does not build, step 5 cannot
+  tell you anything.
 - `--require-native` in step 3 is the flag that matters. Without it the build
   silently stages a placeholder, and a bundle that cannot observe the screen is
   indistinguishable from one that can until someone tries it.
 
+### What to look for in step 5 (PR-011)
+
+This is the first observation of **TCC attribution**, the top structural risk
+in the plan (§5 below). Four things, in order:
+
+1. **Section 2, `verdict=`.** Run from `.build/debug` it should read
+   `unknown (none)` — a loose executable is inside no `.app`, and that is a
+   correct non-answer, not a bug. Run from inside the packaged `.app` it
+   should read **`matched (direct)`**. Anything else — especially
+   `helper-attributed` — is the risk materialising, and the whole permission
+   model in `docs/system-design.md` §4 needs rework.
+2. **`confidence=`.** `direct` means macOS answered which process it holds
+   responsible. `inferred` means the
+   `responsibility_get_pid_responsible_for_pid` SPI did not resolve and the
+   verdict rests on bundle layout instead. `inferred` is still usable, but
+   report it: it means the strongest available check is not working.
+3. **Section 4, window titles.** If every title reads "(title unavailable —
+   Screen Recording not granted)" while section 1 reports
+   `screen-recording=granted`, that is the attribution bug showing itself from
+   the other side, independently of the verdict. Report that combination even
+   if the verdict says `matched`.
+4. **System Settings → Privacy & Security → Screen Recording.** One entry
+   named Pilot is correct. A second entry named `PilotHelper` is the failure,
+   and it is visible without reading any output at all.
+
+A crash worth expecting rather than reporting as a surprise: macOS kills a
+process that requests Microphone or Speech Recognition without the matching
+usage string in the responsible process's `Info.plist`. Both keys are already
+declared for the packaged app (`apps/desktop/electron-builder.yml`,
+`extendInfo`), so the packaged run in step 5 is covered — but the helper run
+from `.build/debug` has no `Info.plist` of its own and may be killed. If it is
+killed **in the packaged run too**, that is decisive: TCC is reading the
+helper's own plist, so attribution is wrong whatever the verdict printed.
+Either way the supervisor restarts it and the request fails as
+`helper-unavailable`; nothing hangs.
+
+Also worth capturing while you are there, since nothing else will produce it:
+
+- Whether each permission prompt actually appears, and whether Screen
+  Recording still reports the old state until Pilot is relaunched (the code
+  assumes it does — `requiresRelaunch: true`).
+- Whether the four `x-apple.systempreferences:` URLs land on the right panes.
+- The raw values printed for Microphone and Speech Recognition, to confirm the
+  two authorization enums map the way `PermissionStateMapper` assumes (they
+  disagree: `1` is `restricted` for AVFoundation and `denied` for Speech).
+
 **Fallback in use:** Mac-gated code is written unverified and batched here
 (runbook amendment 8, user decision). Accepted risk: PR-011 through PR-015
-accumulate on top of an uncompiled helper.
+accumulate on top of an uncompiled helper. PR-011 additionally ships an
+attribution check whose *logic* is fully tested on Linux but whose *answer* is
+unknown until step 5 runs.
 
 ---
 
@@ -134,13 +193,25 @@ reversible; raise any that look wrong.
 Verification standard on every merge: `pnpm lint`, `typecheck`, `test`, `build`
 re-run by the orchestrator — never taken on a subagent's word — plus each PR's
 demo executed against the merged tree.
+---
 
 ## 5. Risks worth watching
 
 - **TCC attribution for the spawned Swift helper** remains the top structural
-  risk in the plan, and it is still entirely unverified. PR-011 is where it
-  lands. If macOS attributes permissions to the helper rather than the parent
-  bundle, the permission model in `docs/system-design.md` §4 needs rework.
+  risk in the plan. PR-011 has landed the *detection* for it — a typed
+  `permission-attribution-mismatch` that fires instead of reporting a
+  permission Pilot cannot actually use — but the **answer is still unverified**.
+  §1 step 5 is what produces it. If macOS attributes permissions to the helper
+  rather than the parent bundle, the permission model in
+  `docs/system-design.md` §4 needs rework, and PR-012 through PR-015 are all
+  built on the assumption that it does not.
+  - What PR-011 guarantees today: if attribution *is* wrong, Pilot says so
+    loudly and specifically rather than reporting `granted` and capturing
+    nothing. What it does not guarantee: that attribution is right.
+  - If it turns out wrong, the likely remedies are an XPC service with its own
+    bundle inside the app (so the identity is deliberate rather than
+    accidental) or moving these calls into the Electron main process. Both are
+    larger than PR-011 and neither has been designed.
 - **`sharp` prebuilds inside packaged Electron (arm64)** — PR-018 owns image
   encoding; the packaging interaction has not been tested.
 - **Double-JPEG legibility of small text** — capture encodes once, the

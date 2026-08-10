@@ -9,10 +9,23 @@ import Foundation
 public enum HelperProtocol {
     public static let version = 1
 
-    /// Operations this helper implements. PR-011 onward extends this list.
+    /// Operations this helper implements. PR-012 onward extends this list.
+    ///
+    /// Kept in exact agreement with `HELPER_OPERATIONS` in
+    /// `packages/platform-mac/src/protocol/operations.ts`. Adding cases does
+    /// not change `version`: an operation the other side does not know is
+    /// already a typed `invalid-request` in both directions.
     public enum Operation: String {
         case health
         case echo
+        // PR-011
+        case permissionsStatus = "permissions.status"
+        case permissionsSnapshot = "permissions.snapshot"
+        case permissionsRequest = "permissions.request"
+        case permissionsOpenSettings = "permissions.open-settings"
+        case permissionsAttribution = "permissions.attribution"
+        case windowsList = "windows.list"
+        case windowsGet = "windows.get"
     }
 
     public static let readyEventName = "helper.ready"

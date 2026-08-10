@@ -125,7 +125,7 @@ describe('ObservationSession window lifecycle', () => {
   it('turns a title change into a scene revision', async () => {
     const { session, windows, core, transitions } = subject();
     await session.start(SELECTION);
-    windows.changeWindow({ ...FIXTURE_WINDOW_RETINA, title: 'Renewal' });
+    windows.replaceWindow({ ...FIXTURE_WINDOW_RETINA, title: 'Renewal' });
 
     expect(core.scene?.revision).toBe(1);
     expect(core.scene?.windowTitle).toBe('Renewal');
@@ -135,7 +135,7 @@ describe('ObservationSession window lifecycle', () => {
   it('turns a window move into a geometry revision and re-normalises the pointer', async () => {
     const { session, windows, core, accessibility } = subject();
     await session.start(SELECTION);
-    windows.changeWindow({
+    windows.replaceWindow({
       ...FIXTURE_WINDOW_RETINA,
       bounds: { ...FIXTURE_WINDOW_RETINA.bounds, x: FIXTURE_WINDOW_RETINA.bounds.x + 600 },
     });
@@ -150,13 +150,17 @@ describe('ObservationSession window lifecycle', () => {
   it('ignores events for windows it is not observing', async () => {
     const { session, windows, core } = subject();
     await session.start(SELECTION);
-    windows.changeWindow({ ...FIXTURE_WINDOW_SECONDARY, title: 'Something else' });
+    windows.replaceWindow({ ...FIXTURE_WINDOW_SECONDARY, title: 'Something else' });
     windows.closeWindow(FIXTURE_WINDOW_SECONDARY.windowId);
     windows.notifyWindowListChanged();
 
     expect(core.scene?.revision).toBe(0);
     expect(session.state).toBe('observing');
-    expect(session.metrics().ignoredWindowEvents).toBe(3);
+    // Four, not three: PR-011 made `closeWindow` emit `window-list-changed`
+    // with `disappeared` alongside `window-closed`, because a window closing
+    // really does change the list. So this is window-changed, window-closed,
+    // window-list-changed (from the close), and the explicit one below.
+    expect(session.metrics().ignoredWindowEvents).toBe(4);
   });
 
   it('clears and ends the session when the selected window closes', async () => {

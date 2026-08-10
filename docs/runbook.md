@@ -196,18 +196,28 @@ include them:
 
 Everything below needs the user's Mac. Nothing else is blocked on it.
 
-| What | Command / action | From |
-| --- | --- | --- |
-| Compile the Swift helper | `swift build --package-path native` in `packages/platform-mac` | PR-003 |
-| Swift unit tests | `swift test --package-path native` | PR-003 |
-| Helper demo against the real binary | `pnpm --filter @pilot/platform-mac demo` | PR-003 |
-| Codex sign-in probe | `docs/pi-notes.md` §9.1 | PR-005 |
-| Desktop shell visual demo | `pnpm dev` — menu bar item, panel, fake states | PR-002 |
+The authoritative, runnable version of this list is `docs/handoff.md` §1; keep
+the two in step.
 
-A Swift compile failure is a **PR-003 defect**: send the compiler output and it
-gets fixed, not worked around. Nothing in `native/` touches ScreenCaptureKit,
-Accessibility or entitlements yet, so this batch should raise no TCC prompt —
-it isolates "does the helper build and talk" from "does macOS trust it".
+| What | Command / action | From | Prompts? |
+| --- | --- | --- | --- |
+| Compile the Swift helper | `swift build --package-path native` in `packages/platform-mac` | PR-003, PR-011 | no |
+| Swift unit tests | `swift test --package-path native` | PR-003, PR-011 | no |
+| Helper demo against the real binary | `pnpm --filter @pilot/platform-mac demo` | PR-003 | no |
+| Codex sign-in probe | `docs/pi-notes.md` §9.1 | PR-005 | no |
+| Desktop shell visual demo | `pnpm dev` — menu bar item, panel, fake states | PR-002 | no |
+| **TCC attribution + real permissions and windows** | `pnpm --filter @pilot/platform-mac demo:permissions`, then again with `PILOT_HELPER_BINARY` pointing inside the packaged `.app` | PR-011 | **yes** |
+
+A Swift compile failure is a **PR-003 defect** in the transport files and a
+**PR-011 defect** in `PermissionModel.swift`, `Attribution.swift`,
+`WindowModel.swift`, `PermissionProbes.swift` and `WindowEnumerator.swift`:
+either way, send the compiler output and it gets fixed, not worked around.
+
+Every row but the last raises **no TCC prompt** — that separation is
+deliberate, isolating "does the helper build and talk" from "does macOS trust
+it". The last row is the second question, and it is the one that settles the
+top structural risk in the plan (§7). What to look for is spelled out in
+`docs/handoff.md` §1.
 
 ## 6. Verification commands
 
@@ -258,6 +268,12 @@ created during PR-043.
   assumptions; TCC permission attribution for the spawned Swift helper; Codex
   subscription support in the pinned Pi release; double-JPEG small-text
   legibility; `sharp` prebuilds inside packaged Electron (arm64).
+- **TCC attribution now has detection but not an answer** (PR-011). The adapter
+  establishes which process macOS credits grants to and raises a typed
+  `permission-attribution-mismatch` instead of reporting a permission Pilot
+  cannot use. The verdict logic is fully tested on Linux; which verdict a real
+  Mac produces is unknown until §5a's last row runs. PR-012…PR-015 all assume
+  it comes back `matched`.
 - **Signing**: development signing only. Notarization is a recorded gap
   against the DoD (user decision — no Developer ID account yet).
 - **Grounding metric**: manual checklist over real apps (user decision), not
@@ -319,6 +335,18 @@ written blind per amendment 8).
 4. **Do not trust a subagent's "all green" report.** Re-run the gate yourself
    after merging. PR-004's agent reported lint passing, and in its isolated
    worktree that was true — the failure only appeared with other lanes running.
+5. **Two lanes can add the same method to the same fake, and git will merge
+   both.** PR-011 and PR-016 each added `FakeWindowAdapter.changeWindow` with
+   different signatures; the textual merge was clean and `tsc` then reported
+   `TS2393: Duplicate function implementation`. Resolution: keep both under
+   distinct names when both behaviours are wanted (here `changeWindow` for the
+   detailed form and `replaceWindow` for the upsert form) rather than deleting
+   one lane's and silently changing its tests' meaning.
+6. **A richer fake changes event counts.** PR-011 made `closeWindow` also emit
+   `window-list-changed`, which is more faithful — a closing window really does
+   change the list — and that broke a PR-016 test asserting an exact ignored-
+   event count. Update the count and say why in a comment; do not weaken the
+   assertion to a range, and do not revert the more faithful behaviour.
 
 ### Pending cross-lane follow-ups
 
