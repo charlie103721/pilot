@@ -29,7 +29,6 @@ import {
   ManualScheduler,
   PilotInteractionController,
   RecordingObservationPort,
-  STEER_INTERRUPTION_MESSAGE,
   SpeechOutputBinding,
   speechChunkId,
   type CancellationRecord,
@@ -42,7 +41,8 @@ import {
  *
  * `docs/implementation.md` asks for "interrupt during thinking and speaking
  * without late output resurfacing", and the brief names five cases explicitly:
- * an interruption mid-`observe_screen` (which steers rather than aborts), a
+ * an interruption mid-`observe_screen` (which **aborts** — PR-027 steered here
+ * and PR-035 changed it; see `interruptModeFor` and runbook §8 follow-up 14), a
  * `speak` effect already queued when the interruption lands, a run that
  * completes *after* being aborted, two interruptions in quick succession, and
  * an interruption arriving between `run-completed` and the first
@@ -553,7 +553,7 @@ describe('a run that finishes after it was abandoned', () => {
 });
 
 describe('a screen observation in flight', () => {
-  it('steers the run rather than aborting it, so the capture can unwind', async () => {
+  it('aborts the run, which is what unwinds the capture', async () => {
     const conversationId = asConversationId('conv-interrupt');
     const agent = new InterruptibleAgentSession({ conversationId });
     const harness = createHarness({ agent });
@@ -567,16 +567,18 @@ describe('a screen observation in flight', () => {
 
     await send({ type: 'interrupt' });
 
-    // system-design §15, PR-006: `steer` while a capture is in flight. The run
-    // is told to stop *and keeps its abort signal unfired*, which is what lets
-    // `observe_screen` finish and unwind instead of being cut in half.
-    expect(agent.interrupts).toEqual([{ mode: 'steer', detail: STEER_INTERRUPTION_MESSAGE }]);
-    expect(agent.steers).toEqual([STEER_INTERRUPTION_MESSAGE]);
-    expect(agent.runAborted).toBe(false);
-    expect(agent.toolInFlight).toBe(true);
+    // PR-035, runbook §8 follow-up 14. PR-006 chose `steer` here so the capture
+    // could unwind; the row below is what that actually cost. `abort` fires the
+    // run's `AbortSignal`, which is the one `observe_screen` checks before its
+    // capture, passes to `ScreenContextService.observe`, and uses to discard a
+    // frame that lands afterwards — so aborting *is* the unwinding, and unlike
+    // a steer it also ends the run.
+    expect(agent.interrupts).toEqual([{ mode: 'abort', detail: 'interrupted by the user' }]);
+    expect(agent.steers).toEqual([]);
+    expect(agent.runAborted).toBe(true);
     expect(controller.snapshot().state).toBe('observing');
 
-    // Everything it produces from here is still discarded, steered or not.
+    // Everything it produces from here is discarded either way.
     agent.lateDelta('The toggle is off.');
     await controller.settled();
     expect(answers(harness)).toEqual([]);
@@ -584,15 +586,16 @@ describe('a screen observation in flight', () => {
   });
 
   /**
-   * Pinned, not endorsed. A steer leaves the run alive, so the `submit-question`
-   * the machine emits in the same transition meets a run that is still going.
-   * With the fakes PR-006 shipped this was invisible — they stop on any
-   * interrupt — and with a real `PiAgentSession` it is a user-visible error.
-   * The fix is a design decision about what "steer" means for a replacement
-   * question, and it needs the real agent: runbook §8 follow-up 7, PR-035.
-   * This test exists so the behaviour cannot change without someone noticing.
+   * The row this test used to pin, resolved.
+   *
+   * With `steer`, the `submit-question` the machine emits in the same
+   * transition met a run that was still going: `run-already-active`, surfaced
+   * to the user as "Pilot is still working on the previous question". Pilot
+   * recovered — the failure teardown aborted the steered run — but the
+   * interruption did not do what the user asked. PR-035 chose to abort instead;
+   * this is the same trace, now succeeding.
    */
-  it('cannot yet start a replacement question while the steered run is still going (PR-035)', async () => {
+  it('starts the replacement question immediately (PR-035, follow-up 14)', async () => {
     const conversationId = asConversationId('conv-interrupt');
     const agent = new InterruptibleAgentSession({ conversationId });
     const harness = createHarness({ agent });
@@ -605,18 +608,12 @@ describe('a screen observation in flight', () => {
 
     await send({ type: 'submit-text', text: 'no wait, what is that?' });
 
-    expect(agent.interrupts).toEqual([
-      { mode: 'steer', detail: STEER_INTERRUPTION_MESSAGE },
-      // The refusal is a recoverable failure, and its teardown aborts the
-      // steered run — so Pilot recovers rather than wedging. It still did not
-      // do what the user asked, which is why this is a follow-up and not a
-      // feature.
-      { mode: 'abort', detail: 'recoverable failure' },
-    ]);
-    expect(agent.submitted).toHaveLength(1);
-    expect(controller.snapshot().state).toBe('error');
-    expect(controller.snapshot().lastError?.code).toBe('run-already-active');
-    expect(agent.runAborted).toBe(true);
+    expect(agent.interrupts).toEqual([{ mode: 'abort', detail: 'superseded by a typed question' }]);
+    // Two questions, two runs, and no `run-already-active` between them.
+    expect(agent.submitted).toHaveLength(2);
+    expect(agent.submitted[1]?.transcript).toBe('no wait, what is that?');
+    expect(controller.snapshot().state).toBe('thinking');
+    expect(controller.snapshot().lastError).toBeNull();
     await controller.dispose();
   });
 

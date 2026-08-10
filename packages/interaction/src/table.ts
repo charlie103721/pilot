@@ -168,17 +168,49 @@ function isCapturingAudio(context: InteractionContext): boolean {
  * How the active run is stopped (system-design §15: "aborts the current agent
  * request or submits a steering message according to state").
  *
- * While a screen observation is in flight the run is *steered* so the tool call
- * unwinds cleanly instead of being cancelled halfway through a capture;
- * everywhere else the run is aborted outright. Either way the machine forgets
- * the run id, so late events from it are rejected as `stale-run`.
+ * **Always `abort`, including in `observing-screen` — decided by PR-035**
+ * (runbook §8 follow-up 14). PR-006 chose `steer` here so that an
+ * `observe_screen` call in flight could unwind rather than be cut in half, and
+ * PR-027 kept it while recording the consequence. With the real
+ * `PiAgentSession` in front of it, that choice is wrong in every direction:
+ *
+ *  - **A steer does not end the run.** Every teardown that reaches this
+ *    function also runs `clearedActivity()`, so the machine forgets the run id
+ *    and every event the steered run goes on to produce is rejected as
+ *    `stale-run`. The run therefore keeps a provider request open, keeps the
+ *    "one run per conversation" slot, and produces output that by construction
+ *    nobody can ever see.
+ *  - **The replacement question then cannot start.** `submit-question` is
+ *    emitted in the same transition as the interruption, and it meets a run
+ *    that is still going: `run-already-active`, surfaced as "Pilot is still
+ *    working on the previous question". Pilot recovered (the failure teardown
+ *    aborted the steered run) but did not do what the user asked.
+ *  - **The capture lands afterwards.** `steer` leaves the tool's `AbortSignal`
+ *    unfired, so the in-flight capture completes and its image is appended to
+ *    the model's context for a question the user has already replaced. That is
+ *    the opposite of unwinding.
+ *  - **`abort` is what unwinds it.** PR-021's tool checks the signal before the
+ *    call, passes it to `ScreenContextService.observe` and discards a result
+ *    that arrives after it; PR-019's `captureWithAbort` races the platform
+ *    capture against the same signal and drops a late frame on the floor; and
+ *    `PiAgentSession.interrupt('abort')` awaits Pi's own idle signal, so by the
+ *    time the replacement question is submitted there is no active run.
+ *
+ * The state parameter is kept — the signature is part of the package's public
+ * surface, and a future PR that finds a case where steering is genuinely right
+ * has exactly one place to add it.
  */
-export function interruptModeFor(state: InteractionState): InterruptMode {
-  return state === 'observing-screen' ? 'steer' : 'abort';
+export function interruptModeFor(_state: InteractionState): InterruptMode {
+  return 'abort';
 }
 
 /**
- * What a steered run is told (PR-027).
+ * What a steered run would be told (PR-027).
+ *
+ * **No longer emitted by this table** (PR-035; see {@link interruptModeFor}).
+ * It is kept, and kept exported, because `'steer'` is still part of the
+ * `AgentSession` contract and this constant records the thing that is easy to
+ * get wrong about it:
  *
  * `AgentSession.interrupt(mode, detail)` reads `detail` differently per mode,
  * and the difference matters: for `'abort'` it is an internal reason string
@@ -186,9 +218,9 @@ export function interruptModeFor(state: InteractionState): InterruptMode {
  * injected into the transcript verbatim** (`packages/platform/src/agent.ts`,
  * verified against Pi 0.84.1). An internal string like "paused" or "superseded
  * by a new question" would therefore be spoken to the model as if the user had
- * said it. So a steer carries a message written for the model, and the internal
- * reason stays where it belongs — in the outcome, the rejection stream and the
- * diagnostics.
+ * said it. Anything that steers must carry a message written for the model, and
+ * leave the internal reason where it belongs — in the outcome, the rejection
+ * stream and the diagnostics.
  */
 export const STEER_INTERRUPTION_MESSAGE =
   'Stop what you are doing and wait. The user interrupted this request; do not ' +

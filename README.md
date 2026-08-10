@@ -1108,3 +1108,65 @@ single trace. The Mac run that settles it is `docs/handoff.md` §1 step 14.
 In the app, the same thing by hand: the PR-032 and PR-033 stub configurations
 above, combined — a scripted tap, a scripted recogniser and a synthesiser script
 that finishes — and then a question that needs the screen.
+
+## Demo (PR-035 — end-to-end interruption)
+
+```sh
+pnpm demo:interrupt-flow                    # headless walkthrough, no display needed
+```
+
+PR-034's trace interrupts an answer that is being **spoken**, which is the easy
+half. This walkthrough is the hard half — the states where an interruption has
+something to *unwind* rather than merely something to stop — and it settles the
+last open design question in Phase 3 (runbook §8 follow-up 14).
+
+**The decision: an interruption aborts the run, in every state, including while
+`observe_screen` is in flight.** PR-006 chose `steer` there so a capture could
+unwind. With the real `PiAgentSession` that is wrong three ways: a steer does not
+*end* the run, so the replacement question meets `run-already-active`; the
+steered run keeps producing output the machine has already forgotten; and the
+capture the steer was meant to protect **completes**, putting an image of the
+screen into the model's context for a question the user has replaced. Aborting is
+what unwinds it — `observe_screen` checks the run's `AbortSignal` before it
+captures and discards a result that arrives after it, `ScreenContextService`
+races the platform capture against the same signal, and
+`PiAgentSession.interrupt('abort')` waits for Pi to go idle so no run is left
+holding the conversation.
+
+Four cases, each through the shipping composition:
+
+1. **while the model is looking** — a fresh capture genuinely in flight
+   (`moment: 'current'`, the helper told to take 1 200 ms over `capture.pull`),
+   interrupted 1 ms after the press and cancelled ~1 190 ms before the helper
+   answered. No frame reaches the ring, no image reaches any prompt, the tool
+   result reads `"failure":"cancelled"`, and **the replacement question is asked
+   and answered** with no `run-already-active`;
+2. **two interruptions in quick succession** — three questions, two
+   interruptions, one answer spoken to the end, with the sentence queued behind
+   each interrupted one dropped rather than deferred;
+3. **between `run-completed` and the first spoken word** — the answer exists,
+   the synthesiser has accepted it, not a syllable has been produced, and the
+   key goes down there;
+4. **where each abandoned run ended** — `run-failed` after a cancelled tool
+   call, `run-aborted` after a cancelled stream, both discarded as `stale-run`.
+   Read that first one twice: the `run-failed` cell goes to `error` and writes
+   `lastError`, so the identity guard running *before* the transition table is
+   the only thing between an interruption and a user-visible failure about a
+   question they already replaced.
+
+Late output is then checked in the three places it could resurface: the panel
+transcript (read from the one `PilotViewState` stream the renderer subscribes
+to — every abandoned answer still reads exactly as far as it got, §16), the
+synthesiser (read from `speech.output.speak` **off the framed wire** — no
+superseded stream ever speaks again), and the diagnostics (every discarded
+result is a rejection or a binding diagnostic, and `lastError` is `(none)` in
+every section).
+
+**On the timing, read section 5 of the output.** It reports ~1 ms from the
+machine accepting `push-to-talk-down` to `speech.output.stop` crossing the pipe,
+and then says what that is not: it is Pilot's half of §17's 300 ms, on an idle
+Linux box, once. **No `AVSpeechSynthesizer` has ever run here and no sound has
+ever been stopped** — the helper dispatching to `stopSpeaking(at: .immediate)`,
+the synthesiser draining and the audio device going quiet are all unmeasured,
+and they are the part a person in the room would actually hear. The Mac run that
+settles it is `docs/handoff.md` §1 step 15, and it settles it by ear.
