@@ -478,7 +478,7 @@ reversible; raise any that look wrong.
 | Phase 2 — capability lanes | In progress. **Merged:** PR-008, PR-011, PR-015, PR-016, PR-017, PR-020, PR-021, PR-022a, PR-024, PR-025. **In flight:** PR-009, PR-012, PR-013, PR-014, PR-018, PR-022b, PR-026. **Remaining:** PR-010, PR-019, PR-023, PR-027. |
 | Phase 2 — capability lanes | In progress. **Merged:** PR-008, PR-011, PR-015, PR-016, PR-017, PR-018, PR-020, PR-021, PR-022a, PR-022b, PR-024, PR-025, PR-026, PR-027. **In flight:** PR-009, PR-010, PR-012, PR-013, PR-014, PR-019. **Landing now:** PR-023 — the agent runtime lane (PR-020 → 021 → 022 → 023) is complete. |
 | Phase 2 — capability lanes | **The desktop lane (PR-008 → 009 → 010) is complete.** PR-010 closed runbook follow-up 4 (both copies) and the panel halves of follow-ups 9 and 13. |
-| Phase 3 — integration (028…036) | Not started. Blocked on Phase 2; most steps also need the Mac (§1) and a signed-in model (§2). |
+| Phase 3 — integration (028…036) | **In progress.** PR-029 (text conversation with a real Pi session) first, because it is the one integration step fully verifiable on Linux. PR-028 and everything from PR-030 onward also need the Mac (§1); nothing past PR-029 can be *demonstrated against a real model* until the Codex sign-in (§2). |
 | Phase 4 — providers (037…039) | Not started. PR-037 (Codex) is the one the user's decision selects. |
 | Phase 5 — hardening and release (040…044) | Not started. |
 
