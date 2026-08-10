@@ -3,6 +3,11 @@ export * from './capability.js';
 export * from './model-profile.js';
 export * from './development-model.js';
 export * from './profile-store.js';
+// PR-039 — local OpenAI-compatible profile. Additive: three new modules, no
+// existing export changed.
+export * from './local-endpoint.js';
+export * from './local-model-source.js';
+export * from './stub-openai-endpoint.js';
 export * from './auth-facade.js';
 export * from './visual-context.js';
 export * from './compaction.js';
