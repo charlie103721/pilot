@@ -1,4 +1,4 @@
-import { nullLogger, type Logger, type ObservedWindow } from '@pilot/shared';
+import { nullLogger, type ConversationId, type Logger, type ObservedWindow } from '@pilot/shared';
 import { NativeHelperTransport, type MacHotkeyAdapter } from '@pilot/platform-mac';
 import {
   createTimeoutScheduler,
@@ -26,7 +26,12 @@ import { createSettingsShortcut } from '../main/settings-shortcut.js';
 import { createSpeechOutputRuntime, type SpeechOutputRuntime } from '../main/speech-runtime.js';
 import { createVoiceRuntime, type VoiceRuntime } from '../main/voice-runtime.js';
 import { WindowGate } from '../main/window-gate.js';
-import { createDevelopmentModelSource, type ModelSource } from '@pilot/agent';
+import {
+  createDevelopmentModelSource,
+  type ConversationStore,
+  type ModelSource,
+  type RestoredConversation,
+} from '@pilot/agent';
 import { asConversationId } from '@pilot/shared';
 import type { AgentRuntime } from '../main/agent-runtime.js';
 
@@ -163,6 +168,31 @@ export interface ObservationRigOptions {
    * only when the run ends — passes `NULL_SCHEDULER` and says so.
    */
   readonly scheduler?: Scheduler;
+  /**
+   * The durable conversation (PR-036, runbook follow-up 20).
+   *
+   * Both halves or neither: `store` without `restore` is exactly the failure
+   * that follow-up describes — the transcript stays on disk and the model never
+   * sees it — so a walkthrough that relaunches passes the pair it got from
+   * `openConversationStoreRuntime`. Omitting them runs the session in memory,
+   * which is what every earlier walkthrough does and continues to do.
+   */
+  readonly store?: ConversationStore;
+  readonly restore?: RestoredConversation;
+  /**
+   * Overrides the §11 context budget (PR-036, follow-ups 7 and 9). The app
+   * resolves it from the profile (`main/context-window.ts`); a walkthrough that
+   * wants compaction to fire inside a dozen turns passes a small one and says
+   * so, exactly as `packages/agent`'s own demos do.
+   */
+  readonly contextWindow?: number;
+  /**
+   * The conversation this rig is (PR-036). Defaults to `conv-observe-demo`,
+   * which every earlier walkthrough used implicitly; a walkthrough that opens a
+   * store must pass the id that store was opened with, because the Pi session
+   * id *is* the conversation id.
+   */
+  readonly conversationId?: ConversationId;
 }
 
 /**
@@ -354,14 +384,20 @@ export async function createObservationRig(
     pointerSampleIntervalMs: options.pointerSampleIntervalMs ?? 3_600_000,
   });
 
-  const conversationId = asConversationId('conv-observe-demo');
+  const conversationId = options.conversationId ?? asConversationId('conv-observe-demo');
   // PR-030's one-argument change, in the rig exactly as in `main/index.ts`:
   // `observe_screen` reaches the same `PilotScreenContextService` instance the
   // interaction table's "Look now" drives.
+  // PR-036's wiring, in the rig exactly as in `main/index.ts`: the durable
+  // store and what was restored from it, passed together, and the §11 context
+  // budget the app resolves from the profile.
   const agent = createAgentRuntime({
     conversationId,
     source: options.modelSource ?? createDevelopmentModelSource(),
     screenContext: observation.screenContext,
+    ...(options.store === undefined ? {} : { store: options.store }),
+    ...(options.restore === undefined ? {} : { restore: options.restore }),
+    ...(options.contextWindow === undefined ? {} : { contextWindow: options.contextWindow }),
     logger,
   });
   // PR-031's wiring, in the rig exactly as in `main/index.ts`.
@@ -434,6 +470,9 @@ export async function createObservationRig(
     logger,
   });
   observation.attachTelemetry(conversation.telemetry);
+  // PR-036, follow-up 9: the two compaction counters, attached exactly as
+  // `main/index.ts` attaches them and to the same ring.
+  agent.attachTelemetry(conversation.telemetry);
   const observationInteraction = createObservationInteraction(controller);
   const windows = new WindowGate({
     windows: platform.windows,

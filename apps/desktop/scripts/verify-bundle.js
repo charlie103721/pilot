@@ -30,6 +30,13 @@ const REQUIRED_APP_FILES = [
   'dist/preload/index.cjs',
   'dist/renderer/index.html',
   'dist/renderer/renderer.js',
+  // PR-036. The SQLite backend reads its schema off disk relative to
+  // `import.meta.url`, and electron-vite inlines the package into
+  // `dist/main/index.js`, so the file has to be staged beside the bundle
+  // (`stageSqliteMigrations` in electron.vite.config.ts). Without it the app
+  // starts, answers questions, and silently persists nothing — which is why it
+  // is checked here rather than left to whoever notices.
+  'dist/main/migrations/001_initial.sql',
 ];
 
 /** Files that must be beside the asar, as real files on disk. */

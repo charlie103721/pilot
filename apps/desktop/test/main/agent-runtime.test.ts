@@ -14,6 +14,7 @@ import {
 } from '@pilot/agent';
 import type { PilotInteractionController } from '@pilot/interaction';
 import { createAgentRuntime, type AgentRuntime } from '../../src/main/agent-runtime.js';
+import { CONSERVATIVE_CONTEXT_WINDOW } from '../../src/main/context-window.js';
 import { createInteractionRuntime } from '../../src/main/interaction-runtime.js';
 
 /**
@@ -56,6 +57,7 @@ function rig(
     readonly tokensPerSecond?: number;
     readonly source?: ModelSource;
     readonly screenContext?: FakeScreenContextService;
+    readonly contextWindow?: number;
   } = {},
 ): Rig {
   const source =
@@ -70,6 +72,10 @@ function rig(
     conversationId: CONVERSATION,
     source,
     ...(options.screenContext === undefined ? {} : { screenContext: options.screenContext }),
+    ...(options.contextWindow === undefined ? {} : { contextWindow: options.contextWindow }),
+    // Never `process.env`: `PILOT_CONTEXT_WINDOW` in a developer's shell must
+    // not change what a test asserts.
+    env: {},
   });
   const { controller } = createInteractionRuntime({
     agent: runtime.session,
@@ -226,6 +232,96 @@ describe('a multi-turn text conversation against a real Pi session', () => {
   }, 30_000);
 });
 
+describe('the §11 budget and the compaction counters (PR-036, follow-ups 7 and 9)', () => {
+  it('takes the context window from the profile, not from the model’s claim', () => {
+    // Pi's faux provider advertises 128k against `http://localhost:0`, which is
+    // a *local* endpoint. `main/context-window.ts` declines to trust it.
+    const test = rig();
+    expect(test.runtime.contextWindow).toMatchObject({
+      contextWindow: CONSERVATIVE_CONTEXT_WINDOW,
+      advertised: 128_000,
+      source: 'local-ceiling',
+      remote: false,
+    });
+    void test.dispose();
+  });
+
+  it('honours an explicit override, which is what the demo passes', () => {
+    const test = rig({ contextWindow: 4_096 });
+    expect(test.runtime.contextWindow).toMatchObject({ contextWindow: 4_096, source: 'override' });
+    void test.dispose();
+  });
+
+  it('records the before/after token counts, and never the summary text', async () => {
+    // A small window, so §11's "context usage exceeds 60%" fires; enough turns
+    // that there is something older than the six retained ones to fold.
+    const questions = Array.from({ length: 8 }, (_, index) => `Question ${String(index + 1)}?`);
+    const source = createScriptedModelSource({
+      tokensPerSecond: 400,
+      script: questions.map((question) => ({
+        say: `A long answer about ${question} `.repeat(20),
+      })),
+    });
+    const test = rig({ source, contextWindow: 2_000 });
+    const samples: { metric: string; value: number }[] = [];
+    test.runtime.attachTelemetry({
+      count: (metric, value) => {
+        samples.push({ metric, value });
+      },
+    });
+    const folds: number[] = [];
+    test.runtime.session.subscribe((event) => {
+      if (event.type === 'context-compacted') {
+        folds.push(1);
+      }
+    });
+
+    for (const question of questions) {
+      test.controller.dispatch({ type: 'submit-text', text: question });
+      await settle(test.controller);
+    }
+
+    expect(folds.length).toBeGreaterThan(0);
+    expect(samples.filter((sample) => sample.metric === 'context-tokens-before').length).toBe(
+      folds.length,
+    );
+    expect(samples.filter((sample) => sample.metric === 'context-tokens-after').length).toBe(
+      folds.length,
+    );
+    for (const sample of samples) {
+      expect(Number.isFinite(sample.value)).toBe(true);
+      expect(sample.value).toBeGreaterThan(0);
+    }
+    // The `context-compacted` event carries the summary *text*, which is
+    // conversation content: §17 records timings and counts. The sink has one
+    // method and it takes a number, so this is a property of the type as much
+    // as of the call site — but the call site is what a later PR could change.
+    expect(JSON.stringify(samples)).not.toContain('Question 1?');
+    expect(JSON.stringify(samples)).not.toContain('A long answer');
+
+    // The point of folding: the transcript keeps growing, the context does not.
+    const summary = test.runtime.contextSummary();
+    expect(summary).not.toBeNull();
+    expect(summary?.transcriptMessages ?? 0).toBeGreaterThan(summary?.contextMessages ?? 0);
+
+    await test.dispose();
+  }, 60_000);
+
+  it('reports no compaction and no context for a refused profile', () => {
+    // The capability gate refused, so there is no Pi `Agent` and no compaction
+    // controller. `null` and `undefined` are the honest answers, and
+    // `attachTelemetry` must still be safe to call.
+    const test = rig({ fixture: 'faux-text-only' });
+    expect(test.runtime.capability.ok).toBe(false);
+    expect(test.runtime.contextSummary()).toBeNull();
+    expect(test.runtime.lastCompaction()).toBeUndefined();
+    expect(() => {
+      test.runtime.attachTelemetry({ count: () => undefined });
+    }).not.toThrow();
+    void test.dispose();
+  });
+});
+
 describe('the capability gate refuses before anything is sent', () => {
   it('refuses a model with no image input, having made no provider request', async () => {
     const source = createDevelopmentModelSource({ fixture: 'faux-text-only' });
@@ -339,4 +435,94 @@ describe('the wirings PR-029 owed (docs/runbook.md §8)', () => {
 
     await test.dispose();
   }, 30_000);
+});
+
+describe('the §11 budget and the compaction counters (PR-036, follow-ups 7 and 9)', () => {
+  it('takes the context window from the profile, not from the model’s claim', () => {
+    // Pi's faux provider advertises 128k against `http://localhost:0`, which is
+    // a *local* endpoint. `main/context-window.ts` declines to trust it.
+    const test = rig();
+    expect(test.runtime.contextWindow).toMatchObject({
+      contextWindow: CONSERVATIVE_CONTEXT_WINDOW,
+      advertised: 128_000,
+      source: 'local-ceiling',
+      remote: false,
+    });
+    void test.dispose();
+  });
+
+  it('honours an explicit override, which is what the demo passes', () => {
+    const test = rig({ contextWindow: 4_096 });
+    expect(test.runtime.contextWindow).toMatchObject({ contextWindow: 4_096, source: 'override' });
+    void test.dispose();
+  });
+
+  it('records the before/after token counts, and never the summary text', async () => {
+    // A small window, so §11's "context usage exceeds 60%" fires; enough turns
+    // that there is something older than the six retained ones to fold.
+    const questions = Array.from({ length: 8 }, (_, index) => `Question ${String(index + 1)}?`);
+    const source = createScriptedModelSource({
+      tokensPerSecond: 400,
+      script: questions.map((question) => ({
+        say: `A long answer about ${question} `.repeat(20),
+      })),
+    });
+    const test = rig({ source, contextWindow: 2_000 });
+    const samples: { metric: string; value: number }[] = [];
+    test.runtime.attachTelemetry({
+      count: (metric, value) => {
+        samples.push({ metric, value });
+      },
+    });
+    const folds: number[] = [];
+    test.runtime.session.subscribe((event) => {
+      if (event.type === 'context-compacted') {
+        folds.push(1);
+      }
+    });
+
+    for (const question of questions) {
+      test.controller.dispatch({ type: 'submit-text', text: question });
+      await settle(test.controller);
+    }
+
+    expect(folds.length).toBeGreaterThan(0);
+    expect(samples.filter((sample) => sample.metric === 'context-tokens-before').length).toBe(
+      folds.length,
+    );
+    expect(samples.filter((sample) => sample.metric === 'context-tokens-after').length).toBe(
+      folds.length,
+    );
+    for (const sample of samples) {
+      expect(Number.isFinite(sample.value)).toBe(true);
+      expect(sample.value).toBeGreaterThan(0);
+    }
+    // The `context-compacted` event carries the summary *text*, which is
+    // conversation content: §17 records timings and counts. The sink has one
+    // method and it takes a number, so this is a property of the type as much
+    // as of the call site — but the call site is what a later PR could change.
+    expect(JSON.stringify(samples)).not.toContain('Question 1?');
+    expect(JSON.stringify(samples)).not.toContain('A long answer');
+
+    // The point of folding: the transcript keeps growing, the context does not.
+    const summary = test.runtime.contextSummary();
+    expect(summary).not.toBeNull();
+    expect(summary?.transcriptMessages ?? 0).toBeGreaterThan(summary?.contextMessages ?? 0);
+
+    await test.dispose();
+  }, 60_000);
+
+  it('reports no compaction and no context for a refused profile', () => {
+    // The capability gate refused, so there is no Pi `Agent` and no compaction
+    // controller. `null` and `undefined` are the honest answers, and
+    // `attachTelemetry` must still be safe to call.
+    const test = rig({ fixture: 'faux-text-only' });
+    expect(test.runtime.capability.ok).toBe(false);
+    expect(test.runtime.contextSummary()).toBeNull();
+    expect(test.runtime.lastCompaction()).toBeUndefined();
+    expect(() => {
+      test.runtime.attachTelemetry({ count: () => undefined });
+    }).not.toThrow();
+    void test.dispose();
+  });
 });

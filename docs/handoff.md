@@ -261,6 +261,73 @@ PILOT_HELPER_BINARY="$(pwd)/packages/platform-mac/native/.build/debug/PilotHelpe
 #
 #    …and from inside the packaged `.app`:
 open "$(packaged_app)"
+
+# 16. PR-036 — MEMORY THAT SURVIVES A QUIT. This one writes a FILE, which is the
+#    first thing in this project that outlives the process. It raises no new TCC
+#    prompt and makes no sound; run it after step 14 if you want it grounded in
+#    real screens, or on its own if you only want to know whether the file
+#    behaves.
+#
+#    First the stub-driven walkthrough, which already passes on Linux — nine
+#    screen questions across two scene changes, a relaunch and a clear:
+pnpm demo:memory
+
+#    Then the real thing, and there are four questions only this Mac can answer.
+PILOT_HELPER_BINARY="$(pwd)/packages/platform-mac/native/.build/debug/PilotHelper" \
+  PILOT_LOG_LEVEL=debug pnpm dev
+
+#      (a) WHERE THE FILE IS, and that it is the one you think. On the dev run
+#          the `durable conversation opened` line at startup prints the
+#          directory; from a packaged .app it is under
+#          ~/Library/Application Support/Pilot/conversations/sessions.db. Ask
+#          three or four screen questions, quit from the menu bar item, and
+#          check the file grew:
+ls -l ~/Library/Application\ Support/Pilot/conversations/
+
+#      (b) IT COMES BACK. Relaunch and ask "what did I ask you first?" — the
+#          answer must be about the first question of the PREVIOUS run. The
+#          startup line says `restored: <n>` and `durable: true`; `restored: 0`
+#          after a real conversation means the transcript is on disk and
+#          invisible to the model, which is the failure runbook follow-up 20 (b)
+#          is about.
+#
+#      (c) RELAUNCH INSIDE 30 SECONDS, TWICE, IN TWO DIFFERENT WAYS. This is the
+#          one that cannot be checked on Linux, because it is about how macOS
+#          ends a process.
+#            - Quit cleanly (menu bar → Quit) and relaunch at once. It must open
+#              normally: `before-quit` released the lease.
+#            - Now KILL it (`killall -9 Pilot`) and relaunch within 30 s. The
+#              panel must show "Pilot is already open in another window. Close
+#              it, or wait up to 30 seconds if it stopped unexpectedly." beside
+#              a LIVE text box — Pilot still answers, it just will not remember.
+#              Wait 30 s, relaunch again, and it must open normally and still
+#              have the old conversation. **Do not delete the database.** If
+#              deleting it is the only thing that helps, that is a defect worth
+#              reporting, not a workaround.
+#
+#      (d) THE SINGLE-INSTANCE LOCK. With Pilot running, launch it again
+#          (`open -n "$(packaged_app)"`). The second launch must exit and the
+#          first must reveal its panel — one menu bar item, not two. That is
+#          `app.requestSingleInstanceLock()`; the lease in (c) is the second
+#          line of defence behind it and answers a different question.
+#
+#      (e) CLEAR CONVERSATION really clears. Ask something memorable, press
+#          Clear in the panel, quit, and grep the file for it:
+grep -a "the memorable thing you asked" \
+  ~/Library/Application\ Support/Pilot/conversations/sessions.db || echo "gone"
+
+#      (f) THE CONTEXT WINDOW, once there is a real provider (step after
+#          PR-037/PR-039). The startup line prints e.g.
+#          `contextWindow: 32768 tokens (local-ceiling; local endpoint
+#          advertised 128000)`. For a HOSTED model it must read `model` and the
+#          provider's real number; for a LOCAL endpoint it is capped at 32 768
+#          on purpose — `PILOT_CONTEXT_WINDOW=65536 pnpm dev` raises it if your
+#          endpoint really handles more. Nothing here measures what it handles;
+#          say what your endpoint does and the ceiling can move.
+
+#    …and from inside the packaged `.app`, which is the layout the paths in (a)
+#    and (e) are written for:
+open "$(packaged_app)"
 ```
 
 Notes:
@@ -866,6 +933,43 @@ Four things, in decreasing order of what they would cost if wrong:
    may be lost, never the reply. Whatever the panel had when you pressed the key
    must still be there afterwards.
 
+### What to look for in step 16 (PR-036)
+
+Step 16 is the first thing in this project that **writes a file the user keeps**,
+and everything below is about that file. On Linux the whole of it runs against a
+real SQLite database in a temporary directory (`pnpm demo:memory` writes one,
+scans its bytes and deletes it), and `pnpm smoke` proves the packaged app opens
+one from inside the asar. What Linux cannot show is any of the behaviour that
+depends on *how the process ended*, which is the point of (c).
+
+Five things, in decreasing order of what they would cost if wrong:
+
+1. **Does the conversation come back after a quit?** Ask, quit, relaunch, ask
+   "what did I ask you first?". If the answer is about the current run rather
+   than the previous one, look at the startup line: `restored: 0` with
+   `durable: true` means the transcript is on disk and the model was never told
+   — runbook follow-up 20 (b), and it fails silently by design of the failure,
+   not by design of the code.
+2. **Does a killed process lock you out for longer than 30 seconds?** It must
+   not. `killall -9 Pilot`, relaunch, see the "already open in another window"
+   sentence beside a live text box, wait, relaunch again, and it must be
+   working. If deleting `sessions.db` is the only thing that helps, that is the
+   defect — say so rather than working around it.
+3. **Is the file where this document says it is, and is it the only one?**
+   `~/Library/Application Support/Pilot/conversations/`. Anything else Pilot
+   persists (preferences, permission state) must not be in that directory, so
+   the user can delete their conversation history without losing the rest.
+4. **Does Clear conversation really clear it?** `grep -a` the database for
+   something you asked. §13 says the pages are reclaimed rather than merely
+   marked free, so the answer must be nothing — the Linux run checks exactly
+   this, but on a file this Mac wrote.
+5. **What context window does a real provider report?** Only once PR-037 or
+   PR-039 lands. The startup line prints the decision and which rule produced
+   it. A hosted model should read `model`; a local endpoint is capped at 32 768
+   deliberately and `PILOT_CONTEXT_WINDOW` raises it. **Nothing in Pilot
+   measures what an endpoint really handles** — if your local model copes with
+   more, say so and the ceiling moves.
+
 ---
 
 ## 2. Blocked on Codex sign-in
@@ -955,6 +1059,21 @@ spoken question survives recognition, or that a single word was audible. Section
 and A-14 in part; the other ten not at all.** The one sentence to carry out of
 it is that Pilot's half of the flow is correct given a platform and a model that
 behave as macOS's and a real provider's do — and that neither has ever run.
+
+**PR-036 adds two questions a real model will answer and nothing here can.**
+First: **does a model read a replacement record as history?** Every image older
+than the newest is replaced by a past-tense, scene-stamped sentence that ends
+"not a description of the screen now; the screen has since moved to
+scene-…/revision-…". `pnpm demo:memory` proves that sentence is what Pilot
+*hands over*; whether a model then declines to describe the old screen is the
+whole of the "no stale-screen claims" requirement and it is untested, because a
+scripted provider cannot make the mistake. Watch the first real session for an
+answer that confidently describes a screen from four turns ago. Second: **is the
+extractive summary good enough?** §11 asks compaction to preserve "user goals,
+decisions, named UI elements, unresolved questions"; Pilot's summary quotes the
+transcript rather than asking a model to write one, and whether those quotes let
+a real model carry on a twenty-turn conversation is a judgement nobody has made.
+The first long real session is the test.
 
 ---
 
@@ -1076,6 +1195,11 @@ reversible; raise any that look wrong.
 | **PR-034's refusal path is the attribution failure, not a denied permission** (PR-034) | The brief asked for one refusal the user can carry on past. A denied *required* permission is not that: `REQUIRED_PERMISSIONS` includes the microphone, so once the gate reports it the machine rests in `needs-permission`, where the table denies `submit-text` too — the user cannot continue by typing, and PR-008's onboarding is the only way out (which is PR-006's design, and correct). The refusal that leaves the flow usable is PR-011's verdict: every permission reads `granted`, macOS credits them to the helper, so the tap is never installed *and* the §10 conditions read `denied`, while the machine stays in `observing`. The user types the question, the tool refusal reaches the model as a typed result it can reason about, and the answer is still streamed and still spoken. It is also the plan's top structural risk, so it is the refusal most worth rehearsing. |
 | **PR-034 interrupts in `speaking`, and leaves `observing-screen` to PR-035** (PR-034) | The trace's interruption is `mvp-01` §7's `speaking + new push-to-talk → listening`, which is `interruptModeFor`'s `abort` branch and behaves: the synthesiser stops, no chunk of the abandoned answer follows, the follow-up is answered on the same conversation. Interrupting *during* `observing-screen` steers the run and then submits a second one — runbook follow-up 14 — which recovers but does not do what the user asked, and fixing it is a design decision PR-027 declined to take alone. Taking it inside an integration PR whose stated job is to add no capability would have been the wrong place. |
 | **An interruption aborts the model run, in every state — including while `observe_screen` is in flight** (PR-035, runbook follow-up 14) | This is the decision PR-027 recorded and PR-034 declined to take, and it is the last open design question in Phase 3. PR-006 chose `steer` for `observing-screen` so an in-flight capture could unwind rather than be torn down; PR-035 changed it to `abort` everywhere. Three things the real composition showed that the fakes could not. (a) **A steer does not end the run**, so the replacement question hit `run-already-active` and the user saw "Pilot is still working on the previous question" — the interruption did not do what they asked. (b) **The premise was backwards**: a steer leaves the tool's `AbortSignal` unfired, so the capture *completes* and its image is appended to the model's context for a question that has been replaced. Aborting is what unwinds it, because `observe_screen` checks that signal before capturing and discards a result that arrives after it. (c) **Nothing else in the table wanted `steer` either** — every teardown clears the run identity, so a steered run's output can never reach the user however long it goes on. The alternative PR-027 listed — deliver the new question *as* the steering message — was rejected because the question does not exist yet when the key goes down, because a steer carries raw text and would lose the §6 pointer anchor and the §8 envelope, and because a steered run emits no `run-started`, so the answer would be discarded as `stale-run` unless the identity guard were weakened. **Consequence worth knowing:** an interruption during an observation now costs that observation outright — Pilot does not keep the picture it was in the middle of taking. **Say if you would rather have the other answer**: it is one line in `interruptModeFor` (`packages/interaction/src/table.ts`), the `steer` mode is still on the `AgentSession` contract, and `STEER_INTERRUPTION_MESSAGE` is still exported for it. |
+| **The conversation id is stable (`conv-primary`), not timestamped** (PR-036) | It was `conv-${Date.now()}`, which was harmless while nothing was persisted and is fatal now: the durable store is keyed by the conversation id, so a fresh id every launch opens a fresh, empty conversation and the transcript on disk is never read again. MVP 01 has exactly one conversation; when there are several this becomes "the one the user last had open", read from preferences. **One consequence worth knowing:** the interaction table mints a *new* `conversationId` on `clear-conversation` while the session and its store keep this one and are emptied in place, so `PilotViewState.conversationId` and `AgentSession.conversationId` differ after a clear. They always have; PR-036 is the first thing that persists either, and it persists the session's. |
+| **A local endpoint's advertised context window is capped at 32 768 tokens** (PR-036, runbook follow-ups 7 and 9) | `PiAgentSession` defaults `compaction.contextWindow` to `model.contextWindow`. For a hosted model that is the provider's own number and is believed. For a *local* one it is whatever the configuration file says — a 7B model served with a stretched rope reports 128k and does not handle 128k — and §11's "context usage exceeds 60%" trigger is measured against it, so believing it means compaction never fires and the endpoint truncates the conversation instead, silently, in the middle. `main/context-window.ts` therefore caps a loopback endpoint at `docs/pi-notes.md` §9.3's 32 768, which is also the smallest value above Pi's fixed 16 384-token `shouldCompact` reserve (below it, that rule degenerates to "always compact"). **Nothing measures what an endpoint really handles** — this declines to trust a number, it does not probe. `PILOT_CONTEXT_WINDOW=65536 pnpm dev` overrides it, and PR-039 owns the real answer. **Say if you would rather trust the endpoint.** |
+| **A conversation that cannot be persisted does not stop Pilot** (PR-036) | A store that will not open — a held writer lease, a full disk, a read-only volume — leaves `store: null` and Pilot runs in memory exactly as it did through PR-035, with the typed refusal shown in the panel beside a live text box. The alternative, refusing to start, would trade a working assistant for a file it does not need in order to answer a question, and it mirrors what `PiAgentSession` already does with a failed durable *write* (it swallows it and catches up on the next turn). The one case the user can act on — the SQLite writer lease — surfaces its own sentence, which is the only place in the product that says to wait 30 seconds. |
+| **The composition root became an async `boot()`** (PR-036) | Opening a SQLite session is asynchronous and `PiAgentSession` takes the store *and* the restored conversation at construction, so everything from the agent onwards had to move behind an `await`. `before-quit`, `window-all-closed` and `activate` are still registered synchronously, before it, over a mutable reference — a quit that arrived while the store was opening would otherwise find no teardown handler at all and leave the writer lease behind, which is precisely the failure that makes the *next* launch fail. |
+| **`clear-conversation` now reaches the session** (PR-036, runbook follow-up 21) | The command, the schema, the machine cell and the panel button all existed; the controller's effect for it was a comment reading "text persistence and session recycling belong to PR-023/PR-036". So the panel forgot and the model did not. It now calls `AgentSession.clearConversation?.()`, which is optional on the facade — a session with nothing durable behind it has nothing to delete — and which `PiAgentSession` implements by aborting anything in flight, dropping the transcript and the summary together, and reclaiming the SQLite pages so the text is gone from the file rather than merely unreachable. |
 | **The demo is `pnpm demo:flow`, and it derives its own claims** (PR-034) | Named for what it is (the whole flow) rather than for the PR, beside `demo:observe` / `demo:look` / `demo:ask` / `demo:talk` / `demo:speak`. Two things it deliberately does not do: it does not narrate which state transitions it took — it reads them back out of the recorded `PilotViewState` path, because a demo that describes itself proves nothing — and it does not assert wall-clock numbers, which runbook cross-lane issue 7 is about. |
 
 ---
@@ -1103,6 +1227,7 @@ reversible; raise any that look wrong.
 | Phase 3 — integration (028…036) | In progress. **PR-033 is merged: the voice loop is closed.** Pilot now answers out loud — the streamed answer is spoken sentence by sentence through `MacSpeechOutputAdapter` while its text fills the panel, and every platform adapter in system-design §5 is finally the real one. The silent stand-in is deleted. The property that took the work is §16's: a synthesiser failure costs the sound and never the answer, because the interaction table's `speech-failed` row aborts the run that is still writing it — so `main/speech-runtime.ts` turns every synthesiser failure into silence and the turn completes exactly as it would have. `createTimeoutScheduler()` is passed at last, so a model that goes quiet mid-sentence speaks what it already had. **Nothing has ever been spoken aloud** (§1 step 13): no `AVSpeechSynthesizer`, no voice, no audio device, and every speech callback in every test is the Node helper stub. Persistence and the model itself are still fake. |
 | Phase 3 — integration (028…036) | In progress. **PR-034 is merged: the MVP scenario runs as one trace.** `pnpm demo:flow` walks `docs/mvp-01-point-ask-hear.md` §2 through the shipping composition — window selected, pointer anchored at the question, spoken question transcribed, model calls `observe_screen`, policy-checked image returned, answer streamed into the panel and spoken sentence by sentence, then interrupted mid-answer by a second press and a follow-up answered on the same conversation. The §7 rows it walked are read back out of the recorded view-state path, and six invariants are checked on that same trace (selected-window-only, the capability gate, no image bytes to a log line or to disk, no accessibility target outside the selected window, the unknown-pointer sentinel, the §16 text fallback). **No boundary was replaced and no defect was found** — the pieces compose. What it does *not* establish is unchanged and is printed in the demo's own section 4: against the Node helper stub and a scripted faux provider it evidences A-01, A-03, A-08, A-11 and A-14 only in part, and the other ten not at all (§1 step 14, §2). |
 | Phase 3 — integration (028…036) | In progress. **PR-035 is merged: interruption works in the states where it is hard, and Phase 3 has no open design question left.** `pnpm demo:interrupt-flow` interrupts a screen observation with a capture genuinely in flight, twice in quick succession, and in the window between an answer and its first spoken word — reading the result off the panel's own view stream, the `speech.output.speak` operations that crossed the framed wire, and the rejection stream. It closes runbook follow-up 14 by **aborting rather than steering**, which is a decision the user can reverse in one line (§4). No boundary was replaced and no defect was found; what it did find is that the identity guard is what keeps a `run-failed` from an interrupted tool call out of the user's face (runbook cross-lane issue 17). Its own limit is one sentence long: **no sound has ever been stopped, because no sound has ever been made** — the §17 number here is Pilot's half of the budget and is measured as a JSON round trip over a pipe (§1 step 15, §5). Persistence and the model itself are still fake. |
+| Phase 3 — integration (028…036) | **COMPLETE. PR-036 is merged: the conversation now outlives the process, and stays bounded while it does.** The durable `ConversationStore` is opened, restored and closed by the app (`main/conversation-store.ts`), so a relaunch resumes the conversation the model was having; `compaction.contextWindow` comes from the profile rather than from the model's own claim (`main/context-window.ts`); the compaction counters reach PR-010's diagnostics surface; and `clear-conversation` finally reaches the session, which drops the transcript, the summary and the SQLite pages together. `pnpm demo:memory` asks nine screen questions across two scene changes and reads the result off the requests the provider received: **at most two image blocks in any request, ever**, every replacement record past-tense and scene-stamped, three compactions visible as `context-tokens-before`/`-after`, and the conversation gone from the file after a clear. It closed runbook follow-ups 7, 9, 20, 21 and 31 and found one defect nothing else could — the SQLite backend's schema file is not bundled, so **a built app started with persistence silently disabled** (cross-lane issue 19). **Nothing has ever been persisted on macOS** (§1 step 16) and **no model has ever read a replacement record** (§2): a scripted provider cannot make a stale-screen claim, so what is proved is Pilot's input to the model, not the model's output. |
 | Phase 4 — providers (037…039) | Not started. PR-037 (Codex) is the one the user's decision selects. |
 | Phase 5 — hardening and release (040…044) | Not started. |
 

@@ -230,6 +230,54 @@ describe('PilotInteractionController', () => {
     await controller.dispose();
   });
 
+  it('asks the agent session to forget when the conversation is cleared', async () => {
+    // PR-036, runbook follow-up 21. The `clear-conversation` effect was a
+    // comment until PR-036: the table emptied the machine's own transcript and
+    // minted a new conversation id, and the model went on holding every turn.
+    const harness = createController({ agentMode: 'auto' });
+    const { controller, agent } = harness;
+    const cleared: string[] = [];
+    // `AgentSession.clearConversation?` is optional (system-design §13), so a
+    // session that implements it is the interesting case and a session that
+    // does not is the one below.
+    const withClear = agent as typeof agent & { clearConversation?: () => Promise<void> };
+    withClear.clearConversation = async (): Promise<void> => {
+      cleared.push('cleared');
+    };
+
+    controller.dispatch({ type: 'select-window', windowId: WINDOW.windowId });
+    controller.dispatch({ type: 'submit-text', text: 'what is this?' });
+    await controller.settled();
+    expect(controller.snapshot().transcript.length).toBeGreaterThan(0);
+
+    controller.dispatch({ type: 'clear-conversation' });
+    await controller.settled();
+
+    expect(cleared).toEqual(['cleared']);
+    expect(controller.snapshot().transcript).toEqual([]);
+    expect(controller.snapshot().lastError).toBeNull();
+    await controller.dispose();
+  });
+
+  it('clears without an agent that can forget, because the member is optional', async () => {
+    // `FakeAgentSession` does not implement `clearConversation`. The command
+    // must still empty the panel rather than fail the turn — the whole reason
+    // the facade member is optional.
+    const harness = createController({ agentMode: 'auto' });
+    const { controller } = harness;
+
+    controller.dispatch({ type: 'select-window', windowId: WINDOW.windowId });
+    controller.dispatch({ type: 'submit-text', text: 'what is this?' });
+    await controller.settled();
+
+    controller.dispatch({ type: 'clear-conversation' });
+    await controller.settled();
+
+    expect(controller.snapshot().transcript).toEqual([]);
+    expect(controller.snapshot().lastError).toBeNull();
+    await controller.dispose();
+  });
+
   it('supports the typed text fallback without any speech adapter involvement', async () => {
     const harness = createController({ agentMode: 'auto' });
     const { controller, speechInput, speechOutput } = harness;

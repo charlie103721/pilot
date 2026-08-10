@@ -765,7 +765,25 @@ export class PilotInteractionController implements InteractionController {
         await this.#speechOut.stop(effect.speechId);
         return;
       case 'clear-conversation':
-        // Text persistence and session recycling belong to PR-023/PR-036.
+        // PR-036, runbook follow-up 21. The table has already emptied the
+        // *machine's* transcript and minted a fresh conversation id; this is
+        // the other half — the model's own context and whatever the session
+        // has written to disk.
+        //
+        // Optional on the facade (system-design §13, added by PR-023) because
+        // an `AgentSession` need not be able to forget: a session with nothing
+        // durable behind it has nothing to delete, and `FakeAgentSession` does
+        // not implement it. `?.()` is therefore the whole of the compatibility
+        // story, and a session that *does* implement it — `PiAgentSession` —
+        // aborts anything still running, drops the transcript and the
+        // compaction summary together, and reclaims the SQLite pages so the
+        // text is gone from the file rather than merely unreachable.
+        //
+        // This runs on the ordinary queue, behind the urgent one, so the
+        // `interrupt-run` this transition also emits has already aborted the
+        // run by the time it is reached. `clearConversation` aborts again
+        // anyway; both are idempotent, and neither may be relied on alone.
+        await this.#agent.clearConversation?.();
         return;
     }
   }

@@ -1170,3 +1170,82 @@ ever been stopped** — the helper dispatching to `stopSpeaking(at: .immediate)`
 the synthesiser draining and the audio device going quiet are all unmeasured,
 and they are the part a person in the room would actually hear. The Mac run that
 settles it is `docs/handoff.md` §1 step 15, and it settles it by ear.
+
+## Demo (PR-036 — bounded multi-turn conversations)
+
+```sh
+pnpm demo:memory                            # headless walkthrough, no display needed
+```
+
+Nine screen questions on **one** conversation, while the screen changes under
+them twice — first its content (same window, new scene revision), then the
+window itself (a new scene id, which is §11's third compaction trigger). It is
+the first thing in this repository that writes a file the user would keep: a
+real SQLite session database in a real temporary directory, opened, restored,
+closed and finally scanned byte by byte.
+
+Five claims, each read off the objects the app itself uses rather than narrated:
+
+1. **Images stay bounded.** Counted as `"type":"image"` blocks in the requests
+   the provider actually received. Nine observations were taken, each producing
+   a full frame *and* a pointer crop, and **no request ever carried more than
+   two** — §10's `maxActiveFullFrames: 1` plus `maxActivePointerCrops: 1`. The
+   transcript grows by four messages a turn; the provider-facing context stops
+   growing. That gap is the whole of §11.
+2. **The text survives.** Every one of the nine questions is still reachable in
+   the last request — in one of §11's six retained turns, or quoted inside the
+   summary that replaced its turn — and again after a relaunch, read off the
+   first request the restored session sent.
+3. **No stale screen is offered as current.** Every replacement record is
+   past-tense and scene-stamped and ends "not a description of the screen now";
+   once the scene has moved, it also says *where it went*
+   (`…the screen has since moved to scene-b03d…/revision-1`).
+4. **Compaction fires and is visible.** Three folds, printed with their triggers
+   and reaching PR-010's diagnostics ring as `context-tokens-before` /
+   `context-tokens-after`. The `context-compacted` event carries the summary
+   *text* and it is deliberately never recorded: `AgentTelemetrySink` has one
+   method and it takes a number (§17).
+5. **The conversation can be forgotten.** `clear-conversation` — the panel's own
+   command — empties the panel, the model's context *and* the file: the demo
+   greps the database afterwards for the questions, the answers and the
+   observation records, and finds none of them, because `clear()` reclaims the
+   freed SQLite pages rather than leaving the text past the logical end of the
+   file.
+
+Plus the lifecycle those depend on. The store is opened before the session
+exists and closed on `before-quit`, and a **second opener meets the SQLite
+writer lease**: the demo prints the refusal exactly as the panel shows it —
+`code: internal`, `details.reason: writer-lease-held`, and *"Pilot is already
+open in another window. Close it, or wait up to 30 seconds if it stopped
+unexpectedly."* Nothing retries and nothing deletes the database; the lease
+expires on its own.
+
+**The §11 context budget no longer comes from the model's own claim.**
+`main/context-window.ts` believes a hosted endpoint and caps a loopback one at
+32 768 tokens, because a local model's advertised window is a configuration
+value rather than a measurement, and §11's 60% trigger is measured against it —
+believe an inflated number and compaction never fires. The development profile
+(Pi's faux provider, 128 000 tokens against `http://localhost:0`) takes the
+capped branch, so this is the path the app runs on today. `PILOT_CONTEXT_WINDOW`
+overrides it.
+
+**Read section 8 of the output before quoting any of this.** The strongest
+limit is not that there is no macOS: it is that **a scripted provider cannot
+make a stale-screen claim**, so what sections 3 and 4 check is Pilot's *input* to
+the model — the images each request carried, and the words the replacement
+records used. Whether a real model reads a past-tense, scene-stamped record as
+history is the actual requirement, and it is untested. The Mac run is
+`docs/handoff.md` §1 step 16; the model run waits on §2.
+
+In the app, the same thing by hand — persistence is on by every `pnpm dev`.
+Ask a few questions, quit, relaunch, and ask what you asked first:
+
+```sh
+PILOT_LOG_LEVEL=debug pnpm dev
+```
+
+The `durable conversation opened` line prints the directory and
+`restored: <n>`; the `shell ready` line repeats `durable`, `restored` and
+`contextWindow`. `restored: 0` after a real conversation means the transcript is
+on disk and the model was never told about it, which is the failure runbook
+follow-up 20 (b) exists for.
