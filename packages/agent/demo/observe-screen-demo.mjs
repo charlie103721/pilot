@@ -51,10 +51,34 @@ faux.setResponses([
   }),
 ]);
 
+const SELECTED_WINDOW = {
+  windowId: 'window-billing',
+  displayId: 'display-primary',
+  title: 'Billing settings',
+  applicationName: 'Safari',
+  bounds: { x: 100, y: 80, width: 1200, height: 800 },
+  scaleFactor: 2,
+  isOnScreen: true,
+};
+
 const screenContext = {
-  status: () => {
-    throw new Error('not used by this demo');
-  },
+  // PR-021: `observe_screen` reads this to enforce "selected window only".
+  status: () => ({
+    enabled: true,
+    paused: false,
+    selectedWindow: SELECTED_WINDOW,
+    scene: {
+      sceneId: 'scene-17',
+      revision: 4,
+      windowId: SELECTED_WINDOW.windowId,
+      windowTitle: SELECTED_WINDOW.title,
+      fingerprint: 'fingerprint-17',
+      updatedAt: Date.now(),
+    },
+    permissions: { screenRecording: 'granted', accessibility: 'granted' },
+    buffer: { frameCount: 9, byteCount: 576, oldestFrameAt: 0, newestFrameAt: 0 },
+    lastError: null,
+  }),
   clear: () => undefined,
   observe: async (request) => {
     console.log(`  [screen] observe(${JSON.stringify(request)})`);
