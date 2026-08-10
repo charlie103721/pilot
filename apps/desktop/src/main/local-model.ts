@@ -1,4 +1,10 @@
-import { nullLogger, type Logger, type PilotError } from '@pilot/shared';
+import {
+  nullLogger,
+  redactUrlCredentials,
+  scrubUrlCredentials,
+  type Logger,
+  type PilotError,
+} from '@pilot/shared';
 import {
   checkVisualConversation,
   createLocalModelSource,
@@ -100,7 +106,11 @@ export async function resolveLocalModelSource(
   } catch (cause) {
     // A malformed environment variable is a configuration mistake, not a
     // reason to boot into a different model without saying so.
-    logger.warn('local model settings could not be read', { reason: String(cause) });
+    // `reason` is not one of the redactor's key patterns and a zod message
+    // quotes what it was given, so the address is scrubbed here (PR-041).
+    logger.warn('local model settings could not be read', {
+      reason: scrubUrlCredentials(String(cause)),
+    });
     return NOT_CONFIGURED;
   }
   if (settings === null) {
@@ -140,8 +150,10 @@ export async function resolveLocalModelSource(
     logger.warn('local model endpoint is configured but unusable', {
       code: blockedBy.code,
       reason: diagnosis?.code ?? 'capability-gate',
-      // The address, never the key.
-      endpoint: report.health.baseUrl,
+      // The address, never the key — and `endpoint` is not one of the
+      // redactor's key patterns, so a base URL carrying user information used
+      // to arrive here verbatim (PR-041).
+      endpoint: redactUrlCredentials(report.health.baseUrl),
     });
   }
 
@@ -163,7 +175,8 @@ export function describeResolution(
   const capability = (finding: { supported: boolean; probed: boolean }): string =>
     finding.supported ? 'probed ok' : finding.probed ? 'no' : 'never probed';
   lines.push(
-    `model ${source.profile.model} at ${report.health.baseUrl} · vision ${capability(report.vision)}` +
+    `model ${source.profile.model} at ${redactUrlCredentials(report.health.baseUrl)}` +
+      ` · vision ${capability(report.vision)}` +
       ` · tools ${capability(report.tools)} (${source.toolSupport})`,
   );
   lines.push(

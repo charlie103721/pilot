@@ -208,14 +208,24 @@ export class RetentionGuard {
       imageCacheCleared: this.#images !== null,
       empty: true,
     };
+    // The field NAMES are chosen against `@pilot/shared`'s redactor, not for
+    // prose (PR-041, runbook cross-lane issue 25 — fourth occurrence). It
+    // matches on the key name, so `clearedFrames`, `clearedPointerSamples` and
+    // `imageCacheCleared` were emitted as `[redacted:image]`, `[redacted:audio]`
+    // and `[redacted:image]`: the three numbers that ARE the evidence that the
+    // buffers were emptied, replaced by markers, in the one line an audit of
+    // system-design §13 reads — and the line `docs/handoff.md` §1 step 21 (g)
+    // asks the user to send back from a real logout. The report object keeps
+    // its own names, which are read by demos and by the diagnostics view and
+    // never pass through the redactor; only what is logged is renamed.
     this.#logger.info('retention clear', {
       event,
       reason,
-      clearedFrames: report.clearedFrames,
+      ringEntriesCleared: report.clearedFrames,
       clearedBytes: report.clearedBytes,
-      clearedPointerSamples: report.clearedPointerSamples,
+      pointerReadingsCleared: report.clearedPointerSamples,
       lineageReset,
-      imageCacheCleared: report.imageCacheCleared,
+      decodedCacheDropped: report.imageCacheCleared,
     });
     this.#onClear?.(report);
     return report;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isPilotError } from '@pilot/shared';
+import { createLogger, createMemorySink, isPilotError } from '@pilot/shared';
 import { createFakeClock } from '@pilot/platform/fakes';
 import { ObservationCore } from '../src/observation-core.js';
 import { ObservationRateLimiter } from '../src/observation-rate.js';
@@ -210,5 +210,46 @@ describe('clearing for each policy event', () => {
 
     expect(guard.hasImageCache).toBe(false);
     expect(guard.clearFor('pause').imageCacheCleared).toBe(false);
+  });
+
+  it('emits a `retention clear` line whose numbers survive the log redactor', () => {
+    // Runbook cross-lane issue 25, fourth occurrence, found by PR-041's audit
+    // in `pnpm smoke`'s own output. `redactValue` matches on the KEY NAME, so
+    // `clearedFrames` became `[redacted:image]`, `clearedPointerSamples` became
+    // `[redacted:audio]` and `imageCacheCleared` became `[redacted:image]` —
+    // the three values that are the entire evidence that the buffers were
+    // emptied, replaced by markers, in the one line an audit of system-design
+    // §13 reads and the one `docs/handoff.md` §1 step 21 (g) asks a user to
+    // send back from a real logout.
+    //
+    // The rule the runbook states is "after adding a log line about privacy,
+    // read one emitted record". This is that check, mechanised: it asserts
+    // `redactedPaths` is EMPTY, so any future field name that collides with a
+    // pattern fails here rather than in six months in someone's log.
+    const fixture = createRecordedObservationFixture();
+    const clock = createFakeClock(fixture.startedAt);
+    const core = new ObservationCore({ clock, policy: DEFAULT_SCREEN_CONTEXT_POLICY });
+    const sink = createMemorySink();
+    const guard = new RetentionGuard({
+      core,
+      logger: createLogger({ scope: 'retention-test', level: 'debug', sink }),
+      images: { clear: () => undefined },
+    });
+    replayRecordedFixture(core, fixture, clock, { until: fixture.questionAt });
+
+    const report = guard.clearFor('logout');
+    const record = sink.records.find((entry) => entry.message === 'retention clear');
+
+    expect(record, 'no `retention clear` line was emitted at all').toBeDefined();
+    expect(record?.redactedPaths).toStrictEqual([]);
+    // And the values are the numbers, not markers — the assertion above would
+    // still pass if the fields had been dropped rather than renamed.
+    expect(record?.fields['ringEntriesCleared']).toBe(report.clearedFrames);
+    expect(record?.fields['ringEntriesCleared']).toBeGreaterThan(0);
+    expect(record?.fields['clearedBytes']).toBe(report.clearedBytes);
+    expect(record?.fields['pointerReadingsCleared']).toBe(report.clearedPointerSamples);
+    expect(record?.fields['decodedCacheDropped']).toBe(true);
+    expect(record?.fields['event']).toBe('logout');
+    expect(record?.fields['lineageReset']).toBe(true);
   });
 });

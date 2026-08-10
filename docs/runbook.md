@@ -514,6 +514,7 @@ construction (see the row below).
 | PR | What landed |
 | --- | --- |
 | 040 | **Lifecycle and failure recovery.** No fake boundary left to replace, so this is the seam PR-033 built for speech, one level up: `main/lifecycle-runtime.ts` is where the composition root decides **which failures are the interaction machine's business**. Its one rule is that a failure of the *watching* costs the watching and never the answer — the table's `failure` row runs `teardown()`, so a capture stream that dies mid-question would otherwise have cost the reply as well as the screen. Fourteen cases through the shipping composition (`pnpm demo:failure`), each ending recovered or in a safe terminal state, each printing what the user sees and what was left behind. Typed guidance is `src/lifecycle/guidance.ts`, total over `PilotErrorCode`; retry is `main/request-retry.ts`, scene-checked and mostly a refusal. **It found two defects**, both user-visible and neither catchable by the suites that existed: a permission being *re-read* was reported as one *withdrawn*, stopping observation on every panel open (cross-lane issue 22), and the seam's own tidying-up put a generic "Pilot cannot do that right now." in front of a user whose answer was arriving (cross-lane issue 21). It also closed two of §13's five retention occasions that had never had a caller. Raised follow-ups 35, 36 and 37. **Every failure in the matrix is simulated**: `docs/handoff.md` §1 step 18. |
+| 041 | **Privacy and retention verification.** The first PR whose job is to disbelieve the rest of the project. `pnpm demo:privacy` runs **twenty-one claims** against the shipping composition and decides each one from an **artefact** rather than from an accessor: the raw bytes of a real SQLite conversation *while it is still open* as well as after it closes, the emitted `LogRecord[]` rather than the fields the calls passed, the base64 in every provider request decoded and its PNG header read for pixel size, both credential stores' real files and modes, and `$HOME` plus the repository listed before and after and diffed. Ten byte scanners, each **proved against a positive and a negative control before any of them is believed** (claim A1) — a scanner that has stopped matching reports a clean disk for ever and looks exactly like one that checked. `EXPECTED_CLAIM_IDS` plus `auditSelfCheck` make a claim that silently stops running a **failure**, not an omission, and the runner exits non-zero. **It found three defects, none catchable by any suite that existed.** A pause from the menu bar item cleared its buffers under whichever §13 occasion happened to be armed last, because the arming lived on one of the app's *two* command routes — the exact defect PR-040 recorded fixing (cross-lane issue 26). And a credential embedded in `PILOT_LOCAL_BASE_URL` reached two log fields, the sentence the panel renders and, through `blockedBy`, **the durable transcript on disk** — including via Node `fetch`'s own error text, which quotes the URL back (`scrubUrlCredentials`, follow-up 42). And **the product's own `retention clear` line had three of its six fields eaten by the redactor** — `clearedFrames` → `[redacted:image]`, `clearedPointerSamples` → `[redacted:audio]`, `imageCacheCleared` → `[redacted:image]`, visible in `pnpm smoke`'s own output — which is cross-lane issue 25's fourth occurrence, in the one line an audit of §13 and `docs/handoff.md` §1 step 21 (g) both read. The log field names are now chosen against the redactor and a regression test asserts `redactedPaths` is empty. Claim L2 is reported **UNPROVABLE** rather than passed: a name-keyed redactor cannot see a secret in a value, and three shapes are shown passing through it on every run. Raised follow-ups 42, 43 and 44 and cross-lane issues 26 and 27; added 21 tests in 4 files; narrowed follow-up 37. **No Mac, no model, no credential, no audio, no pixels** — section 10 of the output is the list of privacy properties that leaves for the user, and `docs/handoff.md` §1 step 21 is its runnable form. Demo: `pnpm demo:privacy`. |
 
 ### Cross-lane issues found while merging — read before adding a lane
 
@@ -916,6 +917,72 @@ construction (see the row below).
    `secret`, `api[-_]?key`, `image(s)`, `frame(s)`, `screenshot`, `audio`,
    `transcript`, `prompt`, `messages`, `answer`.
 
+   **Fourth occurrence, found by PR-041 in `pnpm smoke`'s own output.** The
+   `retention clear` line — the one line an audit of system-design §13 has to
+   read, and the one `docs/handoff.md` §1 step 21 (g) asks the user to send
+   back from a real logout — was emitting `clearedFrames:
+   "[redacted:image]"`, `clearedPointerSamples: "[redacted:audio]"` and
+   `imageCacheCleared: "[redacted:image]"`. Three of its six fields, and the
+   three that are the *evidence the buffers were emptied*. It had been
+   shipping since PR-017 and `failure-demo.ts` had a comment describing it
+   rather than a fix. The log field names are now chosen against the
+   redactor (`ringEntriesCleared`, `pointerReadingsCleared`,
+   `decodedCacheDropped`); `RetentionClearReport` keeps its own names, which
+   never pass through the redactor. `policy-retention.test.ts` asserts
+   `redactedPaths` is empty, and `pnpm demo:privacy` claim L3 re-reads it on
+   every run. **Naming a log field after what it counts is how this keeps
+   happening: name it after what survives.**
+
+   **PR-041 adds the converse, and it is the one nothing had asked.** A redactor
+   keyed on names cannot see a secret in a *value*: `endpoint`, `line`, `reason`
+   and `userMessage` are none of its patterns, and a URL is neither 256
+   characters long nor whole-string base64, so
+   `PILOT_LOCAL_BASE_URL=http://user:token@host/v1` reached two log fields, the
+   panel's `PROBLEM …` sentence, and — through `AgentRuntimeOptions.blockedBy`,
+   whose refusal answers *every* question with that sentence — the durable
+   transcript on disk. `scrubUrlCredentials` in `@pilot/shared` is the fix, and
+   the second half of it matters more than the first: **a library's own error
+   text quotes the value back.** Node's `fetch` refuses a credentialed URL by
+   printing the whole URL, which landed in a diagnosis `detail` and therefore in
+   `PilotError.message`. Rule: **scrub the value where its shape is known, and
+   scrub what a library says about it too — never rely on the redactor to
+   notice.** Follow-up 42 is the general form.
+
+26. **The retention occasion was armed on one command route and the app has two.**
+   Found by PR-041, auditing PR-040's own fix. `main/index.ts` calls its
+   `dispatchCommand` "the one way a command reaches the machine, whatever
+   dispatched it"; `DesktopShell.dispatch` was a second one, reached by the menu
+   bar item's Pause and by the renderer's `pilot:interaction/dispatch` channel,
+   and it went straight to the controller. The arming lived inside the wrapper
+   `WindowGate` was given, so **a pause from the menu bar cleared its buffers
+   under whichever occasion happened to be armed last** — `observation-disabled`
+   at best, `screen-lock` or `permission-loss` after one of those. Nothing was
+   retained either way; what was wrong was the *name in the retention log*, which
+   is precisely what an audit of system-design §13 reads, and it is the same
+   defect PR-040 recorded fixing. Three things to take from it. **A comment
+   claiming a function is the only route is a claim to check, not a fact** — the
+   check is one `grep` for the other callers of `controller.dispatch`. **A
+   cross-cutting fact armed at a call site will be missed by the next call
+   site**; `retentionEventForCommand` now sits beside PR-040's
+   `retentionEventForFeed` so the mapping exists once, and `DesktopShellOptions
+   .dispatch` is optional and additive so no existing caller changed.
+   And **`pnpm demo:privacy` is where a regression shows**: claim R1 drives each
+   §13 occasion from the surface a user reaches and reads the emitted log.
+
+27. **`codex-demo.test.ts` is timing-sensitive under concurrent load, and it is
+   hazard 7's third member.** Measured by PR-041 while checking whether its own
+   change had broken it: **the full suite fails it roughly one run in three on a
+   clean `main` as well**, and it passes 5/5 in isolation. The mechanism is
+   cross-lane issue 16's second note — `apps/desktop/src/codex/codex-demo.ts`
+   §5 pushes its screenshot before `releaseKey()` and then waits out a whole
+   scripted run, and the frame ring is bounded to `ringDurationMs` = 3 000 ms, so
+   a run that takes longer than that under load finds the ring empty and reports
+   `lastError: frame-unavailable` with `observe_screen calls: 0`. **Re-run it
+   alone before treating it as a regression** (hazard 7), and do **not** widen
+   the ring or the demo's tolerance: the bound is the property. The real fix is
+   to push the frame after the key is released and immediately before the run
+   needs it, which is a change to PR-037's walkthrough — follow-up 43.
+
 ### Pending cross-lane follow-ups
 
 Open items a later PR must close. Each was raised by the lane that found it.
@@ -966,10 +1033,14 @@ Open items a later PR must close. Each was raised by the lane that found it.
 | 34 | **The vision comprehension probe can be fooled one time in six** (PR-039). `probeLocalEndpoint` shows the endpoint an 8×8 solid swatch and asks the model to name its colour from a list of six, because a local `GET /v1/models` reports no capabilities and `docs/pi-notes.md` §2.3 says a non-vision model *silently ignores* an image rather than rejecting it. A blind model that guesses from the list is right ~17% of the time (a false pass), and a genuinely vision-capable model that is bad at colour naming is refused (a false fail, and the more likely of the two — `PILOT_LOCAL_VISION_COMPREHENSION=0` is the escape hatch). Both rates are unmeasured because **no real model has ever taken the probe**. Two swatches in one request, or a shape instead of a colour, would cut the false-pass rate to a few percent, but a small local model's reliability on either is exactly what is unknown. `docs/handoff.md` §1 step 17 (b) asks for the evidence; do not tighten the probe before it arrives. | PR-043, or sooner with real-model evidence |
 | 35 | **Accessibility loss stops Pilot instead of degrading it** (PR-040). system-design §16 asks for "continue with visual pointer coordinates and disclose reduced grounding"; `REQUIRED_PERMISSIONS` in `packages/interaction/src/context.ts` lists all four permissions, so `restingState` resolves to `needs-permission` when any one is lost. PR-040 left it alone deliberately — the required set is an interaction contract PR-006, PR-008, PR-009 and PR-028 all read, and narrowing it changes what `needs-permission` means everywhere — and made the divergence visible instead: `pnpm demo:failure` case 3 states it in the output, and `docs/handoff.md` §4 records the decision. Closing it means requiring `screen-recording` only, disclosing reduced grounding through `ConversationGate`'s existing disclosure route, and re-checking every caller of `permissionsAllowObservation`. | a focused interaction PR |
 | 36 | **`AuthFacade` is built and nothing in the app calls it** (PR-020, surfaced by PR-040). `createPiAuthFacade` is the provider-neutral seam PR-037/PR-038/PR-039 are all supposed to build on, and `apps/desktop` never constructs one — the development model source needs no credential, so nothing has ever authorised anything. PR-040 wired the *recovery* half provider-neutrally (`LifecycleRuntime.reportProviderFailure`, keyed on the `authentication-required` code and nothing else) and exercised it against `createFakeAuthFacade`, but the app still has no code path that would raise it in production. The profile PRs own the other half. | PR-037 / PR-038 / PR-039 |
-| 37 | **The `logout` retention occasion depends on an Electron event nobody has seen fire** (PR-040). `powerMonitor`'s `shutdown` is the only signal Pilot gets for a logout, and system-design §13 makes logout a *terminal* clear — the scene lineage goes with the buffers. If macOS kills the process before the handler runs, the fallback is the `before-quit` shutdown clear, which is the same clear under a different name and with the same terminal semantics, so nothing is retained either way; what is lost is the *distinction* in the retention log. `docs/handoff.md` §1 step 18 (c) is the check. | PR-041, when the privacy audit reads the log |
+| 37 | **The `logout` retention occasion depends on an Electron event nobody has seen fire** (PR-040). `powerMonitor`'s `shutdown` is the only signal Pilot gets for a logout, and system-design §13 makes logout a *terminal* clear — the scene lineage goes with the buffers. If macOS kills the process before the handler runs, the fallback is the `before-quit` shutdown clear, which is the same clear under a different name and with the same terminal semantics, so nothing is retained either way; what is lost is the *distinction* in the retention log. `docs/handoff.md` §1 step 18 (c) is the check. **PR-041 read the log and the row stays open, narrower than it was.** The audit drives the handler and the occasion is named correctly (`event: logout`, `lineageReset: true`, claim R1), so everything on this side of the `powerMonitor` event is now proved; what is unproved is only whether macOS delivers the event before it kills the process, and no Linux machine can answer that. PR-041 also found the adjacent half — the `before-quit` fallback clear is started but not awaited (follow-up 44) — so on a real logout the log may show neither. `docs/handoff.md` §1 step 21 (g) asks the user for exactly the two log lines that decide it. | the first real logout on a Mac |
 | 38 | **`supportsTools: true` for the Codex profile is an assertion, not a probe** (PR-037). Pi carries no tool metadata for any model, so the profile sets it explicitly and records it as `'verified'` — meaning "a human decided", not "something checked". The reasoning is that every model in the `openai-codex` catalogue is a Codex *Responses* model and the Responses API is a tool-calling API. Nothing here can test it, because the recorded auth surface streams through Pi's faux core. **If the first real session shows `observe_screen` rejected or ignored, the honest setting is `false`** and the profile degrades to system-design §12's labelled accessibility-only mode. It is one field in `createCodexModelSource`. `docs/handoff.md` §2 step 19 asks the user for exactly this observation. | the first real session |
 | 39 | **There is no model picker, and three lanes each have a reason for that** (PR-037). The Codex profile chooses `gpt-5.5` (then the rest of the vision catalogue in a recorded order) and `PILOT_CODEX_MODEL` overrides it; there is no UI. PR-038 and PR-039 both need provider/model selection UI, and building a third one here while both were in flight would have collided in `ipc/schemas.ts`, `main/shell.ts` and `renderer/App.tsx` three ways. **The PR that lands last should build one picker for all three profiles**, over `ModelProfileStore` (which PR-020 already wrote and nothing yet persists to a file). | PR-038 / PR-039, whichever lands last |
 | 40 | **`ModelProfileStore` is still unwired** (PR-020, restated by PR-037). PR-020 built a provider-neutral profile store with a plaintext-secret guard, a `ProfileStorage` seam and a selection pointer. Nothing in `apps/desktop` uses it: the Codex profile is selected by an environment variable and its capability provenance is recomputed at every launch. That is correct for one profile and wrong for three. **The last provider PR should wire it**, with a file-backed `ProfileStorage` under `userData` — and note that the credential itself stays where PR-037 put it (`credentials/model-credentials.json`), because the store persists *references*, never secrets. | PR-038 / PR-039, whichever lands last |
+| 42 | **The log redactor cannot see a secret in a value, and three shapes are known to pass through it** (PR-041). `redactValue` matches on the *key name*, so `{ endpoint: 'https://user:token@host/v1' }`, `{ line: '… with key sk-live-…' }` and `{ cause: 'HTTP 400 … data:image/png;base64,iVBOR…' }` are all emitted verbatim — the first two are too short and not whole-string base64, and `DATA_URI_PATTERN` is anchored with `^` so a payload in the *middle* of a sentence is invisible. PR-041 fixed the one live instance at the source (`scrubUrlCredentials`, applied to every place a base URL is formatted for a human **and** to the library error text that quotes it back) rather than widening a pattern, because widening `IMAGE_KEY_PATTERN` is how cross-lane issue 25 keeps happening. The general fix is a **value-shaped** pass beside the name-shaped one: an unanchored data-URI search and an unanchored URL-userinfo search over every string, with `onViolation: 'throw'` in tests so a new call site fails loudly. It is a `packages/shared` contract change with every logger in the product downstream of it, which is why PR-041 did not make it. Until it lands, **anything that formats an address, a URL, or a library's own error text must scrub it at the call site**, and `pnpm demo:privacy` claim L2 prints the current answer on every run. | a focused `@pilot/shared` PR |
+| 43 | **`pnpm demo:codex` §5 races the 3 000 ms frame ring** (PR-041, cross-lane issue 27). It pushes its screenshot before `releaseKey()` and then waits out a whole scripted run, so under concurrent load the frame ages out and the demo reports `observe_screen calls: 0` / `frame-unavailable`. It fails about one full-suite run in three, on `main` as well as on any branch, and passes in isolation. The fix is to push the frame *after* the key is released and immediately before the run needs it — which is what `flow-demo.ts` already does — not to lengthen the ring or loosen the assertion. One or two lines in `apps/desktop/src/codex/codex-demo.ts`. | a focused PR, or PR-043 |
+| 44 | **The `shutdown` retention clear is not awaited** (PR-041). `main/index.ts`'s `before-quit` handler starts the teardown chain with `void quitting.then(…)` and returns; `observation.dispose()` — which is where the §13 `shutdown` occasion is cleared, with the scene lineage — sits four links down that chain. Nothing is *retained* if Electron exits first (the buffers are process memory and go with it), so this is not a leak; what is lost is the **retention log entry that says so**, which is exactly the evidence `docs/handoff.md` §1 step 21 (g) asks the user to read, and it is the same shape as follow-up 37. Making `before-quit` await the chain risks a hung quit, which is worse; the honest fix is probably to clear the buffers *synchronously* at the top of the handler and let the rest of the teardown drain as it does now. **Say which you want** — it is a privacy-visible ordering choice. | PR-042, or a focused PR |
+
 
 ## 9. Quick start for a new session
 

@@ -16,6 +16,7 @@ import {
 import type {
   AccessibilityAdapter,
   AccessibilityGroundingTarget,
+  InteractionCommand,
   ObservationAdapter,
   ObservationEvent,
   PermissionAdapter,
@@ -282,6 +283,34 @@ export function retentionEventForFeed(event: WindowFeedEvent): RetentionEvent | 
       return 'screen-lock';
     case 'windows-changed':
     case 'screen-unlocked':
+      return null;
+  }
+}
+
+/**
+ * Which retention event a *command* is (system-design §13), the sibling of
+ * {@link retentionEventForFeed} for the three commands that cause a clear.
+ *
+ * It exists as a function rather than as three `if`s in the composition root
+ * because PR-041 found that there were two composition roots: `main/index.ts`
+ * armed the occasion inside the wrapper it gave `WindowGate`, and
+ * `DesktopShell.dispatch` — the menu bar item's Pause, and the renderer's
+ * `pilot:interaction/dispatch` channel — went straight to the controller. Both
+ * cleared the buffers; only one of them named the occasion, so a pause from the
+ * menu bar was logged as whatever had been armed last (`observation-disabled`
+ * at best, `screen-lock` or `permission-loss` after one of those). The clear is
+ * the same clear either way — this is the *name* in the retention log, which is
+ * exactly what an audit of §13 reads.
+ */
+export function retentionEventForCommand(command: InteractionCommand): RetentionEvent | null {
+  switch (command.type) {
+    case 'pause':
+      return 'pause';
+    case 'select-window':
+      return 'window-change';
+    case 'set-observation-enabled':
+      return command.enabled ? null : 'observation-disabled';
+    default:
       return null;
   }
 }

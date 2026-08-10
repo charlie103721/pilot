@@ -1566,3 +1566,89 @@ the composition root was measured at **1.66 MB → 5.97 MB** of main bundle,
 because `electron.vite.config.ts` inlines everything the main process reaches.
 Which vendors a shipped Pilot carries is PR-042's decision; `docs/handoff.md`
 §1 step 20 (b) shows the one-line change that tries one before then.
+
+## Demo (PR-041 — privacy and retention verification)
+
+```sh
+pnpm build && pnpm demo:privacy             # headless audit, no display needed
+```
+
+The first thing in this repository whose job is to **disbelieve the rest of it**.
+Every prior PR asserted a privacy property about its own work; this checks them
+from the outside, against the shipping composition, and treats each as a claim to
+be falsified. Twenty-one claims, one verdict each, and a non-zero exit if any of them
+fails **or if any of them silently stops running**.
+
+The design follows from one rule: *an audit that only checks what the code
+already asserts will pass, prove nothing, and be worse than useless, because it
+will read as assurance.* So:
+
+1. **Artefacts, not accessors.** The SQLite conversation is read as raw bytes
+   *while it is still open*, not asked whether it is empty. The log is the
+   emitted `LogRecord[]` — what a sink would receive, after the redactor — not
+   the fields the calls passed. Every `image` block in every provider request is
+   base64-decoded, its byte length measured and its pixel size read out of the
+   PNG header. `$HOME` and the repository are listed before and after the run and
+   diffed. Both credential stores write real files and their modes are read off
+   the filesystem.
+2. **Every scanner is proved before it is believed.** Ten byte scanners (PNG,
+   JPEG, GIF, HEIC/TIFF, RIFF/WAVE, Core Audio, MPEG-4, Ogg, an *unanchored*
+   `data:` URI and a 120-character base64 run), each run first against a control
+   that contains its pattern and one that does not. A regular expression that has
+   quietly stopped matching reports a clean disk for ever and looks exactly like
+   one that checked; claim A1 is the check that it has not, and it runs first.
+3. **Unprovable is a verdict.** Claim L2 is reported `UNPROVABLE`, not `held`: a
+   redactor keyed on key *names* cannot see a secret in a *value*, and the audit
+   prints three shapes passing straight through it on every run.
+
+**It found three defects, and none was catchable by any suite that existed.**
+
+- **A pause from the menu bar cleared its buffers under the wrong retention
+  occasion.** system-design §13 names five occasions and PR-040 arms the name
+  before the clear — but it armed it inside the wrapper `WindowGate` was given,
+  and the app has *two* command routes: the menu bar item's Pause and the
+  renderer's `pilot:interaction/dispatch` channel both went straight to the
+  controller. So the retention log said `observation-disabled` — or `screen-lock`,
+  or `permission-loss` — for a pause. Nothing was retained either way; what was
+  wrong was the one thing an audit of §13 can read. Fixed: one route, one arming
+  point (`retentionEventForCommand`, beside PR-040's `retentionEventForFeed`).
+- **A credential in `PILOT_LOCAL_BASE_URL` reached the durable transcript.**
+  `http://user:token@host/v1` is a realistic local configuration (a proxy in
+  front of Ollama). The token appeared in two log fields, in the `PROBLEM …`
+  sentence the panel renders, and therefore — through
+  `AgentRuntimeOptions.blockedBy`, whose refusal answers *every* question with
+  that sentence — in `sessions.db`. The log redactor never saw it: it matches on
+  the key name, and `endpoint`, `line` and `userMessage` are none of its
+  patterns. Fixed with `scrubUrlCredentials`, applied wherever an address is
+  formatted for a person **and to the library's own error text**, because Node's
+  `fetch` refuses a credentialed URL by quoting the whole URL back.
+- **The `retention clear` line refused to say what it had cleared.** Three of
+  its six fields — `clearedFrames`, `clearedPointerSamples`, `imageCacheCleared`
+  — collide with the redactor's key-name patterns, so the numbers that *are* the
+  evidence that the buffers were emptied were emitted as `[redacted:image]` and
+  `[redacted:audio]`. It was visible in `pnpm smoke`'s own output, and it is the
+  fourth time this hazard has eaten evidence (runbook cross-lane issue 25). The
+  log field names are now chosen against the redactor and a regression test
+  asserts `redactedPaths` is empty. It matters beyond tidiness: that line is what
+  `docs/handoff.md` §1 step 21 (g) asks a user to read after a real logout.
+
+What each section reads:
+
+| § | claims | artefact |
+| --- | --- | --- |
+| 1 | A1 | the scanners, against a positive and a negative control |
+| 2 | R1–R4 | each §13 occasion driven from the surface a user or macOS reaches, then `retention clear` read out of the log and `ScreenStatus.buffer` read after it |
+| 3 | D1–D3 | the bytes of a real SQLite file, live and after closing |
+| 4 | C1–C3 | both credential files, their modes, and the local profile resolved with a secret in its URL |
+| 5 | P1–P3 | the decoded images in the provider requests, and the tool results a five-look burst got back |
+| 6 | X1–X2 | the §11 budget re-derived from the documents, and the per-request image counts |
+| 7 | L1–L3, F1 | the audit's own log record, every `retention clear` the product wrote, four redactor probes, and the whole log stream |
+| 8 | B1 | `$HOME` and the repository, before and after; the built bundle if there is one |
+
+**Read section 10 of the output before quoting any of this.** There is no macOS,
+no model, no credential, no microphone and no pixel here: every path checked is a
+temporary directory, `~/Library/Application Support/Pilot/` has never existed,
+Electron `safeStorage` has never run, and "no audio bytes anywhere" is proved for
+a run in which no audio existed. `docs/handoff.md` §1 step 21 is the manual disk
+inspection that closes it — what to look at on the Mac, where, and what a bad
+answer looks like.

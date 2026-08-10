@@ -36,7 +36,11 @@ import {
 import { conversationDirectory, openConversationStoreRuntime } from './conversation-store.js';
 import { createInteractionRuntime, createObservationInteraction } from './interaction-runtime.js';
 import { createLifecycleRuntime, reprobeAttribution } from './lifecycle-runtime.js';
-import { createObservationRuntime, retentionEventForFeed } from './observation-runtime.js';
+import {
+  createObservationRuntime,
+  retentionEventForCommand,
+  retentionEventForFeed,
+} from './observation-runtime.js';
 import { createPlatformRuntime } from './platform-runtime.js';
 import { createQuestionAnchorRuntime } from './question-anchor.js';
 import { PermissionGate } from './permission-gate.js';
@@ -608,6 +612,16 @@ if (!singleInstance.isPrimary) {
      */
     function dispatchCommand(command: InteractionCommand): void {
       conversation.noteCommand(command);
+      // system-design §13, and PR-041's finding: the occasion for the clear the
+      // table is about to ask for is named *here*, on the one route every
+      // command takes, rather than inside the wrapper `WindowGate` was given.
+      // The menu bar item's Pause and the renderer's `pilot:interaction/dispatch`
+      // never went through that wrapper, so their clears were logged under
+      // whichever occasion happened to be armed last.
+      const occasion = retentionEventForCommand(command);
+      if (occasion !== null) {
+        observation.noteRetentionEvent(occasion);
+      }
       controller.dispatch(command);
     }
 
@@ -695,17 +709,10 @@ if (!singleInstance.isPrimary) {
       windows: platform.windows,
       interaction: {
         ...observationInteraction,
-        dispatch: (command) => {
-          conversation.noteCommand(command);
-          if (command.type === 'pause') {
-            observation.noteRetentionEvent('pause');
-          } else if (command.type === 'select-window') {
-            observation.noteRetentionEvent('window-change');
-          } else if (command.type === 'set-observation-enabled' && !command.enabled) {
-            observation.noteRetentionEvent('observation-disabled');
-          }
-          observationInteraction.dispatch(command);
-        },
+        // One route, one arming point: `dispatchCommand` above. Before PR-041
+        // this wrapper was the only place the occasion was named, which made
+        // the menu bar item a second entry point that never named it.
+        dispatch: dispatchCommand,
         report: (event) => {
           const retentionEvent = retentionEventForFeed(event);
           if (retentionEvent !== null) {
@@ -844,6 +851,11 @@ if (!singleInstance.isPrimary) {
         }),
         trayHost,
         controller,
+        // PR-041. The menu bar item's Pause and the renderer's
+        // `pilot:interaction/dispatch` now reach the same function the panel's
+        // window actions do, so the §13 retention occasion is named whichever
+        // surface the command came from.
+        dispatch: dispatchCommand,
         permissions,
         windows,
         conversation,
