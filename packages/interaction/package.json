@@ -1,0 +1,29 @@
+{
+  "name": "@pilot/interaction",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The interaction state machine: states, commands, events, utterance identity, stale-result rejection and interruption.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "demo": "node ./dist/demo-cli.js"
+  },
+  "dependencies": {
+    "@pilot/platform": "workspace:*",
+    "@pilot/shared": "workspace:*"
+  }
+}
