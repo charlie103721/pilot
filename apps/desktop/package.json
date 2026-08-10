@@ -27,6 +27,7 @@
     "demo:local": "node scripts/local-demo.js",
     "demo:failure": "node scripts/failure-demo.js",
     "demo:codex": "node scripts/codex-demo.js",
+    "demo:apikey": "node scripts/apikey-demo.js",
     "package": "node scripts/ensure-electron.js --require && pnpm run build:app && electron-builder --dir --config electron-builder.yml && node scripts/verify-bundle.js",
     "verify:bundle": "node scripts/verify-bundle.js",
     "start": "electron .",

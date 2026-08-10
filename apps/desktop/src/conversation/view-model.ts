@@ -1,7 +1,11 @@
 import type { InteractionState, SerializedPilotError, UtteranceId } from '@pilot/shared';
 import type { InteractionCommand, PilotViewState } from '@pilot/platform';
 import { isTextFallbackAvailable, lookupRule } from '@pilot/interaction';
-import { MAX_SUBMITTED_TEXT_LENGTH, type ConversationGateState } from '../ipc/schemas.js';
+import {
+  MAX_SUBMITTED_TEXT_LENGTH,
+  type ConversationGateState,
+  type ModelDataDisclosureView,
+} from '../ipc/schemas.js';
 import { readLifecycleGuidance, type LifecycleGuidanceView } from '../lifecycle/guidance.js';
 import {
   readObservationFailure,
@@ -402,6 +406,14 @@ export interface ConversationView {
   readonly composer: ComposerView;
   readonly controls: readonly ConversationControlView[];
   readonly disclosure: VoiceDisclosureView | null;
+  /**
+   * Where screen images go for the configured model, or null when no model
+   * profile has said (PR-038, system-design §14). Passed through from the gate
+   * unchanged — `describeModelDataDisclosure` in `@pilot/agent` is the one
+   * place that decides the wording, so the panel, the log line and the demo all
+   * say the same thing.
+   */
+  readonly modelDisclosure: ModelDataDisclosureView | null;
   readonly lastError: SerializedPilotError | null;
   /**
    * Set when {@link lastError} is a refused observation (PR-030), whether the
@@ -491,6 +503,7 @@ export function buildConversationView(input: ConversationViewInput): Conversatio
       return { id, label, available: reason === null, unavailableReason: reason };
     }),
     disclosure: buildDisclosure(input),
+    modelDisclosure: input.gate.modelDisclosure,
     lastError: input.view.lastError,
     observationFailure: readObservationFailure(input.view.lastError),
     recovery: readLifecycleGuidance(input.view.lastError),

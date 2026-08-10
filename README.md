@@ -846,7 +846,7 @@ here, for three independent reasons, and the third is the one that matters:
   ever been hit-tested.** There is no macOS here. So *"the crop is centred on
   what the user pointed at"* is **not verified anywhere in this repository** —
   only that it is centred on the pointer sample the anchor selected.
-  `docs/handoff.md` §1 step 9 is what settles it, and item 1 of that list is the
+  `docs/handoff.md` §1 step 11b is what settles it, and item 1 of that list is the
   single most valuable observation in the whole Mac batch.
 
 The walkthrough prints seven sections:
@@ -1468,3 +1468,101 @@ been made to `auth.openai.com` or to `chatgpt.com/backend-api`, Electron's
 `safeStorage` has never run, and `supportsTools: true` for this profile is
 Pilot's own assertion — Pi carries no tool metadata for any model. The runnable
 list that closes all of it is `docs/handoff.md` §2 step 19.
+## Demo (PR-038 — API-key provider profile)
+
+```sh
+pnpm demo:apikey                            # headless walkthrough, no display needed
+```
+
+The first profile that would hold a secret, and the first that would send your
+screen to a third party. Eight sections, each read off the objects the app uses
+— `openApiKeyProfileRuntime` is the function `main/index.ts` calls, and section
+6 runs one screen question end to end on the same rig `pnpm demo:look` and
+`pnpm demo:memory` use.
+
+Five claims, and the interesting ones are numbers rather than sentences:
+
+1. **The key is not on the medium.** The sealed file is `credentials.json`, mode
+   `600`, under `~/Library/Application Support/Pilot/model-profile/`. Only
+   `providerId` and the credential *type* are in the clear — everything derived
+   from the key is one opaque base64 field. Section 7 sweeps eleven surfaces
+   (the sealed file, the profile file, the renderer-bound status, the banner,
+   the `ModelSource`, the probe outcome, the credential inventory, the auth
+   facade, a serialised `PilotError`, a thrown stack over it, and a
+   `ProviderCredential`) and every line must read `clean`.
+2. **A model that cannot do the job is refused before any screen data is sent.**
+   A text-only model costs **zero** provider requests — the vendor never hears
+   from Pilot at all. A model that accepts images but will not call tools costs
+   **one** request, and that request carries a sentence and a tool definition:
+   **zero image blocks**. Both numbers are read off the recorded vendor's own
+   counters, and `CapabilityProbeOutcome.imageBlocksSent` is the literal `0` in
+   the type, so a change that broke it would fail to compile.
+3. **`supportsTools` is measured, not assumed.** Pi's `Model` carries no tool
+   metadata of any kind (`docs/pi-notes.md` §6.3), so every profile before this
+   one recorded `toolSupport: 'assumed'` — a default nobody had checked. The
+   probe offers a tool named `pilot_capability_probe` and watches for the call,
+   which is the only honest route to `'verified'`.
+4. **Configured is not verified.** `ApiKeyProfileManager.source()` returns
+   `null` in every state but `verified`, so there is no path on which Pilot
+   answers a screen question through a model it has not probed. The demo walks
+   all of them: unconfigured, chosen-without-a-key, key-saved-but-unverified,
+   rejected-by-the-probe, rejected-by-the-vendor, and revoked mid-conversation.
+   A **rate limit** is deliberately not one of them — the key is fine and the
+   next question may well work, so nothing is torn down.
+5. **A rejected key never quotes itself.** The recorded vendor's 401 echoes the
+   key back in its body, exactly as real vendors do, and that body becomes an
+   `AssistantMessage.errorMessage`, then a `PilotError.message`, then a log
+   line. Everything that leaves this lane passes through a scrubber that knows
+   the exact keys Pilot is holding, so the message the user sees reads
+   `Invalid API key provided: [redacted:credential]`.
+
+**Where the key actually lives.** In the app it is Electron `safeStorage`, which
+is the macOS Keychain (`apps/desktop/src/main/safe-storage.ts`). If
+`safeStorage.isEncryptionAvailable()` is false, the store **refuses to write at
+all** rather than falling back to plaintext — an explicit failure, and the panel
+says so. The demo cannot use it (there is no macOS here), so it uses real
+AES-256-GCM over a key it generates and throws away; the difference on a Mac is
+*where the key comes from*, not what happens to the credential.
+
+**The banner.** `describeModelDataDisclosure` produces one renderer-safe object
+with no field that can hold a secret, and the panel renders it above the
+transcript, before anything has been observed (system-design §14). It names the
+host, says whether the screen leaves the machine, and says `verified` only after
+the probe passed. It fails closed: a profile claiming `isRemote: false` with a
+non-loopback base URL is still labelled remote. PR-039's local profile is the
+same function with the opposite verdict.
+
+Configuring it in the app — read once, then it persists:
+
+```sh
+PILOT_MODEL_PROFILE=api-key \
+  PILOT_API_PROVIDER=recorded-vendor \
+  PILOT_API_KEY=anything-you-like \
+  PILOT_LOG_LEVEL=debug pnpm dev
+
+# second launch needs no environment at all
+PILOT_MODEL_PROFILE=api-key PILOT_API_PROVIDER=recorded-vendor pnpm dev
+```
+
+`PILOT_API_KEY` is read **once** and then deleted from `process.env`, before the
+native helper is spawned, so no child process inherits it. The startup line
+`api-key profile` prints the state, the cipher, whether secure storage is
+available, and how many provider requests and image blocks the probe cost; the
+`model source` line says whether the app booted on the API-key profile or fell
+back to the development one, and why.
+
+**Read section 8 of the output before quoting any of this.** There is **no API
+key in this environment, no request has ever reached a provider, and
+`safeStorage` has never run**. The vendor is `createRecordedApiKeyProvider`, in
+the same process. Two things only a real key can settle, and both would be
+Pilot's defect rather than the model's: whether a real model answers the tool
+probe with a tool call rather than with prose, and whether a real vendor's 401
+body is recognised as a rejected key rather than as a generic failure.
+`docs/handoff.md` §1 step 20 is the run that settles them.
+
+**No vendor SDK is bundled.** Pi's 38 built-in providers are one call away
+(`loadBuiltinApiKeyProviders()` in `@pilot/agent`), but wiring that call into
+the composition root was measured at **1.66 MB → 5.97 MB** of main bundle,
+because `electron.vite.config.ts` inlines everything the main process reaches.
+Which vendors a shipped Pilot carries is PR-042's decision; `docs/handoff.md`
+§1 step 20 (b) shows the one-line change that tries one before then.
