@@ -3,11 +3,13 @@ import type {
   CaptureOptions,
   CapturedFrame,
   CredentialRef,
+  GroundedPointer,
   ObservedWindow,
   PermissionAttribution,
   PermissionKind,
   PermissionSnapshot,
   PermissionStatus,
+  QuestionGrounding,
   ScreenPoint,
   SpeechId,
   UtteranceId,
@@ -135,10 +137,116 @@ export interface ObservationAdapter {
 // Accessibility
 // ---------------------------------------------------------------------------
 
-/** system-design §5, verbatim. */
+/**
+ * Whether accessibility grounding is fully available, or degraded (PR-013).
+ *
+ * system-design §16 makes a denied Accessibility permission a *degraded mode*,
+ * not a stop: "continue with visual pointer coordinates and disclose reduced
+ * grounding". So the pointer position and the element hit test are reported
+ * separately — on macOS the pointer needs no grant and keeps working while
+ * hit testing does not.
+ */
+export interface AccessibilityAvailability {
+  /** True when the operating system trusts this process for accessibility. */
+  readonly trusted: boolean;
+  /** True when a pointer position can still be read. */
+  readonly pointer: boolean;
+  /** True when the element under a point can be identified. */
+  readonly hitTesting: boolean;
+  /** True when grounding runs without element identification. */
+  readonly degraded: boolean;
+}
+
+/**
+ * The window a pointer position is grounded against (PR-013).
+ *
+ * `geometry` is the only input to the coordinate conversion, which lives in
+ * `@pilot/shared`'s geometry module and nowhere else (system-design §5).
+ */
+export interface AccessibilityGroundingTarget {
+  readonly geometry: WindowGeometry;
+  /**
+   * Process id of the application owning the window. When the platform can use
+   * it, the hit test is confined to that application's accessibility tree, so
+   * an element belonging to a window stacked on top of the selected one cannot
+   * be returned.
+   */
+  readonly ownerPid?: number;
+}
+
+/**
+ * Why an accessibility target was or was not identified (PR-013).
+ *
+ * `QuestionAnchor.targetAvailability` (system-design §8) admits only `reported`
+ * and `none`; the extra members here record *why* it is `none`, which the
+ * envelope carries in its `note` instead. Map with
+ * `outcome === 'reported' ? 'reported' : 'none'`.
+ */
+export const ACCESSIBILITY_TARGET_OUTCOMES = [
+  /** An element was identified and is described by `target`. */
+  'reported',
+  /** The hit test ran and found nothing under the pointer. */
+  'none',
+  /** No hit test was issued: the pointer was not over the selected window. */
+  'outside-window',
+  /** The hit test answered with an element belonging to another application. */
+  'foreign-application',
+  /** Accessibility is not granted, so no element can be identified. */
+  'accessibility-denied',
+  /** The platform hit test failed. */
+  'unavailable',
+  /** The caller asked for a position only. */
+  'not-requested',
+] as const;
+
+export type AccessibilityTargetOutcome = (typeof ACCESSIBILITY_TARGET_OUTCOMES)[number];
+
+/**
+ * One grounded pointer sample (PR-013).
+ *
+ * `grounding` reuses `@pilot/shared`'s `QuestionGrounding` strings so the value
+ * that reaches `QuestionEnvelope.anchor.grounding` (PR-024) needs no
+ * translation and cannot drift. Only the two pointer-bearing members occur
+ * here: `pointer-unknown` and `no-selected-window` are decisions the question
+ * envelope makes when there is no sample at all, not states a sample can be in.
+ */
+export interface PointerGroundingSample {
+  /** Injected-clock reading for the sample. */
+  readonly at: number;
+  readonly windowId: WindowId;
+  readonly grounding: Extract<QuestionGrounding, 'pointer-in-window' | 'pointer-outside-window'>;
+  /**
+   * Screen point, window-relative normalised point, captured pixel point and —
+   * only when the pointer was inside the window — the accessibility target.
+   */
+  readonly pointer: GroundedPointer;
+  /** The identified element, or null. Never non-null outside the window. */
+  readonly target: AccessibilityNode | null;
+  readonly targetOutcome: AccessibilityTargetOutcome;
+  /** True when the sample carries a position but no element identification. */
+  readonly degraded: boolean;
+}
+
+/**
+ * system-design §5, verbatim, plus the optional PR-013 members.
+ *
+ * The two original methods are unchanged. The additions are optional so an
+ * adapter written before they existed still satisfies the interface — the same
+ * rule PR-011 used for `PermissionAdapter.attribution`. A caller that needs
+ * them must handle `undefined` as "this platform does not offer it".
+ */
 export interface AccessibilityAdapter {
   getPointer(): Promise<ScreenPoint>;
   elementAt(point: ScreenPoint): Promise<AccessibilityNode | null>;
+  /** Whether hit testing is available, or grounding is degraded to position only (PR-013). */
+  availability?(): Promise<AccessibilityAvailability>;
+  /**
+   * Reads the pointer and grounds it against a window in one step (PR-013).
+   *
+   * Must never identify a target when the pointer is outside the window: what
+   * is under it then belongs to a window Pilot is not observing.
+   */
+  ground?(target: AccessibilityGroundingTarget): Promise<PointerGroundingSample>;
 }
 
 // ---------------------------------------------------------------------------
