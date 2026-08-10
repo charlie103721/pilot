@@ -69,11 +69,11 @@ pnpm --filter @pilot/platform-mac demo:accessibility
 #    real grant would be given to.
 PILOT_HELPER_BINARY="$(pwd)/apps/desktop/release/mac-arm64/Pilot.app/Contents/Resources/helper/PilotHelper" \
   pnpm --filter @pilot/platform-mac demo:accessibility
-# 6. PR-014 — speech. THIS ONE PROMPTS, OPENS THE MICROPHONE AND MAKES NOISE.
+# 7. PR-014 — speech. THIS ONE PROMPTS, OPENS THE MICROPHONE AND MAKES NOISE.
 #    Run it after step 5, so the two grants already exist. Turn the volume up:
 #    part of what is being checked is audible, not printed.
 pnpm --filter @pilot/platform-mac demo:speech
-# 6. PR-012 — the first real pixel Pilot has ever captured. RUN STEP 5 FIRST:
+# 8. PR-012 — the first real pixel Pilot has ever captured. RUN STEP 5 FIRST:
 #    without a Screen Recording grant this cannot work, and the failure would
 #    look like a capture bug rather than a missing permission.
 #    Open a window titled something recognisable before running it.
@@ -81,7 +81,7 @@ pnpm --filter @pilot/platform-mac demo:capture
 
 PILOT_HELPER_BINARY="$(pwd)/apps/desktop/release/mac-arm64/Pilot.app/Contents/Resources/helper/PilotHelper" \
   pnpm --filter @pilot/platform-mac demo:capture
-# 6. PR-015 — the global push-to-talk hotkey. THIS ONE PROMPTS TOO
+# 9. PR-015 — the global push-to-talk hotkey. THIS ONE PROMPTS TOO
 #    (Accessibility, and possibly Input Monitoring — see below).
 #    Section 1 of this demo is the *only* place anything in Pilot has ever
 #    tried to observe a key press.
@@ -93,7 +93,7 @@ pnpm --filter @pilot/platform-mac demo:hotkey
 PILOT_HELPER_BINARY="$(pwd)/apps/desktop/release/mac-arm64/Pilot.app/Contents/Resources/helper/PilotHelper" \
   pnpm --filter @pilot/platform-mac demo:hotkey
 
-# 7. PR-028 — the whole observation path inside the app. THIS ONE PROMPTS
+# 10. PR-028 — the whole observation path inside the app. THIS ONE PROMPTS
 #    (Screen Recording, and Accessibility for the pointer). Run it after step 5.
 #    First the stub-driven walkthrough, which already passes on Linux, so a
 #    difference on the Mac is a difference in the *platform*, not in the wiring:
@@ -109,8 +109,8 @@ PILOT_HELPER_BINARY="$(pwd)/packages/platform-mac/native/.build/debug/PilotHelpe
 #    plausibly attribute Screen Recording to Pilot:
 open apps/desktop/release/mac-arm64/Pilot.app
 
-# 8. PR-030 — the MODEL looking at a real window. Run it after step 7: it is
-#    step 7's path plus the agent, so a failure here that step 7 did not show is
+# 11. PR-030 — the MODEL looking at a real window. Run it after step 10: it is
+#    step 10's path plus the agent, so a failure here that step 7 did not show is
 #    in the tool or the model, not in capture.
 #    First the stub-driven walkthrough, which already passes on Linux:
 pnpm demo:look
@@ -237,7 +237,7 @@ touched a real pointer or a real accessibility tree. Four things:
    200 ms and the sampler runs at 30 Hz, so a busy application should cost
    dropped samples, never a stalled helper. If the helper is restarted by its
    supervisor while you move the pointer around, the timeout is wrong.
-### What to look for in step 6 (PR-014)
+### What to look for in step 7 (PR-014)
 
 Nothing here has ever run: no microphone has been opened and no utterance has
 been spoken by this project. Five things, in order of how much they would cost
@@ -286,7 +286,7 @@ Also worth capturing while you are there:
   it are community folklore and have never been checked. A wrong guess degrades
   to a correct-but-generic `recognizer-failed`, so this is a quality
   improvement rather than a bug hunt.
-### What to look for in step 6 (PR-012)
+### What to look for in step 8 (PR-012)
 
 The demo targets a hard-coded fixture window on the stub. Against the real
 helper it enumerates and picks one, and **prints which window it selected on
@@ -321,7 +321,7 @@ Then, in order:
    is the first thing that really uses the grant; a second entry named
    `PilotHelper` appearing here would be the attribution risk (§5) showing up
    at the moment it matters most.
-### What to look for in step 6 (PR-015)
+### What to look for in step 9 (PR-015)
 
 This is the first time anything in Pilot has tried to observe a key press. Five
 things, in order:
@@ -363,7 +363,7 @@ Also worth capturing while you are there:
   in section 3 move during a real run, the callback is too slow and that is a
   defect, not a curiosity.
 
-### What to look for in step 7 (PR-028)
+### What to look for in step 10 (PR-028)
 
 This is the first time the *application* has tried to watch a window: PR-012's
 demo drives the capture adapter alone, and this drives it through the window
@@ -382,7 +382,7 @@ in order:
 3. **Does selecting a window start capture, and does the ring fill?** With
    `PILOT_LOG_LEVEL=debug` the observation scope logs `capture started` and then
    `observation allowed` with a frame count and byte totals. Zero frames means
-   the stream never delivered; that is PR-012's `starting` case, step 6 item 1.
+   the stream never delivered; that is PR-012's `starting` case, step 8 item 1.
 4. **Look now.** The developer diagnostics surface should gain
    `capture-to-observation`, `image-bytes` and `active-images`. **The number
    that matters is `capture-to-observation`**: system-design §17 budgets image
@@ -414,7 +414,7 @@ Also worth capturing while you are there:
   pointer *timeline* records the element on every sample; `PILOT_LOG_LEVEL=debug`
   shows whether grounding is degraded.
 
-### What to look for in step 8 (PR-030)
+### What to look for in step 11 (PR-030)
 
 This is the first time the **model** has been able to see a screen at all. Four
 things, in order:
