@@ -1,6 +1,10 @@
 import { nullLogger, type Logger, type ObservedWindow } from '@pilot/shared';
 import { NativeHelperTransport, type MacHotkeyAdapter } from '@pilot/platform-mac';
-import type { PilotInteractionController } from '@pilot/interaction';
+import {
+  createTimeoutScheduler,
+  type PilotInteractionController,
+  type Scheduler,
+} from '@pilot/interaction';
 import { createAgentRuntime } from '../main/agent-runtime.js';
 import { ConversationGate } from '../main/conversation-gate.js';
 import {
@@ -19,6 +23,7 @@ import {
 } from '../main/question-anchor.js';
 import { PermissionGate } from '../main/permission-gate.js';
 import { createSettingsShortcut } from '../main/settings-shortcut.js';
+import { createSpeechOutputRuntime, type SpeechOutputRuntime } from '../main/speech-runtime.js';
 import { createVoiceRuntime, type VoiceRuntime } from '../main/voice-runtime.js';
 import { WindowGate } from '../main/window-gate.js';
 import { createDevelopmentModelSource, type ModelSource } from '@pilot/agent';
@@ -150,7 +155,29 @@ export interface ObservationRigOptions {
    * of the demo is watching them arrive.
    */
   readonly speechPollIntervalMs?: number;
+  /**
+   * The phrase-timeout wake-up (PR-033, runbook follow-up 25).
+   *
+   * Defaults to `createTimeoutScheduler()`, which is what `main/index.ts`
+   * passes. A walkthrough that wants PR-026's behaviour — the tail released
+   * only when the run ends — passes `NULL_SCHEDULER` and says so.
+   */
+  readonly scheduler?: Scheduler;
 }
+
+/**
+ * What the stub's synthesiser does unless a caller scripts it (PR-033).
+ *
+ * The stub's own default is `started` alone, which is right for the
+ * interruption tests `packages/platform-mac` wrote it for and wrong for an
+ * application: an utterance that never finishes leaves the machine in
+ * `speaking` for ever — runbook cross-lane issue 10, one layer down. A rig that
+ * assembles the *app* therefore completes the utterance, and a caller that
+ * wants a hanging one (or a failing one) says so in its own `speechOutput`.
+ */
+export const DEMO_SPEECH_OUTPUT = {
+  scripts: [[{ type: 'started' }, { type: 'finished' }]],
+} as const;
 
 /** One operation, as it crossed the framed stdio protocol. */
 export interface RecordedRequest {
@@ -186,6 +213,13 @@ export interface ObservationRig {
    */
   readonly voice: VoiceRuntime;
   /**
+   * Speech output (PR-033), over the *same* `MacSpeechOutputAdapter` the
+   * controller speaks through. `speech.stats()` counts what was spoken and what
+   * was silenced; `speech.speechOutput` is the seam itself, for the one call a
+   * machine never makes — a `stop()` for a stream that was never started.
+   */
+  readonly speech: SpeechOutputRuntime;
+  /**
    * The tap itself, for the two things `VoiceRuntime` deliberately does not
    * expose: re-issuing `hotkey.start` (which is how the Node stub is asked to
    * play its *next* scripted key — on a Mac the user simply presses the key)
@@ -217,10 +251,13 @@ export async function createObservationRig(
 ): Promise<ObservationRig> {
   const logger = options.logger ?? nullLogger;
   const stubPath = options.stubPath ?? helperStubPath();
+  // The caller's script wins; see DEMO_SPEECH_OUTPUT for why there is a default
+  // at all.
+  const stub: Record<string, unknown> = { speechOutput: DEMO_SPEECH_OUTPUT, ...options.stub };
   const transport = new NativeHelperTransport({
     command: process.execPath,
     args: [stubPath],
-    env: { ...process.env, PILOT_HELPER_STUB: JSON.stringify(options.stub ?? {}) },
+    env: { ...process.env, PILOT_HELPER_STUB: JSON.stringify(stub) },
     requestTimeoutMs: 5_000,
     handshakeTimeoutMs: 5_000,
     readyTimeoutMs: 8_000,
@@ -289,7 +326,8 @@ export async function createObservationRig(
   // than assumed, because the alternative is a confusing failure much later.
   const hotkeyAdapter = platform.hotkey;
   const speechAdapter = platform.speechInput;
-  if (hotkeyAdapter === null || speechAdapter === null) {
+  const synthesiser = platform.speechOutput;
+  if (hotkeyAdapter === null || speechAdapter === null || synthesiser === null) {
     throw new Error(`the rig expected the macOS adapters, got kind=${platform.kind}`);
   }
 
@@ -322,15 +360,29 @@ export async function createObservationRig(
     logger,
   });
   // PR-032's wiring, in the rig exactly as in `main/index.ts`: the real
-  // recogniser behind the machine's `start-listening`/`stop-listening`.
+  // recogniser behind the machine's `start-listening`/`stop-listening`. And
+  // PR-033's: the real synthesiser behind `speak`/`stop-speech`, plus the
+  // phrase-timeout scheduler the app now passes.
+  const speech = createSpeechOutputRuntime({
+    adapter: synthesiser,
+    // Disposing the runtime silences the synthesiser too. `platform.dispose()`
+    // does it again later and `MacSpeechOutputAdapter.dispose` is idempotent;
+    // what matters is that the sound stops at the first teardown step, not the
+    // last.
+    dispose: () => synthesiser.dispose(),
+    logger,
+  });
   const { controller } = createInteractionRuntime({
     agent: agent.session,
     conversationId,
     observation: observation.port,
     envelopes: anchoring.envelopes,
     speechInput: speechAdapter,
+    speechOutput: speech.speechOutput,
+    scheduler: options.scheduler ?? createTimeoutScheduler(),
     logger,
   });
+  await speech.start();
   controller.subscribe((view) => {
     observation.noteViewState(view);
     anchoring.noteActiveUtterance(controller.context.activeUtteranceId);
@@ -412,6 +464,7 @@ export async function createObservationRig(
     agent,
     anchoring,
     voice,
+    speech,
     hotkey: hotkeyAdapter,
     wire,
     async firstWindow(): Promise<ObservedWindow> {
@@ -432,7 +485,10 @@ export async function createObservationRig(
     async dispose(): Promise<void> {
       // Voice first, exactly as in `main/index.ts`: the tap releases a held key
       // before the controller that would have to handle the press is torn down.
+      // Then the synthesiser, still ahead of the controller, so a teardown
+      // mid-sentence stops the sound at once (PR-033).
       await voice.dispose();
+      await speech.dispose();
       windows.dispose();
       conversation.dispose();
       permissions.dispose();

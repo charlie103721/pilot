@@ -2,6 +2,7 @@ import { app, ipcMain, type IpcMainInvokeEvent } from 'electron';
 import { asConversationId, createIdFactory, createJsonSink, createLogger } from '@pilot/shared';
 import type { HotkeyAdapter, InteractionCommand, SpeechInputAdapter } from '@pilot/platform';
 import { FakeHotkeyAdapter, FakeSpeechInputAdapter } from '@pilot/platform/fakes';
+import { createTimeoutScheduler } from '@pilot/interaction';
 import { createDevelopmentModelSource, resolveDevelopmentModelFixture } from '@pilot/agent';
 import { IPC_TRANSPORT } from '../ipc/channels.js';
 import { createAgentRuntime } from './agent-runtime.js';
@@ -26,6 +27,7 @@ import { createQuestionAnchorRuntime } from './question-anchor.js';
 import { PermissionGate } from './permission-gate.js';
 import { createPermissionFixtureSource, resolvePermissionFixture } from './permission-fixtures.js';
 import { createSettingsShortcut } from './settings-shortcut.js';
+import { createSpeechOutputRuntime } from './speech-runtime.js';
 import { DesktopShell } from './shell.js';
 import { enforceSingleInstance } from './single-instance.js';
 import type { TrayMenuItem } from './tray.js';
@@ -65,6 +67,12 @@ import { createFakeWindowDemoDriver } from './window-demo.js';
  * `FakeSpeechInputAdapter`. **No key has ever been pressed and no audio has
  * ever been recorded** — everything below runs against the Node helper stub.
  *
+ * PR-033 replaced the last one in the voice loop: **speech output**. The silent
+ * adapter is gone; `main/speech-runtime.ts` holds `MacSpeechOutputAdapter` over
+ * `AVSpeechSynthesizer` and guarantees the one thing system-design §16 asks
+ * for: a synthesiser failure becomes silence, never a lost answer. **No sound
+ * has ever been produced**, for the same reason as above.
+ *
  * What is still fake, and who takes each one:
  *
  * | boundary        | today                                      | owner   |
@@ -76,7 +84,7 @@ import { createFakeWindowDemoDriver } from './window-demo.js';
  * | question anchor | real `ObservationCore` pointer timeline     | —       |
  * | push-to-talk    | real `CGEventTap`; fake on `kind: fakes`    | —       |
  * | speech in       | real Apple Speech; fake on `kind: fakes`    | —       |
- * | speech out      | silent adapter                             | PR-033  |
+ * | speech out      | real `AVSpeechSynthesizer`; silent on `kind: fakes` | — |
  * | model           | Pi's faux provider                         | PR-037  |
  * | persistence     | none (in-memory session)                   | PR-036  |
  *
@@ -225,11 +233,35 @@ if (!singleInstance.isPrimary) {
   })();
   const speechInput = voiceAdapters.speechInput;
 
+  // Speech output (PR-033), and it is the whole of this PR's boundary change.
+  // `platform.speechOutput` is `AVSpeechSynthesizer` behind the helper on both
+  // helper branches and `null` on the fake build; the runtime turns `null` — and
+  // every synthesiser failure — into silence rather than into a lost answer
+  // (system-design §16). `createSilentSpeechOutputAdapter` is gone with it
+  // (runbook follow-up 24).
+  const synthesiser = platform.speechOutput;
+  const speech = createSpeechOutputRuntime({
+    adapter: synthesiser,
+    // Disposing the runtime silences the synthesiser at once, ahead of the
+    // controller and of `platform.dispose()` (which does it again; the adapter's
+    // own dispose is idempotent).
+    ...(synthesiser === null ? {} : { dispose: () => synthesiser.dispose() }),
+    logger,
+  });
+
   // The interaction controller (PR-006/024/025/026/027), real at last.
   const { controller } = createInteractionRuntime({
     agent: agentRuntime.session,
     conversationId,
     speechInput,
+    speechOutput: speech.speechOutput,
+    // Runbook follow-up 25, the remaining wiring of follow-up 6. PR-027 built
+    // the phrase-timeout wake-up as an injected port so the machine keeps no
+    // timers; PR-029 deliberately did not pass it, because with speech silent
+    // there was nothing to release and no way to see whether it had worked.
+    // There is now: a model that emits a clause and then goes quiet speaks what
+    // it already had, instead of waiting for the run to end.
+    scheduler: createTimeoutScheduler(),
     observation: observation.port,
     // PR-031: this is `PilotQuestionEnvelopeFactory` over the real pointer
     // timeline, plus the one side effect that has to happen at the same instant
@@ -468,6 +500,18 @@ if (!singleInstance.isPrimary) {
       });
     }
 
+    // PR-033. One question, asked once: has this platform a voice at all? A
+    // "no" is not a failure — the answers are read instead of heard, which is
+    // what §16 already requires the app to survive — but it must be visible in
+    // the log, because "Pilot went quiet" and "Pilot has no voice installed"
+    // look identical from the outside.
+    const voices = await speech.start();
+    logger.info('speech output', {
+      real: speech.real,
+      available: voices.available,
+      voices: voices.voices.length,
+    });
+
     const trayHost = createElectronTrayHost({
       onSelect: (id: TrayMenuItem['id']) => shell?.tray.select(id),
     });
@@ -523,6 +567,7 @@ if (!singleInstance.isPrimary) {
       capture: observation.captureAvailable ? 'available' : 'unavailable',
       pushToTalk: voice.availability().status,
       voice: voiceAdapters.real ? 'real' : 'fake',
+      speechOut: speech.real ? (voices.available ? 'audible' : 'no-voice') : 'silent',
     });
   };
 
@@ -553,7 +598,15 @@ if (!singleInstance.isPrimary) {
     // the controller's own dispose then cancels the utterance and closes the
     // microphone. The other order would let a press arrive at a disposed
     // controller.
-    const quitting = voice.dispose().then(() => shell?.dispose() ?? Promise.resolve());
+    //
+    // Speech output goes next, and still ahead of the controller (PR-033): a
+    // quit in the middle of a sentence must stop the sound at once rather than
+    // after the interaction teardown has drained. Every call after that is a
+    // no-op, so the controller's own `stop-speech` on dispose is safe.
+    const quitting = voice
+      .dispose()
+      .then(() => speech.dispose())
+      .then(() => shell?.dispose() ?? Promise.resolve());
     void quitting
       .then(() => observation.dispose())
       .then(() => platform.dispose())

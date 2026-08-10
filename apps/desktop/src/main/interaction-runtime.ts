@@ -4,16 +4,12 @@ import {
   type Logger,
   type ObservationId,
   type ObservedWindow,
-  type SpeechId,
 } from '@pilot/shared';
 import type {
   AgentSession,
   InteractionCommand,
   SpeechInputAdapter,
   SpeechOutputAdapter,
-  SpeechOutputEvent,
-  SpeechOutputRequest,
-  Unsubscribe,
 } from '@pilot/platform';
 import { FakeSpeechInputAdapter } from '@pilot/platform/fakes';
 import {
@@ -23,7 +19,9 @@ import {
   type ObservationControlPort,
   type QuestionAnchorSource,
   type QuestionEnvelopeFactory,
+  type Scheduler,
 } from '@pilot/interaction';
+import { createSpeechOutputRuntime } from './speech-runtime.js';
 import type { ObservationInteraction } from './window-gate.js';
 
 /**
@@ -35,11 +33,13 @@ import type { ObservationInteraction } from './window-gate.js';
  * the selected window closing, a question superseding another, the error state
  * and the way out of it — is now produced by the table, in one place.
  *
- * Three ports are still mocked, each owned by a later PR and named here so a
- * reviewer never has to guess which half of the app is real:
+ * Every port here is now real in the app, and each default below survives only
+ * for the scripted desktop suites that supply nothing:
  *
- *  - **speech in** — `FakeSpeechInputAdapter` (PR-032 brings `MacSpeechInputAdapter`);
- *  - **speech out** — {@link createSilentSpeechOutputAdapter} (PR-033);
+ *  - **speech in** — `FakeSpeechInputAdapter` (PR-032 wired `MacSpeechInputAdapter`);
+ *  - **speech out** — `main/speech-runtime.ts` with no synthesiser (PR-033
+ *    wired `MacSpeechOutputAdapter`; `createSilentSpeechOutputAdapter` is gone,
+ *    runbook follow-up 24);
  *  - **observation** — {@link createMockObservationControlPort} and, on the
  *    agent side, `FakeScreenContextService` (PR-028 / PR-030).
  *
@@ -53,62 +53,6 @@ import type { ObservationInteraction } from './window-gate.js';
  * `renderAnchoredQuestionEnvelope` (wired in `agent-runtime.ts`) has to keep
  * proving that an unknown pointer never reaches the model as `-1.000`.
  */
-
-/**
- * A speech-output adapter that makes no sound and completes immediately.
- *
- * PR-033 owns real speech. Until then something has to satisfy the port, and
- * the choice matters more than it looks: `FakeSpeechOutputAdapter` from
- * `@pilot/platform/fakes` reports `started` and then waits for a test to call
- * `finish()`, so an app wired to it would enter `speaking` on the first answer
- * and stay there forever. This one reports `started` and then `finished` on the
- * next microtask, which is the shape of a synthesiser that has nothing to say
- * — the panel passes through `speaking` and returns to rest, and nothing claims
- * a sound was produced.
- */
-export function createSilentSpeechOutputAdapter(): SpeechOutputAdapter & {
-  readonly spoken: readonly SpeechOutputRequest[];
-} {
-  const listeners = new Set<(event: SpeechOutputEvent) => void>();
-  const spoken: SpeechOutputRequest[] = [];
-  let active: SpeechId | null = null;
-  const emit = (event: SpeechOutputEvent): void => {
-    for (const listener of [...listeners]) {
-      listener(event);
-    }
-  };
-  return {
-    spoken,
-    async availability() {
-      // Honest: there is no voice on this platform yet.
-      return { available: true, voices: [] };
-    },
-    async speak(request: SpeechOutputRequest): Promise<void> {
-      spoken.push(request);
-      active = request.speechId;
-      emit({ type: 'started', speechId: request.speechId });
-      queueMicrotask(() => {
-        if (active === request.speechId) {
-          active = null;
-          emit({ type: 'finished', speechId: request.speechId });
-        }
-      });
-    },
-    async stop(speechId?: SpeechId): Promise<void> {
-      const target = speechId ?? active;
-      if (target !== null && target !== undefined && active === target) {
-        active = null;
-        emit({ type: 'stopped', speechId: target });
-      }
-    },
-    subscribe: (listener: (event: SpeechOutputEvent) => void): Unsubscribe => {
-      listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
-    },
-  };
-}
 
 /** What the mocked capture port was asked to do, for the log and the demo. */
 export type ObservationPortCallType = 'start' | 'stop' | 'clear' | 'observe';
@@ -174,6 +118,15 @@ export interface InteractionRuntimeOptions {
   readonly envelopes?: QuestionEnvelopeFactory;
   readonly observation?: ObservationControlPort;
   readonly clock?: { now(): number };
+  /**
+   * What wakes a fragment the model left hanging (PR-027, runbook follow-up 25).
+   *
+   * The app passes `createTimeoutScheduler()`. The default is PR-027's own:
+   * `NULL_SCHEDULER`, which never fires and leaves the tail to be released when
+   * the run ends — so every scripted desktop suite stays deterministic without
+   * knowing this exists.
+   */
+  readonly scheduler?: Scheduler;
   readonly logger?: Logger;
 }
 
@@ -194,10 +147,15 @@ export interface InteractionRuntime {
 export function createInteractionRuntime(options: InteractionRuntimeOptions): InteractionRuntime {
   const logger = options.logger ?? nullLogger;
   const speechInput = options.speechInput ?? new FakeSpeechInputAdapter();
-  const speechOutput = options.speechOutput ?? createSilentSpeechOutputAdapter();
+  // PR-033: one implementation of the port, in two modes. With no synthesiser
+  // supplied it completes every chunk silently — which is exactly what
+  // `createSilentSpeechOutputAdapter` used to be, and what a Mac with no
+  // installed voice does (runbook follow-up 24).
+  const speechOutput = options.speechOutput ?? createSpeechOutputRuntime({ logger }).speechOutput;
   const observation = options.observation ?? createMockObservationControlPort(logger);
   const controller = new PilotInteractionController({
     clock: options.clock ?? { now: () => Date.now() },
+    ...(options.scheduler === undefined ? {} : { scheduler: options.scheduler }),
     speechInput,
     speechOutput,
     agent: options.agent,

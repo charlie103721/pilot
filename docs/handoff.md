@@ -167,6 +167,31 @@ PILOT_HELPER_BINARY="$(pwd)/packages/platform-mac/native/.build/debug/PilotHelpe
 #    …and then from inside the packaged .app, which is the only layout where TCC
 #    can plausibly attribute Accessibility and the Microphone to Pilot:
 open "$(packaged_app)"
+
+# 13. PR-033 — THE SPOKEN ANSWER. This one MAKES NOISE. It raises no new TCC
+#    prompt of its own — synthesis needs no permission — so it can be run right
+#    after step 1 if you only want to know whether this Mac speaks at all.
+#    TURN THE VOLUME UP: most of what is being checked is audible, not printed.
+#
+#    NOTHING IN THIS PROJECT HAS EVER BEEN SPOKEN ALOUD. This step is the first.
+#
+#    First the stub-driven walkthrough, which already passes on Linux — so a
+#    difference on the Mac is a difference in the *platform*, not in the wiring:
+pnpm demo:speak
+
+#    Then PR-014's own speech demo, whose section 9 speaks two chunks and
+#    interrupts them. It is the smallest thing here that can make a sound, so if
+#    the app is silent, run this to find out which half is quiet:
+pnpm --filter @pilot/platform-mac demo:speech
+
+#    Then the real thing. Pick a window, ask a question — typed or held — and
+#    LISTEN while you watch the panel: the text and the voice are two renderings
+#    of the same answer and they must agree.
+PILOT_HELPER_BINARY="$(pwd)/packages/platform-mac/native/.build/debug/PilotHelper" \
+  PILOT_LOG_LEVEL=debug pnpm dev
+
+#    …and from inside the packaged `.app`, which is the layout that ships:
+open "$(packaged_app)"
 ```
 
 Notes:
@@ -595,6 +620,48 @@ microphone and Accessibility permissions to another program…". That is correct
 behaviour, but it means steps 2–6 above cannot run until the packaged `.app`
 produces `matched`.
 
+### What to look for in step 13 (PR-033)
+
+This is the first time anything in this project has **made a sound**. Six
+things, and the first three are the ones a printed log cannot answer:
+
+1. **Is anything audible at all?** `pnpm demo:speak` cannot tell you: it drives
+   the Node stub, which reports `started` and `finished` without a speaker in
+   the loop. The real answer is `pnpm dev` with the volume up, and the startup
+   log line to check first is `desktop.main` / `speech output` with
+   `real=true available=true` and a non-zero `voices`. `available=false` means
+   this Mac has no installed voice — Pilot then reads its answers instead of
+   speaking them, which is correct §16 behaviour and worth reporting, because
+   it is indistinguishable from a bug without this line.
+2. **Is it gapless between sentences?** An answer is spoken as several
+   utterances handed one after another to `AVSpeechSynthesizer`'s own queue,
+   which is what should make sentence-to-sentence playback seamless without
+   Pilot timing anything. A perceptible gap, or a sentence spoken twice, means
+   the host is being let into the loop between chunks — report it, because the
+   fix is in PR-014's queue handling and not in the wiring.
+3. **Does an interruption stop the sound *now*?** Start a long answer, then
+   press push-to-talk (or Interrupt) while it is speaking. `docs/system-design.md`
+   §17 budgets under 300 ms and `pnpm demo:speak` §6 measures ~5 ms — but that
+   is a JSON round trip over a pipe, not audio stopping. What matters is whether
+   the voice cuts off mid-word or finishes the sentence it was on.
+4. **Does the panel keep the answer while it speaks?** The text and the voice
+   are two renderings of the same answer. The text should be complete on screen
+   *before* the last sentence is spoken, and the panel should leave *Speaking*
+   exactly once, when the whole answer is done — not after the first sentence.
+5. **Kill the helper mid-sentence** (`pkill PilotHelper` while it is talking).
+   Expected: the sound stops, the panel leaves `speaking`, the answer stays on
+   screen, and the state is **not** `error`. A helper that dies is reported as
+   `stopped`, not as a failure — nothing failed about the answer, the audio
+   simply ended.
+6. **Quit mid-sentence** (⌘Q, or the tray's Quit). The sound must stop at once
+   rather than playing on for a second or two while the app tears down. That is
+   what the disposal order in `main/index.ts` is for; if it is audible, say so.
+
+Also worth capturing while you are there: which voice was chosen and whether it
+is intelligible at the default rate. Pilot passes no `voice` and no `rate`, so
+it gets the system default; if that is unusable, a voice picker is a small
+addition and worth knowing about early.
+
 **Fallback in use:** Mac-gated code is written unverified and batched here
 (runbook amendment 8, user decision). Accepted risk: PR-011 through PR-015
 accumulate on top of an uncompiled helper. PR-011 additionally ships an
@@ -643,6 +710,20 @@ is that Pilot's half behaves correctly given a tap and a recogniser that
 misbehave the way macOS's do — early finals, double finals, callbacks after
 cancel, a tap the system switches off mid-press. Whether macOS lets Pilot have
 either is step 12.
+PR-033 closes the loop by making Pilot answer out loud — `MacSpeechOutputAdapter`
+behind PR-026's TTS buffer, with `main/speech-runtime.ts` guaranteeing that a
+synthesiser failure costs the sound and never the answer (`pnpm demo:speak`,
+`apps/desktop/test/main/speech-runtime.test.ts`,
+`apps/desktop/test/voice/speak-demo.test.ts`). Its gap is the plainest of the
+lot: **nothing has ever been spoken aloud.** No `AVSpeechSynthesizer` has been
+constructed, no voice resolved, no audio device opened and no sound produced.
+Every `started`, `finished`, `stopped` and `error` in every test and demo is the
+Node helper stub answering a script. What is proven is that Pilot's half is
+correct given a synthesiser that behaves as macOS's does, including one that
+fails mid-answer or dies mid-sentence; what cannot be proven here is whether a
+single word is audible, whether two sentences run together without a gap, or
+whether the sound really stops when an interruption says it should. Step 13 is
+what produces that answer, and part of it is audible rather than printed.
 
 ---
 
@@ -812,7 +893,10 @@ reversible; raise any that look wrong.
 | **The panel's "Fake state" row was removed** (PR-029) | It forced the *fake* controller into a named view state by patching it. With the real controller there is no such door and there should not be one: a state is reached by sending the machine an input. The channel, the schema and the driver went with it. What replaced it, with no forced state anywhere: the Replay row now holds real conversations, and `PILOT_PERMISSION_FIXTURE`, `PILOT_HOTKEY_FIXTURE`, `PILOT_SPEECH_DISCLOSURE` and the new `PILOT_MODEL_FIXTURE` reach the states nothing can cause on demand. `shell.ts` had asked for exactly this ("Omit once PR-029 lands"). |
 | **The panel's Replay row now holds real conversations** (PR-029) | PR-010's replay patched scripted view states onto the fake controller because nothing in that build could cause a conversation. This build can, so the five controls now dispatch the same commands the panel's own buttons dispatch. The scripted replay survives, but only for PR-010's headless walkthrough and the diagnostics privacy tests, which need exact words and an exact clock. Cost: a replay is now as slow as a real answer, so the IPC call that starts it is awaited. |
 | **`QuestionEnvelope.pointer` keeps its sentinel** (PR-029, deciding runbook follow-up 2) | PR-024 asked whether `null` would be better. With `renderAnchoredQuestionEnvelope` now wired at the composition root, the sentinel never reaches the model as a coordinate — that was the whole risk. What is left is a shape preference, and changing a required field of a system-design §8 contract inside an integration PR is the kind of change the phase rules exclude. **Say if you would rather have `null`**; it is still a small, contained change. |
-| **Speech output is a silent adapter, not the shared fake** (PR-029) | The shell needs something behind `SpeechOutputAdapter` until PR-033. `FakeSpeechOutputAdapter` reports `started` and then waits for a test to call `finish()`, which would leave the app in `speaking` for ever after its first answer. The replacement reports `started` then `finished` immediately and makes no sound. Consequence worth knowing: the panel briefly shows *Speaking* for an answer nobody hears. The alternative — no speech state at all — would have meant a different machine path in development from the one in production. |
+| **Speech output is a silent adapter, not the shared fake** (PR-029) | The shell needs something behind `SpeechOutputAdapter` until PR-033. `FakeSpeechOutputAdapter` reports `started` and then waits for a test to call `finish()`, which would leave the app in `speaking` for ever after its first answer. The replacement reports `started` then `finished` immediately and makes no sound. Consequence worth knowing: the panel briefly shows *Speaking* for an answer nobody hears. The alternative — no speech state at all — would have meant a different machine path in development from the one in production. **Superseded by PR-033**, which deleted the silent adapter and made that behaviour the degraded mode of the real seam; the consequence is unchanged on a build with no voice. |
+| **A synthesiser failure is turned into silence at the composition root, and never reaches the machine** (PR-033) | This is the most consequential decision in the PR and the easiest to reverse, so it is here rather than only in the runbook. `@pilot/interaction`'s `speech-failed` row goes to `error` **and tears the run down with it** (`teardown()` emits `interrupt-run`), so a synthesiser failing on chunk 2 of an answer the model is still streaming would abort the run and the rest of the reply would never arrive. `docs/system-design.md` §16 asks for the opposite in one line — "TTS fails → continue showing streamed text" — and PR-014's adapter says in its own comment that a caller treating a speech error as fatal to the turn is doing something it never asks for. So `main/speech-runtime.ts` guarantees that **no `error` ever leaves the speech-output seam**: a failed chunk becomes a completion for that same chunk, the stream carries on, the turn ends normally, and the failure is counted and logged (`an answer chunk was not spoken; the text is still on screen`) rather than shown. **What you lose by this**: the user is not *told* that Pilot went quiet — they see the answer and hear nothing. There is no surface for a non-fatal speech notice today and inventing one is PR-010's territory. **Say if you would rather the user were told**, and where. The alternative — changing the table's row — was rejected as a `packages/` contract change inside an integration PR, and because the row is still right for anything else that raises it (runbook cross-lane issue 15). |
+| **`createTimeoutScheduler()` is now passed (PR-033, closing runbook follow-ups 6 and 25)** | PR-027 built the phrase-timeout wake-up as an injected port so the interaction machine owns no timers, and PR-029 deliberately left it unpassed because with speech silent there was nothing to release. There is now: a model that emits a clause and then goes quiet speaks what it already had, roughly one phrase timeout (1.2 s) later, instead of waiting for the run to end. It is opt-in and additive — `InteractionRuntimeOptions.scheduler` still defaults to PR-027's `NULL_SCHEDULER`, so every scripted desktop suite is untouched — and the machine still rejects a stale wake-up (`stale-phrase-timeout`) as hygiene rather than as a user-visible error. **Say if you would rather the answer always waited for the run to end**; it is one argument. |
+| **The rig's helper stub completes its utterances by default** (PR-033) | `helper-stub.ts`'s synthesiser script defaults to `started` alone, which is exactly right for the interruption tests `packages/platform-mac` wrote it for and wedges an application in `speaking` for ever — the same trap runbook cross-lane issue 10 records against `FakeSpeechOutputAdapter`, one layer down. `createObservationRig` therefore defaults the script to `started, finished` (`DEMO_SPEECH_OUTPUT`) and a caller that wants a hanging or failing synthesiser scripts it explicitly, which `pnpm demo:speak` §4 and §6 both do. The stub itself was not changed: its default is correct for its own suite. |
 | **The development model source lives in `@pilot/agent`, not in the app** (PR-029) | `apps/desktop` gained `@pilot/agent` as a dependency, which pulls Pi into the main bundle; it did **not** gain a dependency on `@earendil-works/*`. Every Pi type stays behind `@pilot/agent`'s door, which is what `packages/platform`'s facade comment asks for, and it is why the demo script and the desktop tests can build a scripted provider without importing Pi. Cost: the main bundle grew from ~90 KB to ~1.1 MB. It is inlined, not external, so the packaged asar still contains no `node_modules`. |
 | **A refused capability is an agent that refuses, not a missing agent** (PR-029) | When the gate rejects the configured profile the app still builds a controller, over an `AgentSession` whose `submit` throws the refusal. The panel opens in `error` with the model's own `userMessage` and remedy, and the text box stays live (system-design §16). The alternative — no agent at all — would have made an unsupported model look like a broken Pilot. |
 | **Capture is started with `encoding: 'png'` at the composition root, not by changing PR-012's default** (PR-028, confirming runbook follow-up 18) | PR-018 measured a `jpeg` *source* frame at ~165 ms of pure-JS decode per observation that needs a pointer crop — the only path over §17's 150 ms budget — plus a second generation of compression loss on exactly the small text grounding depends on. `bgra` avoids both but a three-second ring at 1440×960 needs ~47 MB against a 16 MiB bound, so `png` is the choice. It is set in `apps/desktop/src/main/platform-runtime.ts` (`CAPTURE_ENCODING`), which is the only place in the product that starts a capture stream. `MacObservationAdapter`'s own default is left at `jpeg`, because changing another lane's default inside an integration PR would rewrite PR-012's tests to mean something else. **Cost worth knowing:** PNG frames are larger on the wire than JPEG, so the ring holds fewer seconds of a busy window. Nobody has measured a real one — §1 step 7 asks for the number. **Say if you would rather pay the decode and keep JPEG.** |
@@ -859,6 +943,7 @@ reversible; raise any that look wrong.
 | Phase 3 — integration (028…036) | In progress. **PR-030 is merged**: the model can see the selected window. `observe_screen` reaches PR-019's real `PilotScreenContextService` — the same instance "Look now" drives — and a real image reaches the provider's inbox; the observing state is visible while it happens and a refusal reaches the user as a sentence. Selected-window-only was re-proved against the real service. **Never once against macOS, and never once against a real model** (§1 step 8, §2): the pixels are the Node helper stub's and the tool call is scripted. Speech, persistence, the question anchor and the model itself are still fake. |
 | Phase 3 — integration (028…036) | In progress. **PR-031 is merged: point-and-ask works.** The §6 question anchor is resolved at submission from the real pointer timeline and handed to the same `PilotScreenContextService` the tool holds, so `moment: 'question'` answers from the frame that was on screen when the question was asked, `view: 'pointer'` crops around the anchor, and the element under it reaches the model as `targetRole`. `FakeQuestionAnchorSource` is gone from the real path and `ScreenContextInputs` has no unwired input left. It also fixed a real leak PR-028 left (runbook cross-lane issue 12). **Never once against macOS, and never once against a real model**: no real pointer has ever been read and no real accessibility element has ever been hit-tested (§1 step 9, §2). Speech, persistence and the model itself are still fake. |
 | Phase 3 — integration (028…036) | In progress. **PR-032 is merged: voice enters the conversation.** Holding the push-to-talk key opens a real recogniser, the live transcript grows partial by partial in the panel, releasing the key submits what was heard as the question, and the utterance's key-down/key-up instants reach PR-031's anchor — so `pointerSampleCount`, `pointerCrossedWindowBorder` and `sceneRevisedDuringUtterance` stop being degenerate with no change to the anchoring code. Voice is gated on PR-011's attribution verdict, and the §16 text box is proved reachable in every failure mode (dead tap, denied microphone, refused attribution, unavailable shortcut). **No key has ever been pressed and no audio has ever been recorded** (§1 step 12): every key transition and every transcript comes from the Node helper stub. Speech *output*, persistence and the model itself are still fake. |
+| Phase 3 — integration (028…036) | In progress. **PR-033 is merged: the voice loop is closed.** Pilot now answers out loud — the streamed answer is spoken sentence by sentence through `MacSpeechOutputAdapter` while its text fills the panel, and every platform adapter in system-design §5 is finally the real one. The silent stand-in is deleted. The property that took the work is §16's: a synthesiser failure costs the sound and never the answer, because the interaction table's `speech-failed` row aborts the run that is still writing it — so `main/speech-runtime.ts` turns every synthesiser failure into silence and the turn completes exactly as it would have. `createTimeoutScheduler()` is passed at last, so a model that goes quiet mid-sentence speaks what it already had. **Nothing has ever been spoken aloud** (§1 step 13): no `AVSpeechSynthesizer`, no voice, no audio device, and every speech callback in every test is the Node helper stub. Persistence and the model itself are still fake. |
 | Phase 4 — providers (037…039) | Not started. PR-037 (Codex) is the one the user's decision selects. |
 | Phase 5 — hardening and release (040…044) | Not started. |
 
@@ -898,6 +983,24 @@ demo executed against the merged tree.
   been created. The failure is at least loud rather than silent — the shortcut
   reports itself unavailable with a sentence and the text box stays live — so a
   user is never left holding a key that does nothing.
+
+- **A silent Pilot and a broken Pilot look identical to the user** (PR-033).
+  §16 is now honoured to the letter: a synthesiser that fails, a Mac with no
+  installed voice and a build with no helper all end the same way — the answer
+  on screen, complete, and nothing heard. The failure is counted and logged
+  (`desktop.main.speech-out`), but nothing in the panel says "Pilot could not
+  speak that". On a Mac with no English voice installed, or after a helper
+  crash, the user's experience is a product that simply stopped talking. The
+  decision and the one-line question it raises are in §4; §1 step 13 item 1 is
+  what tells us whether the case is real on the user's Mac at all.
+
+- **Gapless playback is an assumption, not a measurement** (PR-014/PR-033). An
+  answer is several utterances handed one after another to
+  `AVSpeechSynthesizer`'s own queue, on the theory that the platform joins them
+  seamlessly and Pilot never has to time anything. If it does not, an answer
+  will be spoken with audible seams between sentences, and the fix is a queueing
+  change in the adapter rather than in the wiring. Nothing on Linux can hear it;
+  §1 step 13 item 2 is the only way to know.
 
 - **Whether a real recogniser returns partials at all** (PR-032). The live
   transcript is what makes holding a key feel like anything, and every partial
