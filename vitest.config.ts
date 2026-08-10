@@ -23,6 +23,7 @@ export default defineConfig({
         find: '@pilot/interaction',
         replacement: fromRoot('./packages/interaction/src/index.ts'),
       },
+      { find: '@pilot/agent', replacement: fromRoot('./packages/agent/src/index.ts') },
     ],
   },
   test: {
