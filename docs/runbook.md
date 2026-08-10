@@ -19,6 +19,8 @@ run it.
 | `dp/m1.md` | Engineering plan: decisions, ownership/effort, phase details |
 | `docs/implementation.md` | **The execution plan**: 44 PRs (PR-001…PR-044) with scope, owner lane, size, dependencies, demo per PR |
 | `docs/runbook.md` | This file — how to actually run the delivery |
+| `docs/pi-notes.md` | PR-005 spike findings: the verified reality of pinned Pi 0.84.1 |
+| `docs/handoff.md` | Open items needing the user, accepted gaps, and decisions taken on their behalf |
 
 Precedence: `docs/system-design.md` for architecture, `dp/m1.md` for
 engineering decisions, `docs/implementation.md` for PR scope/order, this
@@ -176,6 +178,14 @@ include them:
    (user decision, 2026-08-10), citing the evidence doc. Done for §2.7/§2.10,
    §8 and §12 from `docs/pi-notes.md`. Do not leave a known-wrong statement
    standing in a doc marked authoritative.
+10. **PR-022 is split into PR-022a (pruning and image limits) and PR-022b
+    (compaction orchestration)**, per the PR-005 finding that Pi supplies no
+    compaction orchestrator and its primitives operate on session `Entry[]`
+    rather than the agent's `AgentMessage[]`. PR-023 grows from S to M for the
+    same reason — it owns the whole `Agent ↔ Session` bridge, restore-on-launch,
+    the `undefined`-payload trap and the SQLite writer lease.
+11. **Anything needing the user goes in `docs/handoff.md`**, not scattered
+    through PR reports. Keep it current as lanes land.
 
 ## 5a. Pending Mac batch
 
