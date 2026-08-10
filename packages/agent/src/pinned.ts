@@ -9,6 +9,12 @@ export const PINNED_PI_VERSIONS = {
   '@earendil-works/pi-agent-core': '0.84.1',
   '@earendil-works/pi-ai': '0.84.1',
   '@earendil-works/pi-session-backend-sqlite-node': '0.84.1',
+  // Not a Pi package, but part of the Pi surface: `AgentTool.parameters` is a
+  // TypeBox `TSchema` and Pi validates every tool call against it before
+  // `execute` runs. PR-021 authors that schema, so a typebox bump changes what
+  // arguments reach `observe_screen`. Pinned exactly, and depended on directly
+  // by `@pilot/agent` rather than reached through pi-ai's re-export.
+  typebox: '1.3.7',
 } as const;
 
 /**

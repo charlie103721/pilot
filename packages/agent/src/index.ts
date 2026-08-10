@@ -4,6 +4,7 @@ export * from './model-profile.js';
 export * from './profile-store.js';
 export * from './auth-facade.js';
 export * from './visual-context.js';
+export * from './tool-result.js';
 export * from './observe-screen.js';
 export * from './session.js';
 export * from './durable-transcript.js';

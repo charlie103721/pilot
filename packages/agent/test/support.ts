@@ -12,12 +12,16 @@ import {
 } from '@earendil-works/pi-ai';
 import {
   asConversationId,
+  asDisplayId,
   asModelProfileId,
   asSceneId,
   asUtteranceId,
+  asWindowId,
   type ModelProfile,
+  type ObservedWindow,
   type ObserveScreenRequest,
   type QuestionEnvelope,
+  type SceneState,
   type ScreenObservation,
   type ScreenStatus,
 } from '@pilot/shared';
@@ -133,26 +137,84 @@ export function observation(overrides: Partial<ScreenObservation> = {}): ScreenO
   };
 }
 
-const IDLE_STATUS: ScreenStatus = {
-  enabled: true,
-  paused: false,
-  selectedWindow: null,
-  scene: null,
-  permissions: { screenRecording: 'granted', accessibility: 'granted' },
-  buffer: { frameCount: 0, byteCount: 0, oldestFrameAt: null, newestFrameAt: null },
-  lastError: null,
+/**
+ * The window `observe_screen` is allowed to look at, and nothing else. The
+ * selected-window-only tests key off this identity.
+ */
+export const SELECTED_WINDOW: ObservedWindow = {
+  windowId: asWindowId('window-billing'),
+  displayId: asDisplayId('display-primary'),
+  title: 'Billing settings',
+  applicationName: 'Safari',
+  bounds: { x: 100, y: 80, width: 1200, height: 800 },
+  scaleFactor: 2,
+  isOnScreen: true,
 };
 
-/** Minimal `ScreenContextService` that returns a fixture or throws. */
+export const SELECTED_SCENE: SceneState = {
+  sceneId: asSceneId('scene-17'),
+  revision: 4,
+  windowId: SELECTED_WINDOW.windowId,
+  windowTitle: SELECTED_WINDOW.title,
+  fingerprint: 'fingerprint-17',
+  updatedAt: 1_700_000_000_000,
+};
+
+export function screenStatus(overrides: Partial<ScreenStatus> = {}): ScreenStatus {
+  return {
+    enabled: true,
+    paused: false,
+    selectedWindow: SELECTED_WINDOW,
+    scene: SELECTED_SCENE,
+    permissions: { screenRecording: 'granted', accessibility: 'granted' },
+    buffer: {
+      frameCount: 9,
+      byteCount: 9 * 64,
+      oldestFrameAt: 1_700_000_000_000,
+      newestFrameAt: 1_700_000_002_664,
+    },
+    lastError: null,
+    ...overrides,
+  };
+}
+
+export interface FakeScreenContext extends ScreenContextService {
+  readonly requests: ObserveScreenRequest[];
+  /** Signals seen by `observe`, so tests can assert the abort signal is passed on. */
+  readonly signals: (AbortSignal | undefined)[];
+  status(): ScreenStatus;
+}
+
+export interface FakeScreenContextOptions {
+  /** Snapshot returned by `status()`. Defaults to "the selected window is live". */
+  readonly status?: ScreenStatus;
+  /** Runs before the result is produced; lets a test abort mid-observation. */
+  readonly onObserve?: (signal: AbortSignal | undefined) => void | Promise<void>;
+}
+
+/**
+ * Minimal `ScreenContextService` that returns a fixture or throws.
+ *
+ * Deliberately *not* `FakeScreenContextService` from `@pilot/platform/fakes`:
+ * these tests need to script one exact outcome per case, including outcomes a
+ * well-behaved service would never produce (an observation from a scene that is
+ * not the selected window). The contract is the same one.
+ */
 export function fakeScreenContext(
   result: ScreenObservation | Error,
-): ScreenContextService & { readonly requests: ObserveScreenRequest[] } {
+  options: FakeScreenContextOptions = {},
+): FakeScreenContext {
   const requests: ObserveScreenRequest[] = [];
+  const signals: (AbortSignal | undefined)[] = [];
+  const status = options.status ?? screenStatus();
   return {
     requests,
-    status: () => IDLE_STATUS,
-    observe: async (request) => {
+    signals,
+    status: () => status,
+    observe: async (request, signal) => {
       requests.push(request);
+      signals.push(signal);
+      await options.onObserve?.(signal);
       if (result instanceof Error) {
         throw result;
       }

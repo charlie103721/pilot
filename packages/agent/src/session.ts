@@ -29,6 +29,7 @@ import {
   type CapabilityConfidence,
   type CapabilityReport,
 } from './capability.js';
+import { markFailedToolResults, toolFailureError } from './tool-result.js';
 import { pruneVisualContext, stripImageBlocks } from './visual-context.js';
 
 /**
@@ -217,6 +218,11 @@ export class PiAgentSession implements AgentSession {
       },
       // Pi contract: transformContext must not throw. pruneVisualContext is total.
       transformContext: async (messages) => pruneVisualContext(messages, { keepMostRecent }),
+      // Pilot tools return typed failure results instead of throwing, so that
+      // `details` survives for the UI (see `tool-result.ts`). This hook is what
+      // makes Pi agree they failed: it sets `isError` on the tool-result
+      // message and on `tool_execution_end`, which becomes `tool-failed` below.
+      afterToolCall: async (context) => markFailedToolResults(context),
     });
     this.#unsubscribePi = this.#agent.subscribe((event) => this.#onPiEvent(event));
   }
@@ -358,12 +364,16 @@ export class PiAgentSession implements AgentSession {
       case 'tool_execution_end': {
         const toolCallId = asToolCallId(event.toolCallId);
         if (event.isError) {
+          // A Pilot tool puts the real `PilotError` on `result.details`, so the
+          // UI gets `permission-denied` rather than a generic capture failure.
+          // The text fallback covers tools that threw (Pi flattens those).
+          const details = (event.result as { details?: unknown } | undefined)?.details;
           this.#emit({
             type: 'tool-failed',
             runId,
             toolCallId,
             toolName: event.toolName,
-            error: new PilotError('capture-failed', toolResultText(event.result)).toJSON(),
+            error: toolFailureError(details, toolResultText(event.result)).toJSON(),
           });
         } else {
           this.#emit({ type: 'tool-succeeded', runId, toolCallId, toolName: event.toolName });
