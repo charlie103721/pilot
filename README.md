@@ -1396,3 +1396,75 @@ no screen has ever locked, no real helper has ever crashed (none has ever been
 compiled), no window has ever refused capture, and no provider has ever signed
 Pilot out. What the far end of the pipe is, in every case, is the Node helper
 stub. The Mac run that settles it is `docs/handoff.md` §1 step 18.
+## Demo (PR-037 — Codex subscription profile)
+
+```sh
+pnpm demo:codex                             # headless walkthrough, no display needed
+```
+
+Sign in **without an API key**, keep the token alive, refuse a model that cannot
+see, recover from an expired sign-in, and run the MVP point-ask-hear flow on the
+result — through the objects `main/index.ts` builds.
+
+**There is no ChatGPT account here, no sign-in has ever happened and no request
+has ever left this machine.** The OAuth endpoints are a recorded reproduction of
+`pi-ai/dist/auth/oauth/openai-codex.js`: the same `select` prompt with the same
+two option ids, the same `device_code` event, the same
+`OAuth refresh failed for …` shape. Everything *above* the network is the
+shipping code, and so are the provider id, the base URL and the model catalogue
+— they are read out of the pinned package, which is why
+`gpt-5.3-codex-spark` really is text-only in section 3.
+
+Six things the walkthrough shows, each read off the objects rather than
+narrated:
+
+1. **Device code, never browser.** Pi offers both flows. The browser one binds
+   `127.0.0.1:1455` *before* it emits its `auth_url` and does not open a
+   browser, so the `select` prompt is the last moment it can be declined — and
+   the demo proves the difference by deliberately driving the other branch and
+   showing that port bound.
+2. **The token's lifecycle.** A credential slid inside Pi's own five-minute
+   refresh window reads `refresh-due` rather than broken, and the next request
+   rotates it *under the credential-store lock* — Pilot refreshes nothing
+   itself, it only reports the same boundary.
+3. **The capability gate, at zero cost.** `gpt-5.3-codex-spark` is refused with
+   **0 screen observations and 0 provider requests**. That pair of zeroes is the
+   Phase 4 gate line, and it matters because Pi *silently ignores* images for a
+   non-vision model: the failure it prevents is a confident answer about a
+   screen the model never saw.
+4. **Auth-expiry recovery, in three shapes.** Signed out and hard-expired are
+   refused at `submit()` — before the run starts, so before the model could call
+   `observe_screen`. A refresh that fails mid-request is caught after the fact
+   and rewritten: without that, the panel would show Pi's own words
+   ("OAuth refresh failed for openai-codex: …"), which are accurate and useless.
+5. **The MVP flow, on the profile.** Section 5 selects a window, points, holds
+   the key, speaks, lets the model look and hears the answer — the whole of
+   `pnpm demo:flow`, with a ChatGPT-subscription `ModelSource` in place of the
+   development one. It also prints the §11 budget: `272000 tokens (model; remote
+   endpoint advertised 272000)`, the first time PR-036's hosted branch has
+   fired.
+6. **The credential never leaks.** Section 6 signs in through a **real on-disk
+   store**, then scans the renderer's `CodexGateState`, the panel's
+   `PilotViewState`, every log record, the session transcript and every provider
+   request Pilot built for the exact tokens that were issued. The only place any
+   of them appears is the credential file itself — `0600`, in its own
+   directory — and signing out **deletes** it.
+
+In the app:
+
+```sh
+PILOT_MODEL_PROFILE=codex pnpm dev            # the real provider; the panel’s Model section
+PILOT_CODEX_MODEL=gpt-5.4 pnpm dev            # …on a different model
+PILOT_MODEL_PROFILE=codex PILOT_CODEX_MODEL=gpt-5.3-codex-spark pnpm dev   # …refused
+```
+
+Without `PILOT_MODEL_PROFILE=codex` nothing changes: the app still runs on Pi's
+faux provider and says so. With it, and with nobody signed in, the startup line
+and the panel both read *"NOT SIGNED IN — no question can be answered until you
+sign in"* rather than looking like a working model.
+
+**Read section 7 of the output before quoting any of this.** No request has ever
+been made to `auth.openai.com` or to `chatgpt.com/backend-api`, Electron's
+`safeStorage` has never run, and `supportsTools: true` for this profile is
+Pilot's own assertion — Pi carries no tool metadata for any model. The runnable
+list that closes all of it is `docs/handoff.md` §2 step 19.

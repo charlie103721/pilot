@@ -762,6 +762,36 @@ Read from `pi-ai/dist/providers/openai-codex.js` and
 main process must open the system browser itself. The device-code path is the
 safer default inside a packaged app.
 
+**PR-037 built everything above the network against a recorded reproduction of
+this file.** `packages/agent/src/codex-fake.ts` replays the same `select` prompt
+(same two option ids), the same `device_code` event, the same
+`{ type:"oauth", access, refresh, expires, accountId }` credential and the same
+`OAuth refresh failed for …` error shape, over the **real** provider id and the
+**real** model catalogue from the pinned package. Two corrections and one
+addition to the notes above, from reading the implementation again:
+
+- The catalogue has grown since this was written: `gpt-5.6-sol` and
+  `gpt-5.6-terra` are vision-capable too. Pilot filters on `Model.input` at
+  runtime rather than trusting a list, so the recorded four are a *preference
+  order*, not a gate.
+- **The refusal has to happen at the `select` prompt.** `loginOpenAICodex` calls
+  `startLocalOAuthServer(state)` — which binds port 1455 — *before* it emits
+  `auth_url`, so an application that watches for the event and refuses then is
+  already too late. `createCodexDeviceCodeInteraction` therefore answers the
+  select and throws on every other prompt.
+- Pi refreshes a token with less than **five minutes** left, inside
+  `credentials.modify()` under the store lock (`auth/resolve.js`,
+  `DEFAULT_OAUTH_MINIMUM_VALIDITY_MS`), and reports a refresh failure as
+  `ModelsError` code `"oauth"`. An *unconfigured* provider fails differently, as
+  `ModelsError` code `"auth"` with `Provider is not configured: …`. Both arrive
+  at the application as an assistant message with `stopReason: "error"`, because
+  `lazyStream` catches setup rejections — not as a throw.
+
+**Still not attempted, and this is the whole of the remaining risk:** no request
+has been made to `auth.openai.com` or to `chatgpt.com/backend-api`. The runnable
+steps below are superseded by `docs/handoff.md` §2 step 19, which drives the
+same flow through Pilot's own UI.
+
 **What the user must do (~5 min, on the Mac):**
 
 ```sh

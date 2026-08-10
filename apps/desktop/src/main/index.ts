@@ -1,5 +1,11 @@
-import { app, ipcMain, powerMonitor, type IpcMainInvokeEvent } from 'electron';
-import { asConversationId, createIdFactory, createJsonSink, createLogger } from '@pilot/shared';
+import { app, ipcMain, powerMonitor, safeStorage, type IpcMainInvokeEvent } from 'electron';
+import {
+  asConversationId,
+  createIdFactory,
+  createJsonSink,
+  createLogger,
+  type SerializedPilotError,
+} from '@pilot/shared';
 import type { HotkeyAdapter, InteractionCommand, SpeechInputAdapter } from '@pilot/platform';
 import { FakeHotkeyAdapter, FakeSpeechInputAdapter } from '@pilot/platform/fakes';
 import { createTimeoutScheduler, type PilotInteractionController } from '@pilot/interaction';
@@ -8,6 +14,8 @@ import { IPC_TRANSPORT } from '../ipc/channels.js';
 import { createAgentRuntime } from './agent-runtime.js';
 // PR-039 (additive import).
 import { resolveLocalModelSource } from './local-model.js';
+import { CodexGate } from './codex-gate.js';
+import { createCodexRuntime, createSafeStorageProtector } from './codex-runtime.js';
 import { ConversationGate } from './conversation-gate.js';
 import { createLiveConversationDriver } from './conversation-driver.js';
 import {
@@ -77,6 +85,13 @@ import { createFakeWindowDemoDriver } from './window-demo.js';
  * for: a synthesiser failure becomes silence, never a lost answer. **No sound
  * has ever been produced**, for the same reason as above.
  *
+ * PR-037 replaced the last one of all, and it is opt-in: **the model**.
+ * `PILOT_MODEL_PROFILE=codex` builds the real `openai-codex` provider — the real
+ * catalogue, the real OAuth flow, a real credential file — through
+ * `main/codex-runtime.ts`. **Nobody has ever signed in** (docs/handoff.md §2),
+ * so on this machine that profile reports `NOT SIGNED IN` and refuses every
+ * question with a remedy; the default remains the faux provider.
+ *
  * PR-036 replaced the last one that was not the model: **persistence**. The
  * conversation is opened from disk before the session is built
  * (`main/conversation-store.ts`), restored into it, and its writer lease
@@ -106,7 +121,7 @@ import { createFakeWindowDemoDriver } from './window-demo.js';
  * | speech in       | real Apple Speech; fake on `kind: fakes`    | —       |
  * | speech out      | real `AVSpeechSynthesizer`; silent on `kind: fakes` | — |
  * | persistence     | real SQLite `ConversationStore`             | —       |
- * | model           | Pi's faux provider                         | PR-037  |
+ * | model           | faux by default; **real Codex** when selected | —    |
  *
  * `kind: fakes` is what a machine that is not a Mac gets, and it is reported
  * with its reason rather than inferred. **The whole real observation path is
@@ -122,6 +137,8 @@ import { createFakeWindowDemoDriver } from './window-demo.js';
  *
  * Every fixture state is reachable without editing source:
  *
+ *   PILOT_MODEL_PROFILE=codex pnpm dev            # the ChatGPT subscription profile
+ *   PILOT_CODEX_MODEL=gpt-5.3-codex-spark pnpm dev # …refused: that model is text-only
  *   PILOT_MODEL_FIXTURE=faux-text-only pnpm dev   # the capability gate refuses
  *   PILOT_PERMISSION_FIXTURE=denied pnpm dev      # onboarding states (fakes only)
  *   PILOT_HOTKEY_FIXTURE=permission-missing pnpm dev
@@ -199,20 +216,43 @@ if (!singleInstance.isPrimary) {
       logger,
     });
 
-    // The model. PR-039 added the first real provider: set PILOT_LOCAL_BASE_URL
-    // and Pilot talks to the user's own OpenAI-compatible endpoint, health- and
-    // capability-probed before a session exists (`main/local-model.ts`). With
-    // it unset there is still no model access on this machine
-    // (docs/handoff.md §2), so the fallback is Pi's own faux provider behind a
-    // real `Models` collection — runbook amendments 2 and 7. Either way the
-    // line is logged rather than assumed: a build that is not talking to a real
-    // model must say so where anyone can see it.
+    // The model. Three sources, tried in order, all satisfying `ModelSource`
+    // and nothing else — which is why this is a `??` chain and not a branch
+    // through the rest of the composition (runbook follow-up 22).
+    //
+    //  1. PR-037: `PILOT_MODEL_PROFILE=codex` selects the ChatGPT subscription
+    //     profile. Explicit, so it wins.
+    //  2. PR-039: `PILOT_LOCAL_BASE_URL` points Pilot at the user's own
+    //     OpenAI-compatible endpoint, health- and capability-probed before a
+    //     session exists (`main/local-model.ts`).
+    //  3. Otherwise Pi's own faux provider behind a real `Models` collection
+    //     (runbook amendments 2 and 7).
+    //
+    // The default is still the faux one, because **no sign-in has happened**
+    // (docs/handoff.md §2) and a build that silently switched to a provider it
+    // has no credential for would answer nothing at all. Neither real profile
+    // ever falls back silently: a configured-but-unusable one refuses with its
+    // reason rather than quietly becoming the development model.
+    const codex = createCodexRuntime({
+      env: process.env,
+      userDataDirectory: app.getPath('userData'),
+      // Keychain-backed on macOS. `available` is read at call time, because
+      // this runs before `app.whenReady()` — the agent below it needs the
+      // source at construction.
+      protector: createSafeStorageProtector(safeStorage),
+      logger,
+    });
+    await codex.refresh();
     const local = await resolveLocalModelSource({ env: process.env, logger });
     const modelSource =
+      codex.source ??
       local.source ??
       createDevelopmentModelSource({
         fixture: resolveDevelopmentModelFixture(process.env['PILOT_MODEL_FIXTURE']),
       });
+    // Logged rather than assumed: a build that is not talking to a real model —
+    // or that is configured for one it has not signed in to — must say so where
+    // anyone can see it.
     logger.info('model source', { description: modelSource.description });
 
     // The platform (PR-028). One decision, in one place: the real macOS adapters
@@ -399,8 +439,14 @@ if (!singleInstance.isPrimary) {
     });
 
     // The interaction controller (PR-006/024/025/026/027), real at last.
+    // PR-037. Identity when Codex is not selected. When it is, this is the
+    // pre-flight that refuses a question *before* the run starts — so before
+    // any provider request and before the model can call `observe_screen` — and
+    // the translation that turns Pi's `OAuth refresh failed for openai-codex`
+    // into the sentence that says to sign in again.
+    const agentSession = codex.wrapSession(agentRuntime.session);
     const { controller } = createInteractionRuntime({
-      agent: agentRuntime.session,
+      agent: agentSession,
       conversationId,
       // PR-040: the recogniser, wrapped. A `speech.input.start` that is refused
       // reached the panel as "The macOS helper could not run that operation" —
@@ -449,6 +495,13 @@ if (!singleInstance.isPrimary) {
       // machine's `error` state keeps the text box live (system-design §16), and
       // the refusal carries its own `userMessage` and remedy.
       controller.send({ type: 'failure', error: agentRuntime.capability.error });
+    } else if (codex.startupError() !== null) {
+      // PR-037, and it is runbook follow-up 22's "must not silently look like a
+      // working model" made visible. A Codex profile with no stored sign-in can
+      // answer nothing, so the panel says so at startup with the remedy
+      // attached, beside a live text box (system-design §16) — rather than
+      // letting the user find out by asking a question.
+      controller.send({ type: 'failure', error: codex.startupError() as SerializedPilotError });
     } else if (durable.error !== null) {
       // PR-036, runbook follow-up 20 (a). A writer lease Pilot could not take is
       // the one persistence failure the user can act on, and its `userMessage`
@@ -635,6 +688,10 @@ if (!singleInstance.isPrimary) {
       logger,
     });
 
+    // PR-037. Built only when the profile is selected, so the panel's Model
+    // section is absent rather than empty on a development build.
+    const codexGate = codex.enabled ? new CodexGate({ runtime: codex, logger }) : null;
+
     // Set by `electron-vite dev`, absent in every built app. When it is present
     // the panel loads from the dev server so edits hot-reload; otherwise it loads
     // the file emitted next to this one.
@@ -732,6 +789,7 @@ if (!singleInstance.isPrimary) {
         permissions,
         windows,
         conversation,
+        ...(codexGate === null ? {} : { codex: codexGate }),
         ...(windowDemoDriver === undefined ? {} : { windowDemoDriver }),
         conversationFixtureDriver,
         appInfo: {
@@ -782,6 +840,10 @@ if (!singleInstance.isPrimary) {
         // PR-040. Zero at startup, and a number a smoke run can read: every
         // lifecycle failure since boot, whichever subsystem raised it.
         lifecycleFailures: lifecycle.stats().records,
+        // PR-037. The auth *state*, never the credential: `signed-out` on a
+        // build that selected Codex is the whole of docs/handoff.md §2.
+        modelProfile: codex.enabled ? 'codex' : local.source ? 'local' : 'development',
+        modelAuth: codex.state().auth.state,
       });
     };
 
@@ -819,6 +881,7 @@ if (!singleInstance.isPrimary) {
         .then(() => observation.dispose())
         .then(() => platform.dispose())
         .then(() => agentRuntime.dispose())
+        .then(() => codex.dispose())
         .then(() => durable.close());
       shell = null;
     };

@@ -22,6 +22,10 @@ import {
   windowDemoEventSchema,
   windowGateStateSchema,
 } from './schemas.js';
+// PR-037 — Codex subscription profile. The channels are defined in their own
+// file (`codex-channels.ts`) and imported here only so the catalogue arrays
+// below can list them; consumers import them from that file directly.
+import { codexActChannel, codexChangedEvent, codexGetChannel } from './codex-channels.js';
 
 /**
  * The renderer ↔ main channel catalogue.
@@ -252,6 +256,8 @@ export const REQUEST_CHANNELS = [
   demoWindowEventChannel,
   demoConversationChannel,
   quitChannel,
+  codexGetChannel,
+  codexActChannel,
 ] as const;
 
 /** Every event channel. */
@@ -261,6 +267,7 @@ export const EVENT_CHANNELS = [
   permissionsChangedEvent,
   windowsChangedEvent,
   conversationChangedEvent,
+  codexChangedEvent,
 ] as const;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the catalogue is heterogeneous by design; lookups re-validate through the channel's own schemas.
