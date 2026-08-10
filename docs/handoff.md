@@ -132,7 +132,7 @@ PILOT_HELPER_BINARY="$(pwd)/packages/platform-mac/native/.build/debug/PilotHelpe
 #    And press **Look now** with no question in flight, which is the same
 #    observation without the model in the way.
 
-# 9. PR-031 — POINT AND ASK. This is the one the product exists for, and it is
+# 11b. PR-031 — POINT AND ASK. This is the one the product exists for, and it is
 #    the first time a real pointer or a real accessibility element has ever been
 #    read by anything in this project. Run it after step 8.
 #    First the stub-driven walkthrough, which already passes on Linux:
@@ -531,6 +531,100 @@ killall -9 PilotHelper
 #      (h) pull the network out mid-answer. Pilot must stop and say so, and must
 #          NOT resend the question by itself — the retry it refuses to make is
 #          the one that would answer about a screen you have moved past.
+#    (Step 19 is not missing — it is the Codex sign-in, and it lives in §2
+#    because it needs an account rather than this Mac.)
+
+# 20. PR-038 — A REAL API KEY AGAINST A REAL PROVIDER, AND THE KEYCHAIN. This
+#    would be the first time anything in this project holds a credential, and
+#    the first time a screen image leaves the machine. It raises no TCC prompt
+#    of its own but it MAY raise a Keychain prompt, and it COSTS MONEY.
+#
+#    NOTHING IN THIS PROJECT HAS EVER HELD AN API KEY, TALKED TO A PROVIDER, OR
+#    TOUCHED THE macOS KEYCHAIN. This step is the first.
+#
+#    First the recorded walkthrough, which already passes on Linux — provider
+#    and model selection, a sealed credential file, a capability probe that
+#    refuses two models, invalid-key recovery, the remote-data banner, and one
+#    screen question answered end to end:
+pnpm demo:apikey
+
+#    (a) THE KEYCHAIN. `pnpm demo:apikey` uses AES-256-GCM over a key it
+#        generates and throws away; the app uses Electron `safeStorage`, which
+#        is the login Keychain. Run the app with a key and watch three things:
+#        whether macOS prompts, whether the file is sealed, and whether it
+#        comes back on the second launch WITHOUT the environment variable. The
+#        recorded vendor accepts whatever key it is given, so this half needs
+#        no real provider and costs nothing:
+PILOT_MODEL_PROFILE=api-key \
+  PILOT_API_PROVIDER=recorded-vendor \
+  PILOT_API_KEY=anything-you-like \
+  PILOT_LOG_LEVEL=debug pnpm dev
+
+#        The startup log line `api-key profile` says `state`, `cipher` and
+#        `secureStorage`. `secureStorage: false` means safeStorage refused, and
+#        Pilot then stores NOTHING rather than falling back to plaintext — say
+#        so if you see it, because on a Mac it should be true.
+#        Then look at the file, and grep it for your key. Expect nothing:
+ls -l ~/Library/Application\ Support/Pilot/model-profile/
+grep -a "anything-you-like" \
+  ~/Library/Application\ Support/Pilot/model-profile/credentials.json || echo "gone"
+
+#        Then relaunch WITHOUT PILOT_API_KEY. It must still be configured, and
+#        the log must read `state: verified`:
+PILOT_MODEL_PROFILE=api-key PILOT_API_PROVIDER=recorded-vendor pnpm dev
+
+#    (b) A REAL VENDOR. This build registers NO vendor SDK. Measured: calling
+#        `loadBuiltinApiKeyProviders()` from `main/api-key-runtime.ts` took
+#        `dist/main/index.js` from 1.66 MB to 5.97 MB, so which vendors ship is
+#        a packaging decision left to PR-042. To try a real one before then,
+#        register it at the call site in `apps/desktop/src/main/index.ts`:
+#
+#          import { loadBuiltinApiKeyProviders } from '@pilot/agent';
+#          const apiKeyProfile = await openApiKeyProfileRuntime({
+#            userDataPath: app.getPath('userData'),
+#            cipher: createSafeStorageCipher(),
+#            providers: await loadBuiltinApiKeyProviders(),
+#            logger,
+#          });
+#
+#        then, with a key you are willing to spend (`docs/pi-notes.md` §9.2
+#        recommends Anthropic — it is the cheapest thing to verify):
+PILOT_MODEL_PROFILE=api-key \
+  PILOT_API_PROVIDER=anthropic \
+  PILOT_API_KEY=sk-ant-... \
+  PILOT_LOG_LEVEL=debug pnpm dev
+
+#        Four things only a real provider can answer, in decreasing order of
+#        what they would cost if wrong:
+#          - DOES THE CAPABILITY PROBE PASS? It makes ONE text-only request
+#            offering a tool named `pilot_capability_probe` and expects a tool
+#            call back. A real model may answer in prose instead ("Certainly, I
+#            will call the tool"), which Pilot reads as "cannot call tools" and
+#            refuses the model. If a model you know calls tools is refused at
+#            the `tools` stage, that is a defect in the probe prompt, not in
+#            the model. Send the `tools:` and `gate:` evidence lines.
+#          - DOES A WRONG KEY LOOK LIKE A WRONG KEY? Run it once with a
+#            deliberately mangled key. The panel must say "This model provider
+#            rejected your API key", not "Your model provider could not
+#            answer". If it says the latter, the vendor's 401 body does not
+#            match `INVALID_KEY_PATTERNS` in
+#            `packages/agent/src/api-key-probe.ts` — send the log line (it is
+#            already scrubbed) and the list gets a new case.
+#          - IS THE KEY REALLY ABSENT FROM THE ERROR? Some vendors echo the key
+#            back in the 401 body. Grep the stderr log for it. Expect nothing.
+#          - DOES `contextWindow` READ `model`? The startup line must say
+#            `contextWindow: <the vendor's number> (model; remote endpoint
+#            advertised <the same number>)`. `local-ceiling` on a hosted
+#            provider would mean the endpoint was misread as loopback.
+
+#    (c) THE BANNER. Before asking anything, look at the top of the panel. It
+#        must name the vendor's host, say the screen is sent there, and say
+#        `verified` only after the probe passed. Take a screenshot: it is the
+#        one privacy claim a user reads before they consent.
+
+#    …and from inside the packaged `.app`, which is the only layout where
+#    safeStorage's Keychain item is created under Pilot's own identity:
+open "$(packaged_app)"
 ```
 
 Notes:
@@ -820,7 +914,7 @@ Also worth capturing while you are there:
 - Whether the **pointer target** is ever identified. ~~The observation
   metadata's `targetRole` stays null until PR-031 wires the question anchor~~ —
   **PR-031 wired it**, so `targetRole` is populated for a question asked with
-  the pointer inside the selected window, and step 9 is where that is checked
+  the pointer inside the selected window, and step 11b is where that is checked
   properly. The pointer *timeline* records the element on every sample either
   way; `PILOT_LOG_LEVEL=debug` shows whether grounding is degraded.
 
@@ -859,7 +953,7 @@ Also worth capturing while you are there: whether a real model calls
 `observe_screen` **at all** without being told to, and how often. Nothing here
 can answer that — the demo and the tests script the call.
 
-### What to look for in step 9 (PR-031)
+### What to look for in step 11b (PR-031)
 
 This is the first time anything in Pilot has read a **real pointer** or
 hit-tested a **real accessibility element**, and it is what the whole product
@@ -1217,6 +1311,38 @@ is a safe, visible, explained ending — but it is not §16's row, and PR-040 di
 not change it because the required-permission set is an interaction contract
 several PRs rest on. It is recorded as runbook follow-up 32.
 
+### What to look for in step 20 (PR-038)
+
+Step 17 is the first thing in this project that would **hold a secret** and the
+first that would **send a screen image off the machine**. Everything on Linux
+runs against `createRecordedApiKeyProvider` — a fake vendor in the same process
+— and against real AES-256-GCM rather than the Keychain, so what Linux cannot
+show is exactly the three things a real key and a real Mac would.
+
+Five things, in decreasing order of what they would cost if wrong:
+
+1. **Is the key really not on disk?** `grep -a` the sealed file for it. The
+   Linux run checks exactly this against a file it wrote; step 17 (a) checks it
+   against a file the Keychain sealed. If `grep` finds anything, stop and say
+   so — it is the one defect in this PR that cannot be worked around.
+2. **Does `safeStorage` work at all under the packaged app?** The startup line
+   reads `secureStorage: true|false`. False is handled — Pilot refuses to store
+   a key rather than writing plaintext, and the panel says so — but on a Mac it
+   should be true, and false is worth reporting rather than living with.
+3. **Does the capability probe agree with reality?** One text-only request, one
+   expected tool call. A real model that answers in prose is refused, and that
+   refusal would be *Pilot's* fault rather than the model's. This is the single
+   most likely thing in PR-038 to be wrong against a real provider, because the
+   recorded vendor cannot be prose-y.
+4. **Does a rejected key read as a rejected key?** The four patterns in
+   `classifyApiKeyFailure` were written against one recorded 401 body. Real
+   vendors differ. A misclassification sends the user to check their network
+   when their key is dead.
+5. **Does the banner say the right host before the first question?** It is
+   rendered from `describeModelDataDisclosure`, which fails closed — a profile
+   claiming `isRemote: false` with a non-loopback base URL is still labelled
+   remote. Worth one screenshot.
+
 ---
 
 ## 2. Blocked on Codex sign-in
@@ -1482,6 +1608,26 @@ written for the PR (`packages/agent/src/stub-openai-endpoint.ts`) which answers
 in OpenAI shapes and contains no model. What it establishes is that Pilot's
 half is right *given* a server that behaves as the OpenAI convention describes;
 whether llama.cpp does is §1 step 17 (a).
+**PR-038 changes what "blocked" means here, and it is worth being exact.** The
+API-key profile is now built and wired: `apps/desktop/src/main/index.ts` boots on
+a user-configured model whenever one is configured *and a capability probe has
+verified it*, and falls back to the faux development source otherwise, saying
+which in the startup log. So Codex sign-in is no longer the only route to a real
+model — an API key is a second one, and step 20 above is how to take it.
+
+What PR-038 did **not** do, deliberately: it registers no vendor SDK. Pi's 38
+built-in providers are one call away (`loadBuiltinApiKeyProviders()`), but
+wiring that call into the composition root was measured at **1.66 MB → 5.97 MB**
+of main bundle, because `electron.vite.config.ts` inlines everything the main
+process reaches. Which vendors a shipped Pilot carries is a packaging decision
+with a real cost, so it is PR-042's, and step 17 (b) shows the one-line change
+that tries a vendor before then.
+
+And two questions only a real key can answer, both listed in step 17: whether a
+real model answers the tool probe with a tool call rather than with prose, and
+whether a real vendor's 401 body is recognised as a rejected key. Both are
+Pilot's failure modes, not the model's, and neither can be reproduced against a
+provider Pilot wrote itself.
 
 ---
 
@@ -1618,6 +1764,12 @@ reversible; raise any that look wrong.
 | **A Codex profile asserts `supportsTools: true`; nothing verified it** (PR-037) | Pi carries no tool metadata for any model (`docs/pi-notes.md` §6.3), so this is Pilot's own claim, recorded as `'verified'` because it was set deliberately rather than defaulted. The reasoning is that every model in this catalogue is a Codex *Responses* model and the Responses API is a tool-calling API. **If the first real session shows `observe_screen` being rejected or ignored, the honest setting is `false`** and the profile falls back to the degraded, labelled mode of system-design §12 — §2 step 19 asks for exactly that observation. |
 | **The model is picked for Pilot, not chosen by the user** (PR-037) | `gpt-5.5` first, then the rest of the vision-capable catalogue in a recorded preference order; `gpt-5.3-codex-spark` is never picked because it is text-only and the capability gate would refuse it. There is no model picker in the panel — PR-038 and PR-039 own configuration UI, and adding a third one here while both are in flight would have collided in the same files three ways. `PILOT_CODEX_MODEL=gpt-5.4 pnpm dev` overrides it. **Say if you would rather choose per conversation.** |
 | **The demo is `pnpm demo:flow`, and it derives its own claims** (PR-034) | Named for what it is (the whole flow) rather than for the PR, beside `demo:observe` / `demo:look` / `demo:ask` / `demo:talk` / `demo:speak`. Two things it deliberately does not do: it does not narrate which state transitions it took — it reads them back out of the recorded `PilotViewState` path, because a demo that describes itself proves nothing — and it does not assert wall-clock numbers, which runbook cross-lane issue 7 is about. |
+| **No secure storage means no storage at all** (PR-038) | When `safeStorage.isEncryptionAvailable()` is false — a Mac with a locked login Keychain, or any build outside Electron — `createEncryptedCredentialStore` *rejects* the write with `platform-unavailable` and Pilot keeps no key. The alternatives were a plaintext file (which is the one thing system-design §13's "never logged, never persisted in plaintext" rule exists to prevent) and a silent in-memory key that vanishes on quit (which looks like working software until the user relaunches). The key can still be supplied through `PILOT_API_KEY` for a single session, and the panel says the profile is not stored. **Say if you would rather it kept an in-memory key for the session and said so** — it is one branch. |
+| **`PILOT_API_KEY` is deleted from `process.env` after it is read** (PR-038) | `openApiKeyProfileRuntime` runs in `boot()` before `platform.start()` spawns the native helper, and a child process inherits its parent's environment. Removing the variable means the helper — and any future child, and any crash reporter that dumps the environment — never sees it. It affects only this process; the user's shell is untouched. Cost worth knowing: a `process.env` reader later in the same run will not find it, which is the point. |
+| **A wrong key is *not* deleted when the provider rejects it** (PR-038) | An invalid-key failure moves the profile to `invalid-key` and stops it being used, but the stored credential stays until the user replaces it. Providers return 401 for reasons that are not "your key is wrong" — a suspended account, a regional block, a bad clock — and deleting a key the user may have to paste from a password manager on the strength of one HTTP status is not a trade Pilot should make silently. The remedy string says so. **Say if you would rather a rejection wiped the key.** |
+| **The capability probe spends one real provider request** (PR-038) | Tool support cannot be looked up — Pi's `Model` carries no tool metadata at all (`docs/pi-notes.md` §6.3) — so the only honest way to reach `toolSupport: 'verified'` is to offer a tool and see whether the model calls it. That costs one text-only request (a fixed sentence, no user or screen content) per verification, and a verification happens on selection, on a key change, and at launch. On a metered API that is a real, if tiny, cost. The alternative is the `'assumed'` default every profile carried before PR-038, which is how a user ends up with a confident answer about a screen the model never saw. **Say if you would rather the probe were opt-in.** |
+| **The profile is configured through the environment, not a settings window** (PR-038) | MVP 01's panel is a conversation surface and has no settings screen; `docs/product-spec.md` does not ask for one. `PILOT_MODEL_PROFILE` / `PILOT_API_PROVIDER` / `PILOT_API_MODEL` / `PILOT_API_KEY` are read **once** and the result persists, so the second launch needs no environment at all — the same shape as every other fixture switch in this app. A settings UI later calls `ApiKeyProfileManager.choose/saveKey/verify/forgetKey`, which are already the whole API. |
+| **No vendor SDK is bundled** (PR-038) | Measured rather than assumed: wiring `loadBuiltinApiKeyProviders()` into `main/api-key-runtime.ts` took `dist/main/index.js` from **1.66 MB to 5.97 MB**, because `electron.vite.config.ts` sets `ssr.noExternal: true` and `inlineDynamicImports: true`, so Pi's 38 built-in providers drag the Anthropic, OpenAI, Google, Mistral and Bedrock SDKs in whether or not anyone uses them. The function stays exported; the composition root does not call it. Which vendors ship is PR-042's decision, and `docs/handoff.md` §1 step 20 (b) is the one-line change that tries one before then. |
 
 ---
 
@@ -1646,6 +1798,8 @@ reversible; raise any that look wrong.
 | Phase 3 — integration (028…036) | In progress. **PR-035 is merged: interruption works in the states where it is hard, and Phase 3 has no open design question left.** `pnpm demo:interrupt-flow` interrupts a screen observation with a capture genuinely in flight, twice in quick succession, and in the window between an answer and its first spoken word — reading the result off the panel's own view stream, the `speech.output.speak` operations that crossed the framed wire, and the rejection stream. It closes runbook follow-up 14 by **aborting rather than steering**, which is a decision the user can reverse in one line (§4). No boundary was replaced and no defect was found; what it did find is that the identity guard is what keeps a `run-failed` from an interrupted tool call out of the user's face (runbook cross-lane issue 17). Its own limit is one sentence long: **no sound has ever been stopped, because no sound has ever been made** — the §17 number here is Pilot's half of the budget and is measured as a JSON round trip over a pipe (§1 step 15, §5). Persistence and the model itself are still fake. |
 | Phase 3 — integration (028…036) | **COMPLETE. PR-036 is merged: the conversation now outlives the process, and stays bounded while it does.** The durable `ConversationStore` is opened, restored and closed by the app (`main/conversation-store.ts`), so a relaunch resumes the conversation the model was having; `compaction.contextWindow` comes from the profile rather than from the model's own claim (`main/context-window.ts`); the compaction counters reach PR-010's diagnostics surface; and `clear-conversation` finally reaches the session, which drops the transcript, the summary and the SQLite pages together. `pnpm demo:memory` asks nine screen questions across two scene changes and reads the result off the requests the provider received: **at most two image blocks in any request, ever**, every replacement record past-tense and scene-stamped, three compactions visible as `context-tokens-before`/`-after`, and the conversation gone from the file after a clear. It closed runbook follow-ups 7, 9, 20, 21 and 31 and found one defect nothing else could — the SQLite backend's schema file is not bundled, so **a built app started with persistence silently disabled** (cross-lane issue 19). **Nothing has ever been persisted on macOS** (§1 step 16) and **no model has ever read a replacement record** (§2): a scripted provider cannot make a stale-screen claim, so what is proved is Pilot's input to the model, not the model's output. |
 | Phase 4 — providers (037…039) | **In progress. PR-037 is merged: the Codex subscription profile is in the shipping composition.** `PILOT_MODEL_PROFILE=codex` builds the real `openai-codex` provider — the real catalogue, Pi's real OAuth machinery, a real `0600` credential file encrypted through `safeStorage` where the platform has it — and `pnpm smoke` on the **built** app reports `ChatGPT subscription (openai-codex/gpt-5.5, vision+tools ok) — NOT SIGNED IN` beside `272000 tokens (model; remote endpoint advertised 272000)`, which is the first time PR-036's hosted "believe it" branch has been taken. Sign-in is device-code only and never binds port 1455; an unsupported model, a signed-out profile and an expired one are all refused **before** a run starts, so zero provider requests and zero screen observations; a failed token refresh reaches the user as a sentence they can act on rather than as `OAuth refresh failed for openai-codex`; and the panel gained a Model section with status, sign-in and sign-out. `pnpm demo:codex` walks all of it and then runs the MVP point-ask-hear flow on the profile. **Nobody has ever signed in, no token has ever existed and no request has ever left this machine** (§2 step 19): every OAuth endpoint is a recorded reproduction of Pi's own implementation. PR-038 and PR-039 remain. |
+| Phase 4 — providers (037…039) | Not started. PR-037 (Codex) is the one the user's decision selects. |
+| Phase 4 — providers (037…039) | In progress. **PR-038 is merged: Pilot can be configured with an API key, and it will not pretend that a configured key means a working model.** The key is sealed with Electron `safeStorage` (the macOS Keychain) into `~/Library/Application Support/Pilot/model-profile/credentials.json`, mode 600, and if `safeStorage` is unavailable Pilot stores nothing rather than falling back to plaintext. Provider and model selection read Pi's live catalogue. A four-stage capability probe decides which model is used: a text-only model is refused with **zero** provider requests, a model that will not call tools is refused after **one text-only** request, and neither ever sees an image — `CapabilityProbeOutcome.imageBlocksSent` is the literal `0` in the type. Only a probe that passed produces a `ModelSource`, so `main/index.ts` boots on the development source in every other state and logs why. An invalid key is detected both at probe time and mid-conversation, is distinguished from a rate limit and from an unreachable host, and its message is scrubbed — a 401 body that echoes the key back reaches no log, no panel and no crash dump. The panel shows where screen images go before the first question. **No API key exists in this environment, no request has ever left this machine, and `safeStorage` has never run** (§1 step 20): the vendor is `createRecordedApiKeyProvider` and the cipher is AES-256-GCM over a process-local key. No vendor SDK is bundled — measured at 1.66 MB → 5.97 MB of main bundle — so trying a real provider is the one-line change in step 20 (b), and shipping one is PR-042's. |
 | Phase 5 — hardening and release (040…044) | Not started. |
 
 Last full regression on `main` (after PR-017 and PR-022a): 997 tests across 66

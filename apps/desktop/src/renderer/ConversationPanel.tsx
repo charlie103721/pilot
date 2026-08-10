@@ -1,6 +1,10 @@
 import { useState } from 'react';
 import type { InteractionCommand } from '@pilot/platform';
-import { CONVERSATION_FIXTURES, type ConversationFixtureName } from '../ipc/schemas.js';
+import {
+  CONVERSATION_FIXTURES,
+  type ConversationFixtureName,
+  type ModelDataDisclosureView,
+} from '../ipc/schemas.js';
 import {
   conversationControl,
   type ConversationControlId,
@@ -131,6 +135,46 @@ function Disclosure({ disclosure }: { disclosure: VoiceDisclosureView }) {
           <>
             <dt>Language</dt>
             <dd>{disclosure.locale}</dd>
+          </>
+        )}
+      </dl>
+    </div>
+  );
+}
+
+/**
+ * Where the configured model sends screen images (PR-038, system-design §14).
+ *
+ * Rendered above the transcript and above the voice disclosure, because it
+ * answers the earlier question: audio disclosure is about the microphone, this
+ * is about the screen, and the screen is what Pilot is for. Every string comes
+ * from `describeModelDataDisclosure` in the main process; nothing is worded
+ * here, so the panel, the startup log and `pnpm demo:apikey` cannot drift.
+ */
+function ModelDisclosure({ disclosure }: { disclosure: ModelDataDisclosureView }) {
+  return (
+    <div
+      className={`banner ${disclosure.needsAttention ? 'banner--degraded' : 'banner--quiet'}`}
+      data-testid="model-disclosure"
+      data-remote={disclosure.sendsScreenOffDevice ? 'true' : 'false'}
+      data-verification={disclosure.verification}
+      role={disclosure.needsAttention ? 'alert' : 'note'}
+    >
+      <div className="banner__title">{disclosure.headline}</div>
+      <p className="banner__message">{disclosure.detail}</p>
+      <dl className="banner__meta">
+        <dt>Screen images</dt>
+        <dd data-testid="model-disclosure-destination">
+          {disclosure.sendsScreenOffDevice
+            ? `sent to ${disclosure.destination}`
+            : `stay on this Mac (${disclosure.destination})`}
+        </dd>
+        <dt>Model checked</dt>
+        <dd data-testid="model-disclosure-verification">{disclosure.verification}</dd>
+        {disclosure.credentialSummary === null ? null : (
+          <>
+            <dt>Credential</dt>
+            <dd data-testid="model-disclosure-credential">{disclosure.credentialSummary}</dd>
           </>
         )}
       </dl>
@@ -314,6 +358,8 @@ export function ConversationPanel({
           </button>
         </div>
       )}
+
+      {view.modelDisclosure === null ? null : <ModelDisclosure disclosure={view.modelDisclosure} />}
 
       {view.disclosure === null ? null : <Disclosure disclosure={view.disclosure} />}
 

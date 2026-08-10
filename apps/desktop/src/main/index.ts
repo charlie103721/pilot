@@ -16,6 +16,9 @@ import { createAgentRuntime } from './agent-runtime.js';
 import { resolveLocalModelSource } from './local-model.js';
 import { CodexGate } from './codex-gate.js';
 import { createCodexRuntime, createSafeStorageProtector } from './codex-runtime.js';
+// PR-038 (API-key provider profile).
+import { openApiKeyProfileRuntime } from './api-key-runtime.js';
+import { createSafeStorageCipher } from './safe-storage.js';
 import { ConversationGate } from './conversation-gate.js';
 import { createLiveConversationDriver } from './conversation-driver.js';
 import {
@@ -216,23 +219,39 @@ if (!singleInstance.isPrimary) {
       logger,
     });
 
-    // The model. Three sources, tried in order, all satisfying `ModelSource`
-    // and nothing else — which is why this is a `??` chain and not a branch
-    // through the rest of the composition (runbook follow-up 22).
+    // The model. Four sources, tried in order, all satisfying `ModelSource` and
+    // nothing else — which is why this is a `??` chain and not a branch through
+    // the rest of the composition (runbook follow-up 22).
     //
     //  1. PR-037: `PILOT_MODEL_PROFILE=codex` selects the ChatGPT subscription
     //     profile. Explicit, so it wins.
-    //  2. PR-039: `PILOT_LOCAL_BASE_URL` points Pilot at the user's own
+    //  2. PR-038: a verified API-key profile. `source` is null unless a
+    //     capability probe has passed, so a merely *configured* profile never
+    //     reaches the agent.
+    //  3. PR-039: `PILOT_LOCAL_BASE_URL` points Pilot at the user's own
     //     OpenAI-compatible endpoint, health- and capability-probed before a
     //     session exists (`main/local-model.ts`).
-    //  3. Otherwise Pi's own faux provider behind a real `Models` collection
+    //  4. Otherwise Pi's own faux provider behind a real `Models` collection
     //     (runbook amendments 2 and 7).
     //
     // The default is still the faux one, because **no sign-in has happened**
     // (docs/handoff.md §2) and a build that silently switched to a provider it
-    // has no credential for would answer nothing at all. Neither real profile
-    // ever falls back silently: a configured-but-unusable one refuses with its
+    // has no credential for would answer nothing at all. No real profile ever
+    // falls back silently: a configured-but-unusable one refuses with its
     // reason rather than quietly becoming the development model.
+    //
+    // ADDING A PROFILE: open your runtime here and add one `??` term below, in
+    // the same shape. Nothing else in this file has to change.
+    //
+    // The API-key runtime opens FIRST, before anything that could spawn a child
+    // process: it reads `PILOT_API_KEY` once and then *removes it from
+    // `process.env`*, so the native helper started later in `start()` cannot
+    // inherit a credential.
+    const apiKeyProfile = await openApiKeyProfileRuntime({
+      userDataPath: app.getPath('userData'),
+      cipher: createSafeStorageCipher(),
+      logger,
+    });
     const codex = createCodexRuntime({
       env: process.env,
       userDataDirectory: app.getPath('userData'),
@@ -246,6 +265,7 @@ if (!singleInstance.isPrimary) {
     const local = await resolveLocalModelSource({ env: process.env, logger });
     const modelSource =
       codex.source ??
+      apiKeyProfile.source ??
       local.source ??
       createDevelopmentModelSource({
         fixture: resolveDevelopmentModelFixture(process.env['PILOT_MODEL_FIXTURE']),
@@ -253,7 +273,24 @@ if (!singleInstance.isPrimary) {
     // Logged rather than assumed: a build that is not talking to a real model —
     // or that is configured for one it has not signed in to — must say so where
     // anyone can see it.
-    logger.info('model source', { description: modelSource.description });
+    //
+    // NOTE THE FIELD NAMES. `@pilot/shared`'s redactor matches any key
+    // containing `api[-_]?key` and replaces its value with
+    // `[redacted:credential]` — correct, and it made this line unreadable when
+    // it was called `apiKeyProfile`. Same trap as `main/conversation-store.ts`'s
+    // `restored` (not `restoredMessages`).
+    logger.info('model source', {
+      description: modelSource.description,
+      profile: codex.source
+        ? 'codex'
+        : apiKeyProfile.source
+          ? 'api-key'
+          : local.source
+            ? 'local'
+            : 'development',
+      // Why the user-configured API-key profile is not in use, when it is not.
+      profileReason: apiKeyProfile.reason === '' ? 'in use' : apiKeyProfile.reason,
+    });
 
     // The platform (PR-028). One decision, in one place: the real macOS adapters
     // when there is a helper to talk to, the fakes otherwise, and the reason
@@ -612,9 +649,30 @@ if (!singleInstance.isPrimary) {
         return speech === undefined ? {} : { speech };
       })(),
       demoFixtures: true,
+      // PR-038, system-design §14: the user is shown where their screen goes
+      // *before* an observation. Null on a build with no configured profile —
+      // the development source is not a third party and claiming a destination
+      // for it would be a lie in the other direction.
+      modelDisclosure: apiKeyProfile.disclosure,
       now: () => replayClock.now(),
       logger,
     });
+
+    // PR-038: invalid-key recovery from a live conversation, not only from the
+    // probe. A key revoked between the probe and the third question fails in
+    // the middle of an answer; feeding that failure back is what stops the app
+    // continuing to present a model it can no longer reach, and what changes
+    // the banner from "Pilot has confirmed this model" to a remedy.
+    const apiKeyManager = apiKeyProfile.manager;
+    if (apiKeyManager !== null) {
+      agentRuntime.session.subscribe((event) => {
+        if (event.type !== 'run-failed') {
+          return;
+        }
+        const status = apiKeyManager.noteRunFailure(event.error.message);
+        conversation.setModelDisclosure(status.disclosure);
+      });
+    }
     // §17's three capture-side numbers — capture-to-observation latency, image
     // bytes and the active image count — are the ones PR-010 deliberately left to
     // this PR, because none of them can be seen from the view-state stream.

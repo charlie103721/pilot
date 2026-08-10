@@ -46,6 +46,7 @@ const CONVERSATION_GATE: ConversationGateState = {
   diagnosticsVisible: false,
   demoFixtures: false,
   fixture: null,
+  modelDisclosure: null,
   telemetry: { samples: [], dropped: 0, capacity: 128, recorded: 0 },
 };
 

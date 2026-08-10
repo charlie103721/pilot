@@ -290,4 +290,42 @@ describe('conversation gate — the wire', () => {
 
     await expect(gate.act({ type: 'refresh' })).rejects.toThrow(/disposed/i);
   });
+
+  // PR-038 (API-key provider profile). Appended, additive: nothing above
+  // changed, and the new member is `modelDisclosure`.
+  it('carries the model’s remote-data label, and republishes when it changes', () => {
+    const { gate } = conversationHarness();
+    expect(gate.snapshot().modelDisclosure).toBeNull();
+
+    const seen: (string | null)[] = [];
+    gate.subscribe((state) => seen.push(state.modelDisclosure?.verification ?? null));
+
+    gate.setModelDisclosure({
+      sendsScreenOffDevice: true,
+      destination: 'api.recorded-vendor.example',
+      authMode: 'api-key',
+      verification: 'verified',
+      headline: 'Screen images are sent to api.recorded-vendor.example',
+      detail: 'Screen images leave this Mac.',
+      credentialSummary: 'Your API key is stored in the macOS Keychain.',
+      needsAttention: true,
+    });
+    expect(gate.snapshot().modelDisclosure?.verification).toBe('verified');
+    // It has to survive the wire, which is the only reason it is a schema.
+    expect(conversationGateStateSchema.parse(gate.snapshot()).modelDisclosure).not.toBeNull();
+
+    // An invalid key mid-conversation takes the claim back; the panel must be
+    // told rather than left showing "Pilot has confirmed this model".
+    gate.setModelDisclosure({
+      sendsScreenOffDevice: true,
+      destination: 'api.recorded-vendor.example',
+      authMode: 'api-key',
+      verification: 'unverified',
+      headline: 'Screen images are sent to api.recorded-vendor.example',
+      detail: 'Pilot has not yet confirmed this model.',
+      credentialSummary: null,
+      needsAttention: true,
+    });
+    expect(seen).toEqual(['verified', 'unverified']);
+  });
 });

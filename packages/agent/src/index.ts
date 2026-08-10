@@ -24,3 +24,11 @@ export * from './durable-transcript.js';
 export * from './conversation-store.js';
 export * from './session-backends.js';
 export * from './system-prompt.js';
+// PR-038 (API-key provider profile). Additive: four new files, no existing
+// export changed. Kept in one contiguous block so a three-way merge with
+// PR-037/PR-039 resolves as a union (runbook cross-lane issue 8).
+export * from './api-key-credentials.js';
+export * from './api-key-probe.js';
+export * from './api-key-provider-fixture.js';
+export * from './api-key-profile.js';
+export * from './data-disclosure.js';

@@ -22,6 +22,7 @@ import type {
   ConversationAction,
   ConversationFixtureName,
   ConversationGateState,
+  ModelDataDisclosureView,
   PushToTalk,
 } from '../ipc/schemas.js';
 import { TelemetryRing, type TelemetryRingOptions } from './telemetry.js';
@@ -82,6 +83,13 @@ export interface ConversationGateOptions {
   readonly speech?: SpeechDisclosureSource;
   /** True when the shell can replay fixture conversations from the panel. */
   readonly demoFixtures?: boolean;
+  /**
+   * Where screen images go for the configured model (PR-038, system-design
+   * §14). Omit in a build that has not resolved a model profile; the panel then
+   * shows no model banner. Update it with
+   * {@link ConversationGate.setModelDisclosure} when the profile changes.
+   */
+  readonly modelDisclosure?: ModelDataDisclosureView | null;
   readonly telemetry?: TelemetryRingOptions;
   readonly logger?: Logger;
   readonly now?: () => number;
@@ -160,6 +168,8 @@ export class ConversationGate {
   #pushToTalk: PushToTalk | null = null;
   #disclosure: ConversationGateState['disclosure'] = null;
   #fixture: ConversationFixtureName | null = null;
+  /** PR-038. Set at construction and whenever the model profile changes. */
+  #modelDisclosure: ModelDataDisclosureView | null = null;
   #disposed = false;
 
   /** Transition bookkeeping for the derived timings. Numbers only. */
@@ -177,6 +187,7 @@ export class ConversationGate {
     this.#hotkey = options.hotkey;
     this.#speech = options.speech;
     this.#demoFixtures = options.demoFixtures ?? false;
+    this.#modelDisclosure = options.modelDisclosure ?? null;
     this.#logger = options.logger ?? nullLogger;
     this.#now = options.now ?? (() => Date.now());
     this.telemetry = new TelemetryRing({
@@ -221,7 +232,20 @@ export class ConversationGate {
       disclosure: this.#disclosure,
       fixture: this.#fixture,
       demoFixtures: this.#demoFixtures,
+      modelDisclosure: this.#modelDisclosure,
     };
+  }
+
+  /**
+   * Replaces the model banner (PR-038).
+   *
+   * Called when a profile is verified, rejected, or taken out of service by an
+   * invalid key mid-conversation — the banner must never keep saying "Pilot has
+   * confirmed this model" about a model that has since started refusing.
+   */
+  setModelDisclosure(disclosure: ModelDataDisclosureView | null): void {
+    this.#modelDisclosure = disclosure;
+    this.#publish();
   }
 
   subscribe(listener: ConversationGateListener): () => void {

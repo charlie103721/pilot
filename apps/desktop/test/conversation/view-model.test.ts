@@ -47,6 +47,7 @@ const BASE_GATE: ConversationGateState = {
   disclosure: null,
   fixture: null,
   demoFixtures: true,
+  modelDisclosure: null,
 };
 
 function view(patch: Partial<PilotViewState> = {}, gate: Partial<ConversationGateState> = {}) {

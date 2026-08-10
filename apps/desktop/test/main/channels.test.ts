@@ -417,6 +417,7 @@ describe('conversation gate state schema', () => {
     disclosure: null,
     fixture: 'spoken-question',
     demoFixtures: true,
+    modelDisclosure: null,
   };
 
   it('accepts a fully populated state', () => {

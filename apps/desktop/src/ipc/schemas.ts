@@ -564,6 +564,37 @@ export const conversationFixtureSchema = z.enum(CONVERSATION_FIXTURES);
  * renderer cannot know (whether the shortcut works, and what the recogniser
  * would do with the audio), and the demo switches.
  */
+/**
+ * Where the configured model sends screen images, and whether Pilot has
+ * confirmed that model works at all (PR-038; system-design §14).
+ *
+ * > "Show whether the configured provider is local or remote **before
+ * > observation begins**."
+ *
+ * Built by `describeModelDataDisclosure` in `@pilot/agent`, which is
+ * provider-neutral on purpose: PR-039's local profile is the contrast case and
+ * fills this in with `sendsScreenOffDevice: false`, and PR-037's subscription
+ * profile with a different `credentialSummary`. **No field here can hold a
+ * credential** — every string is built from a host name, a provider id, a model
+ * id and a fixed vocabulary, the same argument `CredentialStatus` rests on.
+ */
+export const modelDataDisclosureSchema = z.strictObject({
+  /** The one bit a user has to act on. Fails closed. */
+  sendsScreenOffDevice: z.boolean(),
+  /** Host name, or the provider id when there is no base URL. */
+  destination: z.string().min(1),
+  authMode: z.enum(['subscription', 'api-key', 'local']),
+  verification: z.enum(['verified', 'unverified', 'rejected']),
+  headline: z.string().min(1),
+  detail: z.string().min(1),
+  /** Where the credential lives, in words. Null when there is none. */
+  credentialSummary: z.string().nullable(),
+  /** True when the banner should be loud: remote, or not actually usable. */
+  needsAttention: z.boolean(),
+});
+
+export type ModelDataDisclosureView = z.infer<typeof modelDataDisclosureSchema>;
+
 export const conversationGateStateSchema = z.strictObject({
   telemetry: telemetryBufferSchema,
   /** Whether the developer diagnostics surface is open. Off by default. */
@@ -581,6 +612,12 @@ export const conversationGateStateSchema = z.strictObject({
   fixture: conversationFixtureSchema.nullable(),
   /** True when this build can replay fixture conversations from the panel. */
   demoFixtures: z.boolean(),
+  /**
+   * Where screen images go for the configured model, or null when the model
+   * profile has said nothing (PR-038). Additive: every existing member above is
+   * untouched.
+   */
+  modelDisclosure: modelDataDisclosureSchema.nullable(),
 });
 
 export type ConversationGateState = z.infer<typeof conversationGateStateSchema>;

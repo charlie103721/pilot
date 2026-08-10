@@ -47,6 +47,9 @@ export const INITIAL_CONVERSATION_GATE_STATE: ConversationGateState = {
   disclosure: null,
   fixture: null,
   demoFixtures: false,
+  // PR-038. Null until the main process says which model is configured; a
+  // panel that has not been told must show nothing rather than guess "local".
+  modelDisclosure: null,
 };
 
 export function useConversation(): ConversationShell {
