@@ -210,6 +210,10 @@ function beginListening(context: InteractionContext, env: TransitionEnv): Transi
     patch: {
       ...clearedActivity(),
       activeUtteranceId: utteranceId,
+      // Push-to-talk down (system-design §6). The end is stamped when the
+      // transcript is accepted; PR-024 anchors the question on it.
+      utteranceStartedAt: env.now,
+      utteranceEndedAt: null,
       liveTranscript: '',
       lastError: null,
     },
@@ -223,13 +227,26 @@ function beginQuestion(
   env: TransitionEnv,
   extraEffects: readonly InteractionEffect[] = [],
 ): TransitionApplication {
+  // A typed question has no listening phase, and a question that supersedes a
+  // previous one must not inherit the previous utterance's interval: the window
+  // PR-024 queries the pointer timeline with has to belong to *this* utterance.
+  const spoken = context.activeUtteranceId === utteranceId;
+  const startedAt = spoken ? (context.utteranceStartedAt ?? env.now) : env.now;
+  // Push-to-talk up when there was one; otherwise now — a transcript that
+  // finalises before the key is released ends the utterance where it lands.
+  const askedAt = spoken ? (context.utteranceEndedAt ?? env.now) : env.now;
   return {
     to: 'thinking',
-    effects: [...extraEffects, { type: 'submit-question', utteranceId, text }],
+    effects: [
+      ...extraEffects,
+      { type: 'submit-question', utteranceId, text, utteranceStartedAt: startedAt, askedAt },
+    ],
     patch: {
       ...clearedActivity(),
       activeUtteranceId: utteranceId,
       finalizedUtteranceId: utteranceId,
+      utteranceStartedAt: startedAt,
+      utteranceEndedAt: askedAt,
       transcript: withUserText(context.transcript, utteranceId, text, env.now),
       lastError: null,
     },
@@ -532,11 +549,16 @@ export const GLOBAL_TRANSITIONS: TransitionRow = {
   ),
   'push-to-talk-up': accept(
     { to: ['transcribing'], mayReject: ['illegal-transition'] },
-    (context) =>
+    (context, _input, env) =>
       context.state === 'listening' && context.activeUtteranceId !== null
         ? {
             to: 'transcribing',
             effects: [{ type: 'stop-listening', utteranceId: context.activeUtteranceId }],
+            // Push-to-talk up is the end of the utterance (system-design §6),
+            // and therefore the instant PR-024 anchors the pointer on. The
+            // transcript lands later — recognition takes time, and by then the
+            // user has usually moved the pointer somewhere else.
+            patch: { utteranceEndedAt: env.now },
           }
         : { reject: 'illegal-transition' },
   ),

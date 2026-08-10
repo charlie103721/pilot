@@ -4,6 +4,8 @@ import {
   MVP_SCREEN_CONTEXT_POLICY,
   MVP_SCREEN_POLICY,
   PilotError,
+  UNKNOWN_NORMALIZED_POINT,
+  UNKNOWN_SCENE_ID,
   asDisplayId,
   asSceneId,
   asWindowId,
@@ -12,6 +14,7 @@ import {
   createIdFactory,
   deserializePilotError,
   envelopePointerInsideWindow,
+  envelopePointerKnown,
   isPointerInsideWindow,
   isSameSceneLineage,
   isSceneObserved,
@@ -21,6 +24,7 @@ import {
   sceneStateSchema,
   supportsVisualConversation,
   toPilotError,
+  type QuestionAnchor,
   type SceneState,
   type WindowGeometry,
 } from '@pilot/shared';
@@ -174,6 +178,41 @@ describe('question envelope', () => {
       pointer: { normalizedX: 1.4, normalizedY: 0.5 },
     });
     expect(envelopePointerInsideWindow(envelope)).toBe(false);
+  });
+
+  /** PR-024 added `anchor`; the field is optional so PR-001 envelopes still parse. */
+  it('treats the anchor as additive', () => {
+    const withoutAnchor = questionEnvelopeSchema.parse({
+      utteranceId: 'utt-0003',
+      transcript: 'Still valid?',
+      conversationId: 'conv-0001',
+      scene: { id: 'scene-0001', revision: 4, windowTitle: 'Billing' },
+      pointer: { normalizedX: 0.5, normalizedY: 0.5 },
+    });
+    expect(withoutAnchor.anchor).toBeUndefined();
+    expect(envelopePointerKnown(withoutAnchor)).toBe(true);
+
+    const anchor: QuestionAnchor = {
+      grounding: 'pointer-unknown',
+      utteranceStartedAt: 1_000,
+      utteranceEndedAt: 2_000,
+      pointerSampleCount: 0,
+      pointerCrossedWindowBorder: false,
+      sceneRevisedDuringUtterance: false,
+      observationStale: true,
+      targetAvailability: 'none',
+    };
+    const unknownPointer = questionEnvelopeSchema.parse({
+      utteranceId: 'utt-0004',
+      transcript: 'Where am I pointing?',
+      conversationId: 'conv-0001',
+      scene: { id: UNKNOWN_SCENE_ID, revision: 0, windowTitle: '' },
+      pointer: { ...UNKNOWN_NORMALIZED_POINT },
+      anchor,
+    });
+    // The sentinel is never mistaken for a position.
+    expect(envelopePointerKnown(unknownPointer)).toBe(false);
+    expect(envelopePointerInsideWindow(unknownPointer)).toBe(false);
   });
 });
 

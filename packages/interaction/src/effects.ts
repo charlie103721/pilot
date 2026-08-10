@@ -24,6 +24,14 @@ export type InteractionEffect =
       readonly type: 'submit-question';
       readonly utteranceId: UtteranceId;
       readonly text: string;
+      /** Push-to-talk down, or the moment a typed question was started (§6). */
+      readonly utteranceStartedAt: number;
+      /**
+       * Utterance end. PR-024 anchors the envelope's pointer here, so it is
+       * stamped by the machine's injected clock at transition time rather than
+       * read again when the effect is finally performed.
+       */
+      readonly askedAt: number;
     }
   /**
    * Stop or steer the active agent run. `runId` is `null` when a question was
