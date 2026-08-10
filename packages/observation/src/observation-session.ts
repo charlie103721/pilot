@@ -29,6 +29,11 @@ import type {
   ObservationCore,
   PointerIngestResult,
 } from './observation-core.js';
+import {
+  toCaptureOptions,
+  toContentFingerprintConfig,
+  type ScreenContextPolicy,
+} from './screen-policy.js';
 import type { SceneTransition } from './scene-tracker.js';
 
 /**
@@ -69,6 +74,12 @@ export interface ObservationSessionOptions {
   readonly accessibility?: AccessibilityAdapter;
   readonly windows?: WindowAdapter;
   readonly logger?: Logger;
+  /**
+   * Screen policy (PR-017). When given it supplies the capture parameters and
+   * the content-fingerprint tuning; explicit `capture`/`fingerprint` still win.
+   * Retention bounds belong to the core, which takes the same policy.
+   */
+  readonly policy?: ScreenContextPolicy;
   /** Tuning for the content fingerprint rule. */
   readonly fingerprint?: ContentFingerprintConfig;
   /** Capture parameters passed to the adapter. Defaults to the MVP policy. */
@@ -124,6 +135,7 @@ export class ObservationSession {
   readonly #core: ObservationCore;
   readonly #clock: Clock;
   readonly #logger: Logger;
+  readonly #policy: ScreenContextPolicy | null;
   readonly #capture: CaptureOptions;
   readonly #fingerprinter: ContentFingerprinter;
   readonly #observation: ObservationAdapter | null;
@@ -148,8 +160,14 @@ export class ObservationSession {
     this.#core = options.core;
     this.#clock = options.clock;
     this.#logger = options.logger ?? nullLogger;
-    this.#capture = options.capture ?? DEFAULT_CAPTURE;
-    this.#fingerprinter = new ContentFingerprinter(options.fingerprint ?? {});
+    this.#policy = options.policy ?? null;
+    this.#capture =
+      options.capture ??
+      (options.policy === undefined ? DEFAULT_CAPTURE : toCaptureOptions(options.policy));
+    this.#fingerprinter = new ContentFingerprinter(
+      options.fingerprint ??
+        (options.policy === undefined ? {} : toContentFingerprintConfig(options.policy)),
+    );
     this.#observation = options.observation ?? null;
     this.#accessibility = options.accessibility ?? null;
     this.#windows = options.windows ?? null;
@@ -167,6 +185,16 @@ export class ObservationSession {
 
   get fingerprinter(): ContentFingerprinter {
     return this.#fingerprinter;
+  }
+
+  /** Capture parameters the adapter was started with, bounded by policy. */
+  get capture(): CaptureOptions {
+    return this.#capture;
+  }
+
+  /** The screen policy in force, when one was injected. */
+  get policy(): ScreenContextPolicy | null {
+    return this.#policy;
   }
 
   /** The window the session is observing, or `null`. */
