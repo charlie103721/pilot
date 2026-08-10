@@ -315,6 +315,16 @@ written blind per amendment 8).
    after merging. PR-004's agent reported lint passing, and in its isolated
    worktree that was true — the failure only appeared with other lanes running.
 
+### Pending cross-lane follow-ups
+
+Open items a later PR must close. Each was raised by the lane that found it.
+
+| # | Item | Must be closed by |
+| --- | --- | --- |
+| 1 | **PR-029 must pass `renderAnchoredQuestionEnvelope`** (exported from `@pilot/interaction`) as `PilotSessionOptions.renderEnvelope`, or teach `packages/agent`'s `renderQuestionEnvelope` about `anchor`. PR-024 deliberately did not edit the agent renderer because that lane was running in parallel. Left undone, an unknown pointer prints to the model as `-1.000, -1.000` — a coordinate the model would reasonably treat as real. | PR-029 |
+| 2 | **`QuestionEnvelope.pointer` uses a sentinel, not `null`.** system-design §8 types it as a required numeric pair, so "no pointer was recorded" is carried as `UNKNOWN_NORMALIZED_POINT` (`-1,-1`, deliberately outside `[0,1]`) plus `grounding: 'pointer-unknown'`, read through `envelopePointerKnown()`. Making it nullable is the cleaner shape and needs a coordinated change across two readers. | PR-029 or a focused contract PR |
+| 3 | **`QuestionAnchorSource` is declared on the interaction side** because no contract exposed scene plus pointer-by-instant/interval to that lane. It mirrors `PointerTimeline.select`/`.between` including the tie-break, so PR-031's adapter is the identity function. If it belongs on `ScreenContextService` instead, moving it is mechanical. | PR-031 |
+
 ## 9. Quick start for a new session
 
 1. Read this file, then `docs/implementation.md`, then `dp/m1.md`.

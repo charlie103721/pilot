@@ -4,9 +4,14 @@ import {
   type ObservationId,
   type ObservedWindow,
   type QuestionEnvelope,
+  type SceneState,
 } from '@pilot/shared';
 import type {
   ObservationControlPort,
+  PointerAnchorQuery,
+  PointerAnchorSample,
+  PointerAnchorSelection,
+  QuestionAnchorSource,
   QuestionEnvelopeFactory,
   QuestionEnvelopeRequest,
 } from './ports.js';
@@ -64,6 +69,83 @@ export class FakeQuestionEnvelopeFactory implements QuestionEnvelopeFactory {
           : { targetLabel: this.#options.targetLabel }),
       },
     });
+  }
+}
+
+export interface FakeQuestionAnchorSourceOptions {
+  readonly scene?: SceneState | null;
+  /** Recorded pointer samples, oldest first. See `./recordings.ts`. */
+  readonly samples?: readonly PointerAnchorSample[];
+  /** Default tolerance when a query does not give one. */
+  readonly maxSkewMs?: number;
+}
+
+/**
+ * A {@link QuestionAnchorSource} over a recorded pointer timeline.
+ *
+ * Selection semantics are copied from `PointerTimeline.select` in
+ * `@pilot/observation` — nearest sample, ties resolving to the earlier one — so
+ * the envelope PR-024 builds against a recording is the envelope it will build
+ * against the live timeline. Nothing here retains, or can retain, a frame.
+ */
+export class FakeQuestionAnchorSource implements QuestionAnchorSource {
+  readonly #scene: SceneState | null;
+  readonly #samples: readonly PointerAnchorSample[];
+  readonly #maxSkewMs: number;
+
+  constructor(options: FakeQuestionAnchorSourceOptions = {}) {
+    this.#scene = options.scene ?? null;
+    this.#samples = options.samples ?? [];
+    this.#maxSkewMs = options.maxSkewMs ?? Number.POSITIVE_INFINITY;
+  }
+
+  scene(): SceneState | null {
+    return this.#scene;
+  }
+
+  pointerAt(at: number, query: PointerAnchorQuery = {}): PointerAnchorSelection {
+    const direction = query.direction ?? 'any';
+    const maxSkewMs = query.maxSkewMs ?? this.#maxSkewMs;
+
+    let best: PointerAnchorSample | undefined;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (const sample of this.#samples) {
+      if (direction === 'at-or-before' && sample.at > at) {
+        continue;
+      }
+      if (direction === 'at-or-after' && sample.at < at) {
+        continue;
+      }
+      const distance = Math.abs(sample.at - at);
+      if (distance < bestDistance) {
+        best = sample;
+        bestDistance = distance;
+      }
+    }
+
+    if (best === undefined) {
+      return {
+        found: false,
+        reason: this.#samples.length === 0 ? 'empty' : 'no-sample-in-direction',
+        nearestDistanceMs: null,
+        sampleCount: this.#samples.length,
+      };
+    }
+    if (bestDistance > maxSkewMs) {
+      return {
+        found: false,
+        reason: 'out-of-range',
+        nearestDistanceMs: bestDistance,
+        sampleCount: this.#samples.length,
+      };
+    }
+    return { found: true, sample: best, skewMs: best.at - at, distanceMs: bestDistance };
+  }
+
+  pointerBetween(from: number, to: number): readonly PointerAnchorSample[] {
+    const start = Math.min(from, to);
+    const end = Math.max(from, to);
+    return this.#samples.filter((sample) => sample.at >= start && sample.at <= end);
   }
 }
 

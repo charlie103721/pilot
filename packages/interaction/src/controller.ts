@@ -362,6 +362,11 @@ export class PilotInteractionController implements InteractionController {
           conversationId: this.#machine.context.conversationId,
           transcript: effect.text,
           selectedWindow: this.#machine.context.selectedWindow,
+          // Stamped by the machine's clock at transition time. Effects run on a
+          // promise chain, so reading a clock here would anchor the question to
+          // whenever the queue drained instead of to the utterance.
+          utteranceStartedAt: effect.utteranceStartedAt,
+          askedAt: effect.askedAt,
         });
         await this.#agent.submit(envelope);
         return;

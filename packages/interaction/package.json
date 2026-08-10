@@ -20,7 +20,8 @@
     "node": ">=24"
   },
   "scripts": {
-    "demo": "node ./dist/demo-cli.js"
+    "demo": "node ./dist/demo-cli.js",
+    "demo:envelope": "node ./dist/demo-envelope-cli.js"
   },
   "dependencies": {
     "@pilot/platform": "workspace:*",
