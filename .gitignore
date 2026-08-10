@@ -3,3 +3,6 @@ dist/
 coverage/
 *.tsbuildinfo
 .DS_Store
+
+# Transient git worktrees used by parallel agent sessions.
+.claude/worktrees/
