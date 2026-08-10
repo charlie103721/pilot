@@ -51,6 +51,16 @@ const workspaceAliases = [
     find: '@pilot/interaction',
     replacement: fromApp('../../packages/interaction/src/index.ts'),
   },
+  {
+    // PR-029: the main process builds a real `PiAgentSession`. This pulls
+    // `@earendil-works/pi-agent-core` and `@earendil-works/pi-ai` into the main
+    // bundle, which is what `ssr.noExternal` below is for — the packaged asar
+    // ships no `node_modules`. It is **main-process only**: nothing in the
+    // renderer imports it, and nothing should, so a Pi type never reaches
+    // Chromium.
+    find: '@pilot/agent',
+    replacement: fromApp('../../packages/agent/src/index.ts'),
+  },
   { find: '@pilot/shared', replacement: fromApp('../../packages/shared/src/index.ts') },
 ];
 

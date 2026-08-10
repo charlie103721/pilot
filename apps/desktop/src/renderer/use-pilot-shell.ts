@@ -2,13 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toPilotError, type SerializedPilotError } from '@pilot/shared';
 import type { InteractionCommand, PilotViewState } from '@pilot/platform';
 import {
-  demoScenarioChannel,
   interactionDispatchChannel,
   panelSetVisibleChannel,
   viewStateChangedEvent,
   viewStateGetChannel,
 } from '../ipc/channels.js';
-import type { ViewScenario } from '../ipc/schemas.js';
 import { BRIDGE_MISSING_ERROR, PilotClient } from './ipc-client.js';
 
 /**
@@ -28,7 +26,6 @@ export interface PilotShell {
   /** Failure of the most recent command, cleared when the next one succeeds. */
   readonly commandError: SerializedPilotError | null;
   dispatch(command: InteractionCommand): void;
-  applyScenario(scenario: ViewScenario): void;
   setPanelVisible(visible: boolean): void;
 }
 
@@ -109,13 +106,6 @@ export function usePilotShell(): PilotShell {
     [run],
   );
 
-  const applyScenario = useCallback(
-    (scenario: ViewScenario) => {
-      run((connected) => connected.invoke(demoScenarioChannel, scenario));
-    },
-    [run],
-  );
-
   const setPanelVisible = useCallback(
     (visible: boolean) => {
       run(async (connected) => {
@@ -125,5 +115,5 @@ export function usePilotShell(): PilotShell {
     [run],
   );
 
-  return { status, view, commandError, dispatch, applyScenario, setPanelVisible };
+  return { status, view, commandError, dispatch, setPanelVisible };
 }

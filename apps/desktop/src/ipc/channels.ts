@@ -18,7 +18,6 @@ import {
   permissionGateStateSchema,
   pilotViewStateSchema,
   setPanelVisibleSchema,
-  viewScenarioSchema,
   windowActionSchema,
   windowDemoEventSchema,
   windowGateStateSchema,
@@ -86,21 +85,6 @@ export const panelSetVisibleChannel = defineChannel({
   direction: 'renderer-to-main',
   request: setPanelVisibleSchema,
   response: panelVisibilitySchema,
-});
-
-/**
- * Drives the fake shell into a named visible state. The real states come from
- * the interaction lane; this channel goes away when PR-029 replaces the fake
- * controller with `PilotInteractionController`. PR-010 kept it: a *single*
- * forced state and a replayed conversation (`pilot:demo/conversation`) answer
- * different questions, and the first is still the only way to check one state's
- * rendering in isolation.
- */
-export const demoScenarioChannel = defineChannel({
-  name: 'pilot:demo/apply-scenario',
-  direction: 'renderer-to-main',
-  request: viewScenarioSchema,
-  response: pilotViewStateSchema,
 });
 
 /** Current permission state, read on mount and whenever the panel reopens. */
@@ -264,7 +248,6 @@ export const REQUEST_CHANNELS = [
   windowsActChannel,
   conversationGetChannel,
   conversationActChannel,
-  demoScenarioChannel,
   demoPermissionFixtureChannel,
   demoWindowEventChannel,
   demoConversationChannel,

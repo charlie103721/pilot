@@ -1,19 +1,22 @@
+import { asConversationId } from '@pilot/shared';
 import {
-  FakeInteractionController,
+  FakeAgentSession,
   FakePermissionAdapter,
   FakeWindowAdapter,
   FIXTURE_WINDOW_RETINA,
   FIXTURE_WINDOW_SECONDARY,
 } from '@pilot/platform/fakes';
+import type { PilotInteractionController } from '@pilot/interaction';
 import type { PermissionFixtureName } from '../ipc/schemas.js';
 import { PermissionGate } from '../main/permission-gate.js';
 import { createPermissionFixtureSource } from '../main/permission-fixtures.js';
 import { createSettingsShortcut } from '../main/settings-shortcut.js';
 import { WindowGate } from '../main/window-gate.js';
 import {
-  createFakeObservationInteraction,
-  createFakeWindowDemoDriver,
-} from '../main/window-feed.js';
+  createInteractionRuntime,
+  createObservationInteraction,
+} from '../main/interaction-runtime.js';
+import { createFakeWindowDemoDriver } from '../main/window-demo.js';
 import { buildPermissionOnboardingView } from '../permissions/view-model.js';
 import {
   buildObservationView,
@@ -34,6 +37,12 @@ import {
  * It also runs the two sequences a static fixture cannot show: the selected
  * window closing mid-observation (system-design §16) and the selected window
  * being retitled while Pilot is watching it.
+ *
+ * Since PR-029 the interaction side is the **real** controller, so what answers
+ * `window-closed` here is `@pilot/interaction`'s transition table rather than
+ * PR-009's hand-written copy of two of its rows. The agent behind it is
+ * `FakeAgentSession`: this walkthrough asks no questions, and a faux provider
+ * would only add noise to a picture about capture.
  */
 
 function pad(text: string, width: number): string {
@@ -45,7 +54,7 @@ interface Rig {
   readonly permissionAdapter: FakePermissionAdapter;
   readonly windows: WindowGate;
   readonly adapter: FakeWindowAdapter;
-  readonly controller: FakeInteractionController;
+  readonly controller: PilotInteractionController;
   readonly demo: ReturnType<typeof createFakeWindowDemoDriver>;
   render(lines: string[]): void;
 }
@@ -58,11 +67,16 @@ function rig(fixture: PermissionFixtureName): Rig {
     fixtures: createPermissionFixtureSource(permissionAdapter, fixture),
     now: () => 1_700_000_000_000,
   });
-  const controller = new FakeInteractionController();
+  const conversationId = asConversationId('conv-observation-demo');
+  const { controller } = createInteractionRuntime({
+    agent: new FakeAgentSession({ conversationId }),
+    conversationId,
+    clock: { now: () => 1_700_000_000_000 },
+  });
   const adapter = new FakeWindowAdapter();
   const windows = new WindowGate({
     windows: adapter,
-    interaction: createFakeObservationInteraction(controller),
+    interaction: createObservationInteraction(controller),
     permissions,
     demoEvents: true,
     now: () => 1_700_000_000_000,
@@ -170,8 +184,15 @@ export async function runObservationDemo(): Promise<ObservationDemoResult> {
   lines.push(heading('allowed, no window chosen'));
   note(live);
 
+  // Choosing a window is consent to watch it: `@pilot/interaction`'s
+  // `select-window` row switches observation on and starts capture. PR-009's
+  // fake controller claimed otherwise; PR-029 replaced it with the table.
   await live.windows.act({ type: 'select', windowId: FIXTURE_WINDOW_RETINA.windowId });
-  lines.push(heading('window chosen, observation off'));
+  lines.push(heading('window chosen — Pilot starts watching it'));
+  note(live);
+
+  await live.windows.act({ type: 'stop' });
+  lines.push(heading('observation switched off, window still chosen'));
   note(live);
 
   await live.windows.act({ type: 'start' });

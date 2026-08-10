@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { builtinModules } from 'node:module';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { listPackage } from '@electron/asar';
@@ -115,7 +116,15 @@ describe.skipIf(!hasElectron)('the development build, from a clean tree', () => 
     );
     for (const specifier of imported) {
       expect(
-        specifier === 'electron' || specifier.startsWith('node:'),
+        specifier === 'electron' ||
+          specifier.startsWith('node:') ||
+          // Unprefixed built-ins count too. PR-029 pulled `@pilot/agent` — and
+          // with it Pi — into the main bundle, and Pi's dependencies import
+          // `process` and `buffer` without the `node:` prefix. Those resolve to
+          // the same built-ins. The invariant this test protects is that no
+          // *npm package* is left external, because the packaged asar ships no
+          // `node_modules`.
+          builtinModules.includes(specifier),
         `main/index.js imports ${specifier}, which the packaged asar does not contain`,
       ).toBe(true);
     }

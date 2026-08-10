@@ -1,11 +1,17 @@
-import type { EventEnvelope, SpeechRecognitionDisclosure } from '@pilot/shared';
-import type { HotkeyAvailability } from '@pilot/platform';
 import {
+  asConversationId,
+  type EventEnvelope,
+  type SpeechRecognitionDisclosure,
+} from '@pilot/shared';
+import type { HotkeyAvailability, InteractionCommand } from '@pilot/platform';
+import {
+  FakeAgentSession,
   FakeHotkeyAdapter,
   FakeInteractionController,
   FakePermissionAdapter,
   FakeWindowAdapter,
 } from '@pilot/platform/fakes';
+import type { PilotInteractionController } from '@pilot/interaction';
 import { ConversationGate } from '../../src/main/conversation-gate.js';
 import {
   createFakeConversationDriver,
@@ -19,12 +25,16 @@ import type { SingleInstanceHost } from '../../src/main/single-instance.js';
 import { PermissionGate } from '../../src/main/permission-gate.js';
 import { createPermissionFixtureSource } from '../../src/main/permission-fixtures.js';
 import { createSettingsShortcut } from '../../src/main/settings-shortcut.js';
-import { WindowGate, type ObservationPermissionSource } from '../../src/main/window-gate.js';
 import {
-  createFakeObservationInteraction,
-  createFakeWindowDemoDriver,
-  type WindowDemoDriver,
-} from '../../src/main/window-feed.js';
+  WindowGate,
+  type ObservationInteraction,
+  type ObservationPermissionSource,
+} from '../../src/main/window-gate.js';
+import {
+  createInteractionRuntime,
+  createObservationInteraction,
+} from '../../src/main/interaction-runtime.js';
+import { createFakeWindowDemoDriver, type WindowDemoDriver } from '../../src/main/window-demo.js';
 import type { PermissionFixtureName } from '../../src/ipc/schemas.js';
 
 /**
@@ -191,9 +201,65 @@ export function permissionHarness(options: PermissionHarnessOptions = {}): Permi
   return { gate, adapter };
 }
 
+/**
+ * A read-only {@link ObservationInteraction} over the fake controller.
+ *
+ * For suites that *script* a view state instead of driving the machine — the
+ * shell tests need `controller.set({ state: 'speaking' })` and there is no
+ * command that produces that on demand. `report` deliberately does nothing:
+ * PR-029 deleted PR-009's hand-written copy of the `windows-changed` /
+ * `window-closed` transition rows (runbook follow-up 10) and this must not
+ * become a second one. The suites that assert those rows —
+ * `window-gate.test.ts` and `renderer/windows.test.tsx` — run against the real
+ * controller, where the transition table answers them.
+ */
+export function scriptedObservationInteraction(
+  controller: FakeInteractionController,
+): ObservationInteraction {
+  return {
+    snapshot: () => controller.snapshot(),
+    subscribe: controller.subscribe,
+    dispatch: (command) => {
+      controller.dispatch(command);
+    },
+    report: () => undefined,
+  };
+}
+
+export interface ScriptedWindowHarnessOptions {
+  readonly permissions: ObservationPermissionSource;
+  readonly controller: FakeInteractionController;
+  readonly adapter?: FakeWindowAdapter;
+  readonly demoEvents?: boolean;
+  readonly now?: () => number;
+}
+
+/** {@link windowHarness}, but over a scripted fake controller. See above. */
+export function scriptedWindowHarness(options: ScriptedWindowHarnessOptions): {
+  readonly gate: WindowGate;
+  readonly adapter: FakeWindowAdapter;
+  readonly demo: WindowDemoDriver;
+} {
+  const adapter = options.adapter ?? new FakeWindowAdapter();
+  const gate = new WindowGate({
+    windows: adapter,
+    interaction: scriptedObservationInteraction(options.controller),
+    permissions: options.permissions,
+    demoEvents: options.demoEvents ?? true,
+    ...(options.now === undefined ? {} : { now: options.now }),
+  });
+  return {
+    gate,
+    adapter,
+    demo: createFakeWindowDemoDriver({
+      adapter,
+      selected: () => options.controller.snapshot().selectedWindow,
+    }),
+  };
+}
+
 export interface WindowHarnessOptions {
   readonly permissions: ObservationPermissionSource;
-  readonly controller?: FakeInteractionController;
   readonly adapter?: FakeWindowAdapter;
   readonly demoEvents?: boolean;
   readonly now?: () => number;
@@ -202,23 +268,45 @@ export interface WindowHarnessOptions {
 export interface WindowHarness {
   readonly gate: WindowGate;
   readonly adapter: FakeWindowAdapter;
-  readonly controller: FakeInteractionController;
+  readonly controller: PilotInteractionController;
+  /** The mocked capture lifecycle, so a test can see what the table asked for. */
+  readonly observation: { readonly calls: readonly string[] };
+  /** Commands the gate dispatched, in order. */
+  readonly commands: readonly InteractionCommand[];
   /** The panel's fake window-event controls, as `main/index.ts` builds them. */
   readonly demo: WindowDemoDriver;
 }
 
 /**
- * A {@link WindowGate} over the PR-001 fake window adapter and fake interaction
- * controller, wired exactly as `main/index.ts` wires it — including the
- * `ObservationInteraction` bridge, so what the tests drive is the shipped path
- * rather than a stand-in for it.
+ * A {@link WindowGate} over the PR-001 fake window adapter and the **real**
+ * interaction controller, wired exactly as `main/index.ts` wires it.
+ *
+ * PR-029 replaced the fake controller here too. It matters for what these tests
+ * mean: `windows-changed`, `window-closed` and the two screen-lock events are
+ * now answered by `@pilot/interaction`'s transition table, so a test that says
+ * "the selection is cleared when the window closes" is asserting the shipped
+ * behaviour rather than PR-009's copy of two of its rows. The agent behind the
+ * controller is `FakeAgentSession`: these tests ask no questions.
  */
 export function windowHarness(options: WindowHarnessOptions): WindowHarness {
-  const controller = options.controller ?? new FakeInteractionController();
+  const conversationId = asConversationId('conv-window-harness');
+  const { controller, observation } = createInteractionRuntime({
+    agent: new FakeAgentSession({ conversationId }),
+    conversationId,
+    ...(options.now === undefined ? {} : { clock: { now: options.now } }),
+  });
   const adapter = options.adapter ?? new FakeWindowAdapter();
+  const interaction = createObservationInteraction(controller);
+  const commands: InteractionCommand[] = [];
   const gate = new WindowGate({
     windows: adapter,
-    interaction: createFakeObservationInteraction(controller),
+    interaction: {
+      ...interaction,
+      dispatch: (command) => {
+        commands.push(command);
+        interaction.dispatch(command);
+      },
+    },
     permissions: options.permissions,
     demoEvents: options.demoEvents ?? true,
     ...(options.now === undefined ? {} : { now: options.now }),
@@ -227,6 +315,8 @@ export function windowHarness(options: WindowHarnessOptions): WindowHarness {
     gate,
     adapter,
     controller,
+    observation: { calls: observation.calls ?? [] },
+    commands,
     demo: createFakeWindowDemoDriver({
       adapter,
       selected: () => controller.snapshot().selectedWindow,

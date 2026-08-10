@@ -43,16 +43,24 @@ import {
  *     prompt, and reads the selection from the controller.
  */
 
-/** A window-lifecycle change the interaction side has to know about. */
+/**
+ * A platform event the interaction side has to know about.
+ *
+ * PR-029 added the two lock members. They are not window lifecycle, but they
+ * arrive on the same `WindowAdapter` subscription and they mean the same thing
+ * to the interaction table: stop capturing and clear what is buffered.
+ */
 export type WindowFeedEvent =
   | { readonly type: 'windows-changed'; readonly windows: readonly ObservedWindow[] }
-  | { readonly type: 'window-closed'; readonly windowId: WindowId };
+  | { readonly type: 'window-closed'; readonly windowId: WindowId }
+  | { readonly type: 'screen-locked' }
+  | { readonly type: 'screen-unlocked' };
 
 /**
  * What the gate needs from the interaction side.
  *
- * `report` is deliberately shaped as two members of `@pilot/interaction`'s
- * `InteractionEvent` union, so when PR-029 wires the real controller the
+ * `report` is deliberately shaped as members of `@pilot/interaction`'s
+ * `InteractionEvent` union, so with the real controller (PR-029) the
  * implementation is `(event) => controller.send(event)` — the identity
  * function — rather than a translation layer that could drift.
  */
@@ -138,11 +146,16 @@ export class WindowGate {
             return;
           case 'screen-locked':
           case 'screen-unlocked':
-            // Capture and buffer clearing on lock belong to the interaction
-            // controller's table and to PR-012's capture session, neither of
-            // which this shell owns yet. Recorded rather than acted on, so it
-            // is not mistaken for a handled case. Closed by PR-029.
-            this.#logger.info('screen lock event ignored by the window gate', {
+            // Runbook follow-up 11, closed by PR-029. system-design §6 and §14
+            // require capture to stop and buffers to clear on lock; the
+            // transition table already has those rows (`screen-locked` →
+            // stop-capture + clear-buffers, and it also tears down anything in
+            // flight). So this forwards rather than reimplementing, exactly as
+            // `windows-changed` and `window-closed` do. A duplicate lock is the
+            // table's business too: it rejects the second one instead of
+            // clearing twice.
+            this.#interaction.report({ type: event.type });
+            this.#logger.info('screen lock forwarded to the interaction table', {
               event: event.type,
             });
             return;

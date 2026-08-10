@@ -2,11 +2,11 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import {
-  FakeInteractionController,
   FIXTURE_PERMISSIONS_SCREEN_DENIED,
   FIXTURE_WINDOW_RETINA,
   FIXTURE_WINDOW_SECONDARY,
 } from '@pilot/platform/fakes';
+import type { PilotInteractionController } from '@pilot/interaction';
 import { App } from '../../src/renderer/App.js';
 import type { BridgeResult, PilotBridge } from '../../src/ipc/bridge.js';
 import {
@@ -32,16 +32,20 @@ import { windowBridge } from './window-bridge.js';
 
 interface Harness {
   readonly bridge: PilotBridge;
-  readonly controller: FakeInteractionController;
+  readonly controller: PilotInteractionController;
   readonly windows: ReturnType<typeof windowBridge>;
   readonly permissions: ReturnType<typeof permissionBridge>;
 }
 
 function harness(options: { fixture?: PermissionFixtureName } = {}): Harness {
-  const controller = new FakeInteractionController();
   const permissions = permissionBridge({ fixture: options.fixture ?? 'granted' });
-  const windows = windowBridge({ controller, permissions: permissions.gate });
-  const conversation = conversationBridge({ controller });
+  // PR-029: the real controller, created by the window bridge. Selecting,
+  // starting, pausing and the §16 close sequence are all answered by
+  // `@pilot/interaction`'s transition table, so what this suite renders is what
+  // the shipped app renders.
+  const windows = windowBridge({ permissions: permissions.gate });
+  const controller = windows.controller;
+  const conversation = conversationBridge({});
   const listeners = new Set<(payload: unknown) => void>();
 
   controller.subscribe((view) => {
@@ -210,13 +214,21 @@ describe('the observation indicator', () => {
     await waitFor(() => expect(indicator()).toBe('no-window'));
     seen.push(indicator());
 
+    // PR-029: choosing a window is consent to watch it. `@pilot/interaction`'s
+    // `select-window` row sets `observationEnabled: true` and starts capture,
+    // which is what the panel now shows — see `docs/handoff.md` §4.
     await selectRetina();
+    await waitFor(() => expect(indicator()).toBe('observing'));
+    seen.push(indicator());
+    expect(capturing()).toBe('true');
+
+    screen.getByTestId('observation-stop').click();
     await waitFor(() => expect(indicator()).toBe('stopped'));
     seen.push(indicator());
+    expect(capturing()).toBe('false');
 
     screen.getByTestId('observation-start').click();
     await waitFor(() => expect(indicator()).toBe('observing'));
-    seen.push(indicator());
     expect(capturing()).toBe('true');
 
     screen.getByTestId('observation-pause').click();
@@ -333,8 +345,11 @@ describe('the selected window closing (system-design §16)', () => {
 
     await waitFor(() => expect(screen.queryByTestId('observation-notice')).toBeNull());
     expect(screen.getByTestId('observation-summary-title').textContent).toBe('Untitled.txt');
-    // Choosing a window does not silently resume capture.
-    expect(indicator()).toBe('stopped');
+    // Answering the §16 prompt puts Pilot back to work on the window the user
+    // just chose: `select-window` enables observation (PR-006's table). Before
+    // PR-029 the fake controller claimed otherwise and this line asserted
+    // 'stopped'; the table is the contract, so the table wins.
+    expect(indicator()).toBe('observing');
   });
 });
 
@@ -360,7 +375,7 @@ describe('controls', () => {
     expect(screen.getByTestId(`window-select-${SECONDARY}`).hasAttribute('disabled')).toBe(true);
 
     screen.getByTestId('observation-resume').click();
-    await waitFor(() => expect(indicator()).toBe('stopped'));
+    await waitFor(() => expect(indicator()).toBe('observing'));
   });
 
   it('offers every fake window event a reviewer needs', async () => {
