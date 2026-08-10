@@ -10,8 +10,12 @@ import type {
   PermissionSnapshot,
   PermissionStatus,
   QuestionGrounding,
+  PilotError,
+  PixelSize,
   ScreenPoint,
   SpeechId,
+  SpeechRecognitionDestination,
+  SpeechRecognitionDisclosure,
   UtteranceId,
   WindowGeometry,
   WindowId,
@@ -125,12 +129,93 @@ export interface WindowAdapter {
 // Observation
 // ---------------------------------------------------------------------------
 
-/** system-design §5, verbatim. */
+/**
+ * Why capture stopped (PR-012).
+ *
+ * `window-lost`, `screen-locked` and `protected-content` are the three the
+ * design names explicitly (system-design §16), and each one means the consumer
+ * must clear its buffers as well as stop reading — a frame of a window that no
+ * longer exists is not a stale frame, it is a frame of somebody else's screen.
+ */
+export const CAPTURE_STOP_REASONS = [
+  /** `stop()` was called. */
+  'requested',
+  /** The selected window is gone. */
+  'window-lost',
+  /** The session locked (system-design §14). */
+  'screen-locked',
+  /** The application blocks capture; its pixels are blank, not black. */
+  'protected-content',
+  /** The native helper died or became unreachable. */
+  'helper-unavailable',
+  /** Any other capture failure. */
+  'failed',
+] as const;
+
+export type CaptureStopReason = (typeof CAPTURE_STOP_REASONS)[number];
+
+/** Why a frame the platform received never reached the consumer (PR-012). */
+export const FRAME_DROP_REASONS = [
+  /** The frame belonged to a window that is not the selected one. */
+  'foreign-window',
+  /** Zero-length payload. The ring rejects these; they never leave the adapter. */
+  'empty-bytes',
+  /** The producer repeated a sequence number already delivered. */
+  'duplicate',
+  /** Declared byte length disagreed with the payload actually received. */
+  'byte-length-mismatch',
+  /** Larger than any buffer configured to hold it. */
+  'too-large',
+  /** The producer's timestamp was implausible and was replaced. */
+  'clock-skew',
+  /** Dropped by the producer's own bounded queue, before the host saw it. */
+  'producer-backpressure',
+] as const;
+
+export type FrameDropReason = (typeof FRAME_DROP_REASONS)[number];
+
+/**
+ * Capture lifecycle, separate from the frames themselves (PR-012).
+ *
+ * Frames flow through `ObservationAdapter.subscribe`; this is everything else a
+ * consumer needs in order to obey system-design §6 and §16 — start, stop and
+ * the reason, plus the drops it would otherwise have to infer from silence.
+ */
+export type ObservationEvent =
+  | {
+      readonly type: 'capture-started';
+      readonly windowId: WindowId;
+      /** Pixel size the stream was configured at, after the policy downscale. */
+      readonly captureSize: PixelSize;
+    }
+  | {
+      readonly type: 'capture-stopped';
+      readonly reason: CaptureStopReason;
+      /** Present for every reason but `requested`. */
+      readonly error?: PilotError;
+    }
+  | {
+      readonly type: 'frames-dropped';
+      readonly reason: FrameDropReason;
+      readonly count: number;
+    };
+
+/**
+ * system-design §5, verbatim — plus one optional member added by PR-012.
+ *
+ * `subscribeEvents` is optional for the same reason `PermissionAdapter.
+ * attribution` is: adapters written before it existed still satisfy the
+ * interface, and a caller that needs the answer handles `undefined` as "this
+ * platform does not report capture lifecycle". Adding an optional member is
+ * source-compatible; the four verbatim methods are untouched.
+ */
 export interface ObservationAdapter {
   start(window: ObservedWindow, options: CaptureOptions): Promise<void>;
   stop(): Promise<void>;
   captureFresh(signal?: AbortSignal): Promise<CapturedFrame>;
   subscribe(listener: (frame: CapturedFrame) => void): () => void;
+  /** Capture lifecycle and drop notifications (PR-012). */
+  subscribeEvents?: Subscribe<ObservationEvent>;
 }
 
 // ---------------------------------------------------------------------------
@@ -259,6 +344,15 @@ export interface SpeechInputAvailability {
   readonly onDevice: boolean;
   /** Locale identifier the recogniser will use, when known. */
   readonly locale?: string;
+  /**
+   * Where the audio would be turned into text (PR-014). Optional and additive:
+   * an adapter written before this field existed still satisfies the
+   * interface, and a caller that needs the answer must treat `undefined` as
+   * "this platform does not report it" — which is not the same as `on-device`.
+   */
+  readonly destination?: SpeechRecognitionDestination;
+  /** The renderable form of the same answer. See `@pilot/shared`'s `speech.ts`. */
+  readonly disclosure?: SpeechRecognitionDisclosure;
 }
 
 export type SpeechInputEvent =
@@ -277,11 +371,29 @@ export interface SpeechInputAdapter {
   availability(): Promise<SpeechInputAvailability>;
   /** Begins capture and recognition for one utterance. */
   start(request: SpeechInputRequest): Promise<void>;
-  /** Ends capture; a `final` event follows unless recognition failed. */
+  /**
+   * Ends capture; a `final` event follows unless recognition failed.
+   *
+   * Must be a no-op for an utterance that is not recording. A recogniser is
+   * allowed to finalise on its own before push-to-talk is released, so this
+   * call routinely arrives for an utterance the adapter has already closed —
+   * throwing then would turn a successfully submitted question into a failure
+   * (PR-025 found exactly that defect one layer up).
+   */
   stop(utteranceId: UtteranceId): Promise<void>;
-  /** Ends capture and discards the utterance; no `final` event follows. */
+  /** Ends capture and discards the utterance; no `final` event follows. Also idempotent. */
   cancel(utteranceId: UtteranceId): Promise<void>;
   subscribe: Subscribe<SpeechInputEvent>;
+  /**
+   * Where recognition would send the audio if it started now, in a form the
+   * UI can render (PR-014, system-design §14).
+   *
+   * Optional so adapters written before this method existed still satisfy the
+   * interface — the same shape as `PermissionAdapter.attribution?()`. A caller
+   * that needs the answer must handle `undefined` as "this platform does not
+   * disclose it", and must not read that as "recognition is local".
+   */
+  disclosure?(): Promise<SpeechRecognitionDisclosure>;
 }
 
 // ---------------------------------------------------------------------------
@@ -304,7 +416,17 @@ export interface SpeechOutputRequest {
 export interface SpeechOutputAdapter {
   availability(): Promise<{ readonly available: boolean; readonly voices: readonly string[] }>;
   speak(request: SpeechOutputRequest): Promise<void>;
-  /** Stops one utterance, or everything when no id is given. Must be immediate. */
+  /**
+   * Stops one utterance, or everything when no id is given. Must be immediate
+   * (system-design §17 targets interruption below 300 ms).
+   *
+   * Platform note, documented rather than contracted (PR-014): a platform with
+   * a single synthesis queue — macOS `AVSpeechSynthesizer` is one — cannot
+   * remove a middle utterance without flushing the queue, so stopping any
+   * utterance stops all of them. Such an adapter must emit a `stopped` event
+   * for **every** utterance it discarded, so a caller tracking several ids
+   * never waits on one that will now never speak.
+   */
   stop(speechId?: SpeechId): Promise<void>;
   subscribe: Subscribe<SpeechOutputEvent>;
 }

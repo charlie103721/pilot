@@ -12,6 +12,16 @@ macOS platform package.
   and the outside-window rule.
 
 Capture (PR-012), speech (PR-014) and push-to-talk (PR-015) come next.
+- **PR-014** adds speech: Apple Speech transcription with an on-device
+  preference and a renderable privacy disclosure, and `AVSpeechSynthesizer`
+  playback with prompt interruption.
+
+Capture (PR-012), Accessibility grounding (PR-013) and push-to-talk (PR-015)
+- **PR-012** adds the third: selected-window capture over ScreenCaptureKit, and
+  with it the first real use of the frame format's binary body.
+
+Accessibility grounding (PR-013), speech (PR-014) and push-to-talk (PR-015)
+come next.
 
 > **Nothing under `native/` has ever been compiled.** There is no Swift
 > toolchain and no Mac on the development machine (`docs/runbook.md` amendment
@@ -29,12 +39,20 @@ src/protocol/messages.ts           JSON message envelopes (request/response/even
 src/protocol/operation-kit.ts      the operation type and its constructor
 src/protocol/operations.ts         the closed operation set
 src/protocol/permission-ops.ts     permission operations and their schemas
+src/protocol/speech-ops.ts         speech operations and their schemas
 src/protocol/window-ops.ts         window operations and their schemas
 src/protocol/accessibility-ops.ts  pointer and accessibility operations
+src/protocol/capture-ops.ts        capture operations and their schemas
+src/capture/capture-policy.ts      the screen policy applied to a window (pure)
+src/capture/mac-observation-adapter.ts
 src/transport/channel.ts           framing bound to a pair of streams
 src/transport/helper-transport.ts  spawn, restart, correlation, deadlines
 src/permissions/attribution.ts     the attribution verdict table
 src/permissions/mac-permission-adapter.ts
+src/speech/disclosure.ts           the on-device decision and its disclosure
+src/speech/errors.ts               typed errors for every speech failure
+src/speech/mac-speech-input-adapter.ts
+src/speech/mac-speech-output-adapter.ts
 src/windows/window-model.ts        stable window ids and domain mapping
 src/windows/window-diff.ts         lifecycle events, by snapshot diff
 src/windows/mac-window-adapter.ts
@@ -48,6 +66,8 @@ test/support/helper-stub.ts        Node stand-in that speaks the same protocol
 test/demo.ts                       the PR-003 demo
 test/demo-permissions.ts           the PR-011 demo
 test/demo-accessibility.ts         the PR-013 demo
+test/demo-speech.ts                the PR-014 demo
+test/demo-capture.ts               the PR-012 demo
 ```
 
 ## Wire format
@@ -111,14 +131,34 @@ message metadata stays printable and log-safe.
 | `windows.get` | `{ windowNumber }` | `{ window, display, screenLocked }` | none | 011 |
 | `accessibility.sample` | `{ includeElement?, ownerPid?, includeValue? }` | `{ point, pointerSource, sampledAt, axTrusted, element, outcome }` | none | 013 |
 | `accessibility.element-at` | `{ point, ownerPid?, includeValue? }` | `{ axTrusted, element, outcome }` | none | 013 |
+| `speech.input.availability` | `{ locale? }` | `{ facts, microphone, speechRecognition }` | none | 014 |
+| `speech.input.start` | `{ utteranceId, onDevice, locale? }` | `{ started, onDevice, locale }` | none | 014 |
+| `speech.input.stop` | `{ utteranceId }` | `{ accepted }` | none | 014 |
+| `speech.input.cancel` | `{ utteranceId }` | `{ accepted }` | none | 014 |
+| `speech.input.poll` | `{ sinceSequence }` | `{ events, sequence, dropped, recording, activeUtteranceId }` | none | 014 |
+| `speech.output.availability` | `{}` | `{ available, voices }` | none | 014 |
+| `speech.output.speak` | `{ speechId, text, voice?, rate? }` | `{ accepted, queued }` | none | 014 |
+| `speech.output.stop` | `{ speechId? }` | `{ stopped }` | none | 014 |
+| `speech.output.poll` | `{ sinceSequence }` | `{ events, sequence, dropped, speaking, activeSpeechId }` | none | 014 |
+| `capture.start` | `{ windowNumber, width, height, sampleFps, includeCursor, encoding, quality, … }` | `{ session }` | none | 012 |
+| `capture.stop` | `{ streamId }` | `{ stopped, delivered, dropped, discarded }` | none | 012 |
+| `capture.pull` | `{ streamId, notBefore? }` | `{ state, frame, remaining, dropped, delivered, failure }` | **response** | 012 |
 
 `health` doubles as the startup handshake: `start()` does not resolve until the
 helper answers it.
 
 Neither PR-011 nor PR-013 bumped `HELPER_PROTOCOL_VERSION`. Appending operations is
+Every `speech.*` row says `none` under **Binary**, and that is load-bearing
+rather than incidental — see [Speech](#speech).
+
+PR-011 and PR-014 did **not** bump `HELPER_PROTOCOL_VERSION`. Appending operations is
 backwards compatible in both directions: an unknown operation is already a
 typed `invalid-request` on the helper, and an unregistered response is already
 a typed `invalid-request` on the host.
+Neither PR-011 nor PR-012 bumped `HELPER_PROTOCOL_VERSION`. Appending
+operations is backwards compatible in both directions: an unknown operation is
+already a typed `invalid-request` on the helper, and an unregistered response is
+already a typed `invalid-request` on the host.
 
 ## Permissions
 
@@ -367,12 +407,225 @@ grounding. `availability()` reports `pointer` and `hitTesting` separately for
 exactly this reason.
 
 ### Extending it (PR-012 onward)
+### Extending it (PR-013 onward)
 
 Append to `HELPER_OPERATIONS` in `src/protocol/operations.ts` and to
 `HelperProtocol.Operation` in `native/Sources/PilotHelperCore/HelperProtocol.swift`.
 Bump `HELPER_PROTOCOL_VERSION` (and `FrameConstants.protocolVersion`) only for
 a change that is not backwards compatible; both sides reject a version they do
 not know with `protocol-version-mismatch`.
+
+## Speech
+
+### Raw audio never leaves the helper process
+
+`docs/system-design.md` §13 lists raw microphone buffers under *memory-only*
+and raw audio under *never logged*. The design honours that by giving the audio
+nowhere to go rather than by remembering not to move it:
+
+| Guarantee | How it is enforced | Where it is asserted |
+| --- | --- | --- |
+| No audio crosses the helper boundary | every `speech.*` operation declares `requestBinary: false, responseBinary: false`, and the transport rejects a binary payload on an operation that does not accept one | `test/speech-privacy.test.ts` |
+| No audio reaches disk | the Swift speech sources contain no file, `URLSession` or `AVAudioFile` API at all, and use `SFSpeechAudioBufferRecognitionRequest` rather than the URL-based request that reads audio from a file | source scan in the same test |
+| Audio has exactly one destination | one `.append(buffer)` in the whole tree — the `AVAudioEngine` tap into the recognition request | source scan in the same test |
+| Nothing transcript-shaped is logged | a full transcription and playback run under a logger set to `onViolation: 'throw'` | the same test |
+
+Transcripts are treated the same way as audio. `@pilot/shared`'s logger already
+redacts fields named `transcript`; the adapters simply never pass one, and log
+ids, event kinds and reasons instead.
+
+### On-device preference, and the disclosure when it cannot be honoured
+
+`SFSpeechRecognizer` recognises speech remotely by default. When a Mac cannot
+handle a locale on device, the microphone audio is uploaded to Apple and the
+API says nothing about it — same transcript, no flag on the result, no
+observable difference except that it stops working offline.
+
+So Pilot does not *infer* that recognition stayed local. It **requires** it:
+`requiresOnDeviceRecognition` makes recognition fail rather than fall back, and
+that flag is the only guarantee macOS offers. Reading
+`supportsOnDeviceRecognition` and hoping is an inference, not a guarantee, and
+this package never makes it.
+
+The helper reports facts; the host decides (`src/speech/disclosure.ts`), the
+same split PR-011 used for attribution and for the same reason — the decision
+is then testable on Linux:
+
+| Recogniser | `requireOnDevice` | Outcome | `destination` | `leavesDevice` |
+| --- | --- | --- | --- | --- |
+| absent or offline | either | refuse | `unknown` | `false` |
+| supports on device | either | record locally | `on-device` | `false` |
+| no on-device support | `true` | **refuse** | `remote-service` | `true` |
+| no on-device support | `false` | record, disclosed | `remote-service` | `true` |
+
+Every row produces a `SpeechRecognitionDisclosure` (`@pilot/shared`) with a
+headline, a detail and a machine-readable reason — data the renderer draws,
+exactly like PR-008's permission catalogue. It reaches consumers three ways:
+`availability()`, the optional `disclosure()` method on `SpeechInputAdapter`,
+and `details.disclosure` on the `speech-unavailable` error raised by a refusal,
+so the refusal can explain itself instead of reading as a malfunction.
+
+`requireOnDevice` defaults to `true`, which is what PR-025's binding sends and
+what PR-008's onboarding copy promises the user ("If this Mac can only
+recognise speech by sending audio away, Pilot refuses and asks you to type
+instead").
+
+### Why the host polls for transcripts
+
+Recognition is asynchronous, but the helper's stdio loop is single-threaded and
+blocking. Pushing events would mean a second thread writing frames concurrently
+with the request loop — a write lock and a second failure surface, in Swift
+that cannot be compiled here. PR-011 declined that for window lifecycle;
+PR-014 declines it for the same reason.
+
+Callbacks therefore append to a lock-protected queue inside the helper and the
+host drains it with `speech.*.poll` (60 ms while an utterance is open or
+something is speaking; the poller stops when neither is true). A drain is
+idempotent — it asks for everything after `sinceSequence` — so a poll lost to a
+deadline is simply repeated. Overflow drops the *oldest* event and reports a
+cumulative count, because the oldest entry of an overflowing queue is a stale
+partial and the newest is the transcript.
+
+The two places where latency is the requirement do not poll at all:
+
+- **Stopping speech** (§17 budgets below 300 ms) is a request whose response
+  names every utterance the synthesiser discarded, so `stopped` is emitted from
+  that response. One round trip, no interval.
+- **Starting recognition** returns the on-device decision in its own response.
+
+### Teardown is idempotent on both sides
+
+Apple Speech endpoints on its own, so a `final` routinely arrives *before*
+push-to-talk is released; it can deliver a second `isFinal`; and a cancelled
+task can still call its handler. PR-025's binding absorbs all of that one layer
+up, but the native layer does not lean on it:
+
+- `stop()` and `cancel()` for an utterance that is not open **resolve**; they do
+  not throw. (PR-025 found the defect: a recogniser that finished early made
+  `stop-listening` throw, the throw became `failure`, and an already-submitted
+  question landed the user in `error`.)
+- At most one terminal event per utterance reaches a caller. The adapter keeps
+  a bounded ledger of ended utterances; the helper keeps its own
+  (`SpeechTerminalLedger`).
+- A recogniser that finalises early releases the microphone there and then,
+  rather than waiting for a `stop` that may never come.
+- A helper that dies with an utterance open fails that utterance immediately
+  rather than leaving a caller waiting for a transcript that cannot arrive.
+
+### One synthesis queue, one stop
+
+`AVSpeechSynthesizer` owns its queue and offers no way to remove one entry, so
+stopping any utterance flushes all of them. That is reported rather than
+hidden: `stop(id)` returns every discarded id and the adapter emits `stopped`
+for each, so nothing upstream waits on a chunk that will never be spoken.
+Handing consecutive chunks (PR-026) to that native queue is also what keeps
+sentence-to-sentence playback gapless — the host is not in the loop between
+them.
+## Capture
+
+### One window, never a display
+
+```swift
+let filter = SCContentFilter(desktopIndependentWindow: window)
+```
+
+That line, once, is the only `SCContentFilter` this package constructs. There
+is no display initialiser, no "capture the display and crop", and no fallback
+for a window the compositor no longer lists — a request for a missing window
+fails as `window-closed`. The window is found by exact `windowID` equality,
+never `content.windows.first`.
+
+system-design §14 requires selected-window filters and forbids silently
+widening; PR-021's tool description tells the model that "Pilot never captures
+the whole display as a substitute". A fallback would make that a lie, and it
+would be a privacy breach rather than a bug. Because the filter itself cannot
+run here, the guarantee is checked by reading the sources:
+`test/selected-window-only.test.ts` fails if a second filter appears, if a
+display- or application-scoped initialiser is used, if the exact-id lookup
+becomes a first-match, if a display ever enters the capture protocol, or if the
+host grows a second `capture.start` call site.
+
+Two further defences run on every frame: the frame header carries the
+`CGWindowID` it came from and a mismatch is dropped, and the delivered
+`windowId` is `macWindowId(windowNumber)` — the same pure function PR-011 uses.
+
+### The host pulls; the helper never pushes
+
+The helper's stdio loop is a single blocking read/answer cycle, and a
+ScreenCaptureKit stream delivers on its own dispatch queue. A helper that
+*pushed* frames would need a second writer racing the request loop for stdout —
+a write lock and an interleaving hazard on a binary body, in Swift that cannot
+be compiled here. PR-011 made the same call for window lifecycle events.
+
+So the stream callback only enqueues into a bounded in-helper queue, and
+`capture.pull` — an ordinary request answered by the same thread that answers
+`health` — drains it. One writer to stdout, explicit backpressure (the queue
+drops its oldest entry and reports `dropped`), and the host controls the
+cadence it ingests at.
+
+### Where the policy lives
+
+`capture.start` is told a `width` and `height` in pixels, not a policy to
+apply. The rule — longest edge capped at 1440 px, never upscaled
+(system-design §10) — is in `src/capture/capture-policy.ts`, in TypeScript,
+where tests execute it on this machine. Swift owns mechanism only.
+
+A 1200×800 pt window on a 2× display is 2400×1600 backing pixels, capped to
+1440×960, so the *effective* scale is 1.2 rather than 2.
+`WindowGeometry.captureSize` is overridden with the stream size
+(`withCaptureSize`), which is why it is carried separately from `scaleFactor` —
+every conversion touching captured pixels reads `captureSize`, so nothing in the
+geometry module changes.
+
+### A motionless window still fills the ring
+
+ScreenCaptureKit produces pixels only when something moves. Left alone, a user
+reading a static page would fill the ring once and let it age out, so a question
+asked thirty seconds later would find no frame at all. On an `idle` frame the
+helper re-sends its retained encoding with a new instant and a new sequence
+number (`contentChanged: false`). No new encoding, and the frame is honest —
+that really is what the window looked like at that moment.
+
+### Encoding
+
+JPEG at quality 0.9 by default. Raw BGRA is not offered: a 1440×900 frame is
+5.2 MB, so a three-second ring at 3 FPS would need ~47 MB and blow the 16 MiB
+bound before any policy ran. PR-018 re-encodes for the model, which is the
+double-encode recorded as a risk in `docs/handoff.md` §5 — `encoding: 'png'` is
+the one-line lever that removes the first lossy pass if PR-043 finds small text
+illegible.
+
+### What the ring requires of this package
+
+`packages/observation`'s `FrameRing` turns each of these mistakes into
+*silence*, not an error, so each is enforced at the boundary and counted:
+
+| Requirement | How it is met | Ring rejection if it were not |
+| --- | --- | --- |
+| `capturedAt` on the system clock base | The helper converts the sample buffer's mach-based presentation timestamp to epoch ms before queueing; the host re-checks it against its own clock and substitutes when the skew is implausible | `stale` |
+| `byteLength` is the real retained cost | Frame bytes are detached from the decoder's read buffer unless they already own their `ArrayBuffer` | byte bound becomes meaningless |
+| `frameId` unique per capture | `frame-mac-<streamId>-<sequence>`; the stream id is re-minted per `capture.start` and the sequence only increases within one | `duplicate` |
+| `windowId` matches the selection | `macWindowId(header.windowNumber)`, after a header-level equality check | `foreign-window` |
+| Never a zero-length frame | Refused by the helper's queue and again by the host | `empty-bytes` |
+| Frames retained by reference, never recycled | Encoding copies pixels out of the recycled `IOSurface`; each frame gets its own buffer and nothing mutates it afterwards | already-buffered frames corrupt |
+
+### Stopping
+
+Capture stops and buffers clear on window loss and screen lock (system-design
+§6, §16), from either direction: the `WindowAdapter`'s `window-closed` and
+`screen-locked` events, and the helper's own `window-lost` / `screen-locked`
+pull state. A lock sets capture to resume on `screen-unlocked`; a closed window
+does not resume. Every stop is announced through `subscribeEvents` with a
+reason and a typed error.
+
+### Fresh capture
+
+`captureFresh` stamps the instant it asked, tells the helper to discard queued
+frames older than that, and pulls until a frame at or after it arrives —
+bounded by a deadline and an abort signal, which is passed into the transport so
+an in-flight request is rejected immediately. It is not a blocking helper call:
+waiting inside the request loop would stall `health`, and the supervisor would
+eventually kill a helper that was working correctly.
 
 ## Failure modes
 
@@ -395,6 +648,18 @@ Nothing hangs and nothing is dropped silently. Every failure is a typed
 | macOS credits permissions to the helper or another bundle | `permission-attribution-mismatch` (PR-011) |
 | System Settings could not be opened | `platform-unavailable` (PR-011) |
 | helper omits a permission from its snapshot | `invalid-request` (PR-011) |
+| Microphone or Speech Recognition not granted | `permission-denied` / `permission-restricted` / `permission-unknown`, with `details.kind` (PR-014) |
+| recognition would have to leave the Mac and the caller required on device | `speech-unavailable`, with `details.disclosure` (PR-014) |
+| no recogniser for the locale, or the recogniser is offline | `speech-unavailable` (PR-014) |
+| recognition heard nothing, lost the microphone, or failed | `speech-input-failed` (PR-014) |
+| the Mac has no synthesis voice | `speech-unavailable` (PR-014) |
+| synthesis failed or was lost mid-utterance | `speech-output-failed` (PR-014) |
+| the window blocks capture (blank frames) | `protected-content` (PR-012) |
+| the selected window is gone | `window-closed` (PR-012) |
+| the session is locked | `screen-locked` (PR-012) |
+| the stream stopped with an error, or produced no frame in time | `capture-failed` (PR-012) |
+| `captureFresh` before `start`, or after a stop | `observation-disabled` (PR-012) |
+| the helper started a stream for the wrong window | `capture-failed`, not retryable (PR-012) |
 
 Restarts use exponential backoff (250 ms × 2ⁿ, capped at 5 s) with a budget of
 5 restarts per 60 s window; exceeding it puts the transport in `failed` and
@@ -433,12 +698,23 @@ outside-window case proved at the wire, the foreign-application case, the
 secure-field case, coalescing at its exact boundary and Accessibility-denied
 degradation.
 
+PR-014 extends the stub into a **scripted, deliberately misbehaving
+recogniser**: it finalises before the key is released, finalises twice, calls
+back after `cancel()`, attributes a result to a superseded utterance and fails
+halfway through — because Apple Speech does all five. A stub that quietly
+refused to reproduce them would make the host's defences untestable.
+plus (PR-012) the capture policy, every frame-admission rule against the real
+`FrameRing`, protected content, window loss and screen lock mid-stream, an
+aborted fresh capture and backpressure.
+
 Demos (require `pnpm build` first, because they run against `dist/`):
 
 ```sh
 pnpm --filter @pilot/platform-mac demo               # PR-003 transport
 pnpm --filter @pilot/platform-mac demo:permissions   # PR-011 permissions and windows
 pnpm --filter @pilot/platform-mac demo:accessibility # PR-013 pointer and accessibility
+pnpm --filter @pilot/platform-mac demo:speech        # PR-014 speech
+pnpm --filter @pilot/platform-mac demo:capture       # PR-012 selected-window capture
 ```
 
 The first prints the health handshake, a typed echo, a 256 KiB binary fixture
@@ -457,9 +733,22 @@ withholding its value, the foreign element being rejected, the outside-window
 positions, and the same walk with Accessibility denied. It ends with a ~30 Hz
 coalescing run and the secure-field disclosure. **No real pointer is read**; it
 says so on its second line.
+The third prints the on-device decision table, a held recording transcribed
+partial-by-partial, a recogniser that finalises early, a double final, a
+callback after cancel, a mid-utterance failure, the privacy refusal and its
+disclosure, both permission denials, two spoken chunks interrupted mid-sentence
+with the measured `stop()` round trip, and a Mac with no voice. Against the
+stub **nothing is recorded and nothing is audible**; it says so, and it ends
+with the list of what it could not demonstrate.
 
 All three print which target they selected on their first line; if it says
 "Node stub", the Swift build did not land where it was expected.
+The third prints the screen policy applied to one window, the frames it
+streamed with their ids and byte counts, each of the six ring guarantees, what
+was refused and why, a fresh capture and an aborted one, protected content,
+and window loss and screen lock stopping capture. All three print which target
+they selected on their first line; if it says "Node stub", the Swift build did
+not land where it was expected.
 
 ### What is *not* verified anywhere
 
@@ -501,6 +790,46 @@ Stated plainly, because none of it has run:
 - Whether the pointer sample rate is actually achievable through the stdio loop
   on a real machine. Everything measured here is measured against a Node stub.
 
+New with PR-014, and none of it exercised either:
+
+- **Nothing has been recorded and nothing has been spoken.** No microphone has
+  been opened, no `AVAudioEngine` started, no utterance synthesised.
+  `SFSpeechRecognizer`, `SFSpeechAudioBufferRecognitionRequest`,
+  `AVAudioEngine`, `AVSpeechSynthesizer` and `AVSpeechSynthesisVoice` are
+  entirely unexercised.
+- **Whether `requiresOnDeviceRecognition` really keeps the audio local.** The
+  whole privacy story rests on Apple's documented behaviour — that it fails
+  rather than falling back — and that has not been observed.
+- **Whether `SFSpeechRecognizer.queue` is enough.** The helper's main thread is
+  blocked in the stdio read loop and runs no run loop, so a callback delivered
+  on the main queue would never fire. The recogniser's queue is set explicitly
+  to avoid that; if it turns out not to be sufficient, the fallback is to move
+  the stdio loop off the main thread.
+- **Whether `AVSpeechSynthesizerDelegate` fires at all** in a process with no
+  run loop. `SystemSpeechOutputService` therefore does not depend on it: a
+  poll-time reconciliation against `isSpeaking` ends utterances the delegate
+  never reported. If the delegate works, the reconciliation finds nothing to
+  do. **If neither works, TTS completion never arrives** — this is the single
+  most important thing to watch for in `demo:speech` on a Mac.
+- **The Apple Speech error numbers are folklore.** `kAFAssistantErrorDomain` is
+  undocumented; `SpeechErrorMapper` degrades an unrecognised number to
+  `recognizer-failed`, which is still a correct typed failure.
+- Whether `addsPunctuation`, `taskHint` and `AVSpeechSynthesisVoiceQuality`
+  behave as assumed, and whether an early `endAudio()` really yields a final.
+- **No pixel has been captured** (PR-012). `SCShareableContent`, `SCContentFilter`,
+  `SCStream`, `SCStreamConfiguration`, the `SCStreamOutput` callback,
+  `SCFrameStatus` and `CIContext.jpegRepresentation` are all unexercised.
+- Whether an `idle` frame really arrives at the configured interval for a
+  motionless window — the re-send that keeps the ring populated assumes it does.
+- Whether a protected window reports `SCFrameStatus.blank` rather than handing
+  over black pixels. If it hands over black pixels, they are delivered as a
+  frame and `protected-content` never fires.
+- Whether the mach → epoch timestamp conversion produces sane values against a
+  real sample buffer. The arithmetic is unit-tested; the inputs are not.
+- Whether ScreenCaptureKit's completion handlers arrive off the calling thread.
+  The semaphore bridges assume so; every wait is bounded at 5 s so the failure
+  would be a typed capture error rather than a hung helper.
+
 The Swift that *is* covered by `swift test` is the pure logic: the permission
 state mappers, the settings-URL table, the bundle-path walk, the
 `CGWindowListCopyWindowInfo` dictionary parser, display assignment, JSON
@@ -508,6 +837,12 @@ serialisation, every PR-011 operation dispatched through `HelperServer` with
 stub services, and (PR-013) the secure-field classifier, the label preference
 order, the AppKit coordinate flip, the text clamps and both accessibility
 operations dispatched through `HelperServer` with a stub service.
+serialisation, the speech event queue, the terminal ledger, the speech error
+classifier, the rate mapper, and every PR-011 and PR-014 operation dispatched
+through `HelperServer` with stub services.
+serialisation, the capture request parser and its clamps, the bounded capture
+queue and its drop accounting, the timestamp conversion, and every PR-011 and
+PR-012 operation dispatched through `HelperServer` with stub services.
 
 ### On the Mac (Swift, batched per runbook §2)
 
@@ -526,11 +861,17 @@ swift build --package-path native -c release # release
 swift test --package-path native
 
 # 3. Run the three demos against the real helper instead of the Node stub.
+#    PR-014 pure logic).
+swift test --package-path native
+
+# 3. Run all three demos against the real helper instead of the Node stub.
 cd ../..
 pnpm build
 pnpm --filter @pilot/platform-mac demo
 pnpm --filter @pilot/platform-mac demo:permissions
 pnpm --filter @pilot/platform-mac demo:accessibility
+pnpm --filter @pilot/platform-mac demo:speech
+pnpm --filter @pilot/platform-mac demo:capture
 ```
 
 Step 3 needs no configuration: `resolveHelperBinary()` finds
@@ -538,6 +879,9 @@ Step 3 needs no configuration: `resolveHelperBinary()` finds
 point somewhere else, or `--configuration release` output. All three demos print
 which target they chose on their first line; if it says "Node stub", the Swift
 build did not land where it was expected.
+point somewhere else, or `--configuration release` output. All three demos
+print which target they chose on their first line; if it says "Node stub", the
+Swift build did not land where it was expected.
 
 Expected results: `swift build` produces `native/.build/debug/PilotHelper`;
 `swift test` passes; `demo`'s sections 1–4 and 6 behave exactly as they do
@@ -547,6 +891,8 @@ operation).
 A `swift build` failure in PR-003 code is a PR-003 defect; in the PR-011 files
 it is a PR-011 defect; in the PR-013 files it is a PR-013 defect. Either way,
 report the compiler output rather than working around it. New compile risk:
+below it is a PR-011 defect, and in the PR-012 files a PR-012 defect. Either
+way, report the compiler output rather than working around it.
 
 ```text
 PR-011
@@ -559,6 +905,21 @@ Sources/PilotHelperCore/WindowEnumerator.swift   CoreGraphics, AppKit
 PR-013
 Sources/PilotHelperCore/AccessibilityModel.swift   pure — Foundation only
 Sources/PilotHelperCore/AccessibilityProbes.swift  ApplicationServices, CoreGraphics, AppKit
+A `swift build` failure in PR-003 code is a PR-003 defect; in the files below
+it is a PR-011 or PR-014 defect. Either way, report the compiler output rather
+than working around it. New compile risk:
+
+```text
+Sources/PilotHelperCore/PermissionModel.swift    pure — Foundation only          PR-011
+Sources/PilotHelperCore/Attribution.swift        pure — Foundation only          PR-011
+Sources/PilotHelperCore/WindowModel.swift        pure — Foundation only          PR-011
+Sources/PilotHelperCore/PermissionProbes.swift   AVFoundation, Speech, ApplicationServices, CoreGraphics, Darwin   PR-011
+Sources/PilotHelperCore/WindowEnumerator.swift   CoreGraphics, AppKit            PR-011
+Sources/PilotHelperCore/SpeechModel.swift        pure — Foundation only          PR-014
+Sources/PilotHelperCore/SpeechServices.swift     AVFoundation, Speech            PR-014
+PR-012
+Sources/PilotHelperCore/CaptureModel.swift       pure — Foundation only
+Sources/PilotHelperCore/CaptureEngine.swift      ScreenCaptureKit, CoreMedia, CoreImage, CoreVideo, ImageIO
 ```
 
 The pure files are the ones the tests cover; the framework files are the risk.
@@ -591,6 +952,35 @@ Three things to look for:
    pointer at a window's top-left corner and its bottom-right; expect `0.000,
    0.000` and `1.000, 1.000`. A vertical mirror image means the coordinate flip
    is wrong; an offset by a display height means the wrong display was used.
+
+### What `demo:speech` will do on a Mac
+
+Unlike the stub run, this one **opens the microphone and makes noise**, and it
+prompts if Microphone or Speech Recognition has not been granted. Watch for, in
+order:
+
+1. **Section 1**: `onDevice`. `true` means this Mac can recognise the locale
+   locally and nothing leaves. `false` on an English-locale Mac would be a
+   surprise worth reporting — it means Pilot refuses to listen by default.
+2. **Section 2**: whether partial transcripts appear at all. If the section
+   prints only a `final`, or nothing, the recognition callbacks are not
+   reaching the helper's queue — the `SFSpeechRecognizer.queue` question above.
+   This is the most likely single point of failure in the whole PR.
+3. **Sections 3–5**: whether the *real* recogniser reproduces the scripted
+   misbehaviour. Report what it actually does; the host handles all of it
+   either way, and the answer is worth having written down.
+4. **Section 9**: whether both chunks are audible, whether the second follows
+   the first without a gap, and whether the interruption is audibly immediate.
+   The printed `stop()` round trip is only the IPC cost — the number that
+   matters against the 300 ms budget is when the sound actually stops.
+5. **Section 9 again**: whether `finished` is ever reported for a chunk left to
+   play out. If it never arrives, neither the delegate nor the `isSpeaking`
+   reconciliation is working, and PR-026's buffer will stall on the first
+   chunk.
+`CaptureEngine.swift` is the largest new compile risk in the package: the
+`SCStreamFrameInfo` attachment cast, the `CIImageRepresentationOption` spelling
+for JPEG quality, and the `SCStreamOutput`/`SCStreamDelegate` conformances are
+the three places to expect a first-compile error.
 
 ### What `demo:permissions` will now raise on a Mac
 

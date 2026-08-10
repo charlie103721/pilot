@@ -69,17 +69,45 @@ pnpm --filter @pilot/platform-mac demo:accessibility
 #    real grant would be given to.
 PILOT_HELPER_BINARY="$(pwd)/apps/desktop/release/mac-arm64/Pilot.app/Contents/Resources/helper/PilotHelper" \
   pnpm --filter @pilot/platform-mac demo:accessibility
+# 6. PR-014 — speech. THIS ONE PROMPTS, OPENS THE MICROPHONE AND MAKES NOISE.
+#    Run it after step 5, so the two grants already exist. Turn the volume up:
+#    part of what is being checked is audible, not printed.
+pnpm --filter @pilot/platform-mac demo:speech
+# 6. PR-012 — the first real pixel Pilot has ever captured. RUN STEP 5 FIRST:
+#    without a Screen Recording grant this cannot work, and the failure would
+#    look like a capture bug rather than a missing permission.
+#    Open a window titled something recognisable before running it.
+pnpm --filter @pilot/platform-mac demo:capture
+
+PILOT_HELPER_BINARY="$(pwd)/apps/desktop/release/mac-arm64/Pilot.app/Contents/Resources/helper/PilotHelper" \
+  pnpm --filter @pilot/platform-mac demo:capture
 ```
 
 Notes:
 
-- **A Swift compile failure is a PR-003 defect** for the transport files, and a
+- **A Swift compile failure is a PR-003 defect** for the transport files, a
   **PR-011 defect** for `PermissionModel.swift`, `Attribution.swift`,
-  `WindowModel.swift`, `PermissionProbes.swift` and `WindowEnumerator.swift`.
+  `WindowModel.swift`, `PermissionProbes.swift` and `WindowEnumerator.swift`,
+  and a **PR-014 defect** for `SpeechModel.swift` and `SpeechServices.swift`.
   Either way, send the compiler output; it gets fixed, not worked around. The
   authors could not compile any of it and deliberately avoided constructs they
   were unsure of.
 - **Steps 1–4 and 6 raise no TCC prompt. Step 5 does.** That separation is
+  deliberate: it isolates "does the helper build and talk" from "does macOS
+  trust it". Do steps 1–4 first; if the helper does not build, steps 5 and 6
+  cannot tell you anything.
+- **Steps 1–4 raise no TCC prompt. Steps 5 and 6 do.** That separation is
+  deliberate: it isolates "does the helper build and talk" from "does macOS
+  trust it". Do steps 1–4 first; if the helper does not build, steps 5 and 6
+  cannot tell you anything.
+- **Step 6 is the only one that opens the microphone or makes a sound.** It is
+  also the only one where part of the answer is audible rather than printed, so
+  it needs speakers on and someone listening.
+  and a **PR-012 defect** for `CaptureModel.swift` and `CaptureEngine.swift`.
+  Either way, send the compiler output; it gets fixed, not worked around. The
+  authors could not compile any of it and deliberately avoided constructs they
+  were unsure of.
+- **Steps 1–4 raise no TCC prompt. Steps 5 and 6 do.** That separation is
   deliberate: it isolates "does the helper build and talk" from "does macOS
   trust it". Do steps 1–4 first; if the helper does not build, steps 5 and 6
   cannot tell you anything.
@@ -163,6 +191,90 @@ touched a real pointer or a real accessibility tree. Four things:
    200 ms and the sampler runs at 30 Hz, so a busy application should cost
    dropped samples, never a stalled helper. If the helper is restarted by its
    supervisor while you move the pointer around, the timeout is wrong.
+### What to look for in step 6 (PR-014)
+
+Nothing here has ever run: no microphone has been opened and no utterance has
+been spoken by this project. Five things, in order of how much they would cost
+to be wrong:
+
+1. **Do partial transcripts appear at all?** Section 2 should print three
+   `partial` lines and then a `final`. If it prints only a `final`, or nothing,
+   the recognition callbacks are not reaching the helper. The helper's main
+   thread is blocked in its stdio read loop and runs no run loop, so a callback
+   delivered on the main queue would never fire;
+   `SFSpeechRecognizer.queue` is set explicitly to avoid that. **This is the
+   single most likely failure in the PR**, and the fix if it happens is to move
+   the stdio loop off the main thread — a PR-003-shaped change, so report it
+   rather than patching around it.
+2. **Is `finished` ever reported for a spoken chunk?** Section 9 leaves a chunk
+   playing. If no `finished` arrives, neither `AVSpeechSynthesizerDelegate` nor
+   the `isSpeaking` reconciliation that backs it up is working, and PR-026's
+   TTS buffer will stall after the first sentence.
+3. **Section 1, `onDevice`.** `true` means this Mac recognises English locally
+   and no audio leaves. `false` would mean Pilot refuses to listen by default —
+   correct behaviour, but a surprising answer worth reporting, because it makes
+   voice input unusable on that Mac without opting into remote recognition.
+4. **Section 9, audibly.** Are both chunks spoken? Does the second follow the
+   first without a gap? Does the interruption stop the sound *immediately*? The
+   printed `stop()` round trip is only the IPC cost; the number that matters
+   against the 300 ms budget in `docs/system-design.md` §17 is when the sound
+   actually stops, which only a person in the room can judge.
+5. **Sections 3–5: what the real recogniser actually does.** These sections
+   script a recogniser that finalises early, finalises twice, and calls back
+   after cancel, because Apple Speech is reported to do all three. Against the
+   real recogniser they will instead show whatever it really does. Both the
+   adapter and PR-025's binding handle every case, so nothing breaks either
+   way — but the answer is worth writing down, because every later voice PR is
+   designed around it.
+
+Also worth capturing while you are there:
+
+- Whether the Speech Recognition prompt appears separately from the Microphone
+  one, and in which order.
+- Whether recognition still works with the network off. If it does, on-device
+  recognition is genuinely in force; if it does not, the privacy guarantee in
+  `docs/system-design.md` §14 needs rethinking rather than adjusting.
+- The raw error numbers behind any recognition failure.
+  `SpeechErrorMapper` in `SpeechModel.swift` classifies
+  `kAFAssistantErrorDomain` codes that Apple does not document — the numbers in
+  it are community folklore and have never been checked. A wrong guess degrades
+  to a correct-but-generic `recognizer-failed`, so this is a quality
+  improvement rather than a bug hunt.
+### What to look for in step 6 (PR-012)
+
+The demo targets a hard-coded fixture window on the stub. Against the real
+helper it enumerates and picks one, and **prints which window it selected on
+its second line** — check that line first: everything below it is scoped to
+that window and to nothing else.
+
+Then, in order:
+
+1. **Does it capture at all.** Frames should appear with non-zero byte counts.
+   Zero frames with `state=starting` means the stream never delivered; zero
+   frames with `state=protected` means the window blocks capture (try a plain
+   TextEdit window before concluding anything).
+2. **`age=` on each frame.** This is `Date.now() - capturedAt`, and it is the
+   mach → epoch timestamp conversion showing its work. Tens of milliseconds is
+   right. **Hours, or a negative number, means the conversion is wrong** — the
+   frame ring would then reject every frame as stale and Pilot would observe
+   nothing while reporting no error at all. Report the number either way.
+3. **Byte counts.** A 1440×960 JPEG of a normal UI window should be roughly
+   100–400 KB. Consistently over ~1.8 MB would exhaust the 16 MiB ring in under
+   three seconds and is worth reporting; the fix is the `quality` option.
+4. **A motionless window.** Leave the window untouched for ten seconds. Frames
+   should keep arriving at ~3 FPS with `contentChanged: false` — that is the
+   re-send that keeps the ring populated. If they stop, the assumption that
+   ScreenCaptureKit delivers `idle` frames at the configured interval is wrong,
+   and a static window will have no frame to answer questions from.
+5. **A window that blocks capture.** Try a DRM-protected video or a password
+   manager. Expected: `protected-content` and a stopped stream. If instead a
+   frame arrives that is entirely black, `SCFrameStatus.blank` is not being
+   reported and §16's protected-content path never fires — say so, because the
+   model would then describe a black rectangle as if it were the application.
+6. **System Settings → Privacy & Security → Screen Recording**, again. Capture
+   is the first thing that really uses the grant; a second entry named
+   `PilotHelper` appearing here would be the attribution risk (§5) showing up
+   at the moment it matters most.
 
 **Fallback in use:** Mac-gated code is written unverified and batched here
 (runbook amendment 8, user decision). Accepted risk: PR-011 through PR-015
@@ -171,6 +283,9 @@ attribution check whose *logic* is fully tested on Linux but whose *answer* is
 unknown until step 5 runs. PR-013 ships pointer grounding whose *rules* are
 fully tested on Linux but which has never read a pointer or an accessibility
 element; step 6 is what produces that answer.
+unknown until step 5 runs. PR-014 ships an entire voice path — recognition,
+synthesis, and the privacy guarantee that audio stays on the Mac — whose logic
+is fully tested on Linux and none of whose *behaviour* has ever been observed.
 
 ---
 
@@ -239,6 +354,9 @@ reversible; raise any that look wrong.
 | **Observation is start/stop *and* pause/resume, not one switch** (PR-009) | system-design §6 lists "the user enabled observation" and "Pilot is not paused" as two separate conditions for capture, and the interaction contract has separate commands for them, so the panel offers both. Start/stop is "may Pilot watch this window at all"; pause/resume suspends everything, including anything the agent is doing. The indicator therefore has a distinct `paused` state that is not capture even when observation is switched on. **Say if you would rather have one switch** — collapsing them is easy, splitting them again later is not. |
 | **"Change window" is selecting a different one, not its own command** (PR-009) | Adding a `clear-window-selection` member to `InteractionCommand` would have broken `@pilot/interaction`'s 330-cell transition table while PR-025/026/027 are in flight, and the contract already models the change: `select-window` stops the previous capture and clears its buffers before selecting. So the panel's change affordance is the per-window "Switch to this window" button plus a "Change window" control that takes you back to the list. Nothing in the shared contract changed. |
 | **The window picker refuses a minimised window** (PR-009) | A window with `isOnScreen: false` cannot be selected, and one that becomes hidden while selected raises a warning rather than a stop. There is no design ruling on this; the reasoning is that offering a window there is nothing to see in is worse than explaining why it is unavailable. Revisit when PR-012 establishes what ScreenCaptureKit actually returns for a minimised window. |
+| **Speech events are polled, not pushed** (PR-014) | Recognition callbacks arrive asynchronously, but the helper's stdio loop is single-threaded and blocking. Pushing would need a second thread writing frames concurrently with the request loop — a write lock and a second failure surface, in Swift that cannot be compiled here. PR-011 made the same call for window lifecycle. Callbacks queue inside the helper and the host drains every 60 ms; the two latency-critical paths (stopping speech, and the on-device decision) are request/response and do not poll at all. |
+| **Stopping any spoken chunk stops all of them** (PR-014) | `AVSpeechSynthesizer` has one queue and one `stopSpeaking`, with no API to remove a single entry. Rather than fake per-utterance stopping, `stop(id)` returns every id it discarded and the adapter emits `stopped` for each, so PR-026 never waits on a chunk that will never be spoken. Documented on the contract; the signature is unchanged. |
+| **Pilot refuses to record when recognition would leave the Mac** (PR-014) | `requireOnDevice` defaults to `true`, which is what PR-025's binding already sends and what PR-008's onboarding copy already promises the user. The alternative — recording and uploading with a warning — was rejected because `SFSpeechRecognizer` gives no signal after the fact that it happened. **Consequence worth knowing:** on a Mac that cannot recognise the user's language locally, voice input is unavailable until they opt in. The refusal carries a renderable disclosure explaining exactly that. |
 | **`QuestionAnchorSource` declared on the interaction side** (PR-024) | No contract exposed scene plus pointer-by-instant/interval to that lane, and editing `packages/observation` mid-flight would have collided with PR-016. It mirrors `PointerTimeline` exactly, so PR-031's adapter is the identity function. Moving it onto `ScreenContextService` later is mechanical. |
 | **The screen policy grew four groups beyond the interface printed in system-design §10** (PR-017) | §10's printed `ScreenPolicy` has no field for a ring byte ceiling (§17 requires one), for pointer retention (an utterance outlives the three-second frame ring), for image byte limits (§14 requires size *and* count limits on image tool results), or for the secure-content rule (§10 step 4 and §14 require one). `ScreenContextPolicy` in `packages/observation` adds them; `toScreenPolicyContract()` projects back onto the printed shape and a test pins that projection to `MVP_SCREEN_CONTEXT_POLICY`, so the numbers cannot drift. **`packages/shared` was not changed** — three lanes were running in parallel and none of the additions needed to cross a package boundary. |
 | **New image byte ceilings were chosen, not derived** (PR-017) | Nothing in the docs states one. 4 MiB per image and 8 MiB per observation: a 1440-px JPEG at quality 0.75 is a few hundred kilobytes, so these only fire on a pathological encode, and they bound the base64 payload (4/3 inflation) at ~10.7 MiB. **Say if you want them tighter** — they are one field in a frozen record. |
@@ -251,6 +369,10 @@ reversible; raise any that look wrong.
 | **`AccessibilityAdapter` gained two *optional* methods** (PR-013) | `availability()` and `ground()`, added the same way PR-011 added `PermissionAdapter.attribution?()`: optional, so every existing implementation and fake still satisfies the interface untouched, and no other lane has to change. system-design §5's two original methods are unchanged. The alternative — a second interface — would have split "the accessibility adapter" in two for no gain. |
 | **Accessibility element *values* are off by default** (PR-013) | A value is arbitrary screen content, and the secure-field flag that would keep a password out of it is best effort (§14). So `MacAccessibilityAdapter` does not read `AXValue` unless a host opts in with `includeElementValues`, and never for a secure element. Cost: a consumer that wants the text in a field must ask for it deliberately. **Say if you would rather have values on by default** — PR-018/PR-028 are the consumers this affects. |
 | **The accessibility hit test is scoped to the window's application** (PR-013) | `AXUIElementCreateApplication(ownerPid)` rather than the system-wide element, because a point inside the selected window can be covered by a notification or a floating palette from another app, and describing it would leak from a window Pilot is not observing. Cost: an element genuinely owned by a *different* process — a plugin host, an out-of-process web view — will not be found, and shows as `no target`. If real apps turn out to be full of those, the scoping is the first thing to loosen. |
+| **Capture is pulled by the host, not pushed by the helper** (PR-012) | The helper's stdio loop is a single blocking read/answer cycle and a ScreenCaptureKit stream delivers on its own queue. Pushing frames would need a second writer racing the request loop for stdout — a write lock and an interleaving hazard on a *binary* body, in Swift nobody here can compile. The stream callback enqueues into a bounded in-helper queue and `capture.pull` drains it. Cost: one IPC round trip per frame (3/s). Benefit: one writer, explicit backpressure, and the drain rule lives in TypeScript where it is tested. |
+| **Capture encodes JPEG in the helper at quality 0.9** (PR-012) | Raw BGRA at 1440×960 is 5.2 MB a frame; a three-second ring at 3 FPS would need ~47 MB against a 16 MiB bound. So capture must encode, and PR-018 encodes again — the double-JPEG risk already recorded in §5. `encoding: 'png'` is a one-line switch on `MacObservationAdapter` that removes the first lossy pass if PR-043 finds small text illegible; it costs ring bytes. **Say if you would rather start with `png`.** |
+| **A motionless window is re-sent rather than left to age out** (PR-012) | ScreenCaptureKit only produces pixels when something changes, so a user reading a static page would fill the ring once and let it empty — and a question asked thirty seconds in would find no frame at all. On an idle frame the helper re-sends its retained encoding with a new instant and sequence, flagged `contentChanged: false`. It costs no new encoding and the frame is honest. It does assume idle frames arrive at the configured interval, which is unverified (§1 step 6, item 4). |
+| **`ObservationAdapter.subscribeEvents` added as an *optional* member** (PR-012) | Capture has to report why it stopped — window lost, screen locked, protected content — and how many frames it refused; the four verbatim methods from system-design §5 carry none of that. Optional keeps it source-compatible: every existing implementation, including the shared fakes, still satisfies the interface untouched. Same shape as PR-011's `PermissionAdapter.attribution?()`. |
 
 ---
 
@@ -261,6 +383,7 @@ reversible; raise any that look wrong.
 | Phase 1 — foundations (PR-001…007) | **Complete.** All seven merged. |
 | Phase 2 — capability lanes | In progress. **Merged:** PR-008, PR-011, PR-016, PR-017, PR-020, PR-021, PR-022a, PR-024, PR-025. **In flight:** PR-009, PR-012, PR-013, PR-014, PR-018, PR-022b, PR-026. **Remaining:** PR-010, PR-015, PR-019, PR-023, PR-027. |
 | Phase 2 — capability lanes | In progress: PR-008, PR-011, PR-016, PR-020, PR-021, PR-022a, PR-024, PR-025 merged; PR-009 ready; PR-012, PR-013, PR-014, PR-017, PR-022b, PR-026 in flight. |
+| Phase 2 — capability lanes | In progress: PR-008, PR-011, PR-016, PR-020, PR-021, PR-024, PR-025 merged; PR-012, PR-013, PR-014, PR-017, PR-022a, PR-026 in flight. |
 | Phase 3 — integration (028…036) | Not started. Blocked on Phase 2; most steps also need the Mac (§1) and a signed-in model (§2). |
 | Phase 4 — providers (037…039) | Not started. PR-037 (Codex) is the one the user's decision selects. |
 | Phase 5 — hardening and release (040…044) | Not started. |
@@ -304,6 +427,31 @@ demo executed against the merged tree.
   as the exact sentence the UI must show, and `secureBasis: 'none'` means
   "macOS did not mark this", never "this is safe". **The product must not
   describe this as redaction of secrets; it is redaction of recognised fields.**
+- **The helper has no run loop, and speech frameworks may want one** (PR-014).
+  `HelperRuntime.run` blocks the main thread in `read()` for the life of the
+  process. Anything Apple delivers on the main queue therefore never fires.
+  `SFSpeechRecognizer.queue` is set to a queue the helper owns, and
+  `AVSpeechSynthesizer`'s completion is additionally reconciled from
+  `isSpeaking` so it does not depend on its delegate at all — but neither
+  mitigation has been observed working. If §1 step 6 shows no partial
+  transcripts, the remedy is to run the stdio loop on a background thread and
+  spin a run loop on the main one. That is a PR-003-shaped change to the
+  helper's threading model and would affect PR-012 and PR-013 as well, which is
+  exactly why it was not done speculatively.
+- **Nothing about ScreenCaptureKit has ever run** (PR-012). The capture engine
+  is the largest piece of unverified Swift in the tree, and three of its
+  assumptions are load-bearing enough to be worth stating on their own:
+  - **Idle frames arrive at the configured interval.** If they do not, a
+    motionless window puts nothing in the ring and a question about a static
+    page finds no frame. §1 step 6, item 4 is the check.
+  - **A protected window reports `SCFrameStatus.blank`.** If it instead hands
+    over black pixels, `protected-content` never fires and the model describes
+    a black rectangle as though it were the application. §1 step 6, item 5.
+  - **The mach → epoch timestamp conversion is right.** If it is not, every
+    frame is rejected by the ring as stale and Pilot observes nothing *while
+    reporting no error at all*. The host substitutes its own clock when the
+    skew is implausible, which turns a silent failure into a logged one, but
+    the conversion is what should be correct. §1 step 6, item 2.
 - **`sharp` prebuilds inside packaged Electron (arm64)** — PR-018 owns image
   encoding; the packaging interaction has not been tested.
 - **Double-JPEG legibility of small text** — capture encodes once, the

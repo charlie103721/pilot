@@ -9,7 +9,7 @@ import Foundation
 public enum HelperProtocol {
     public static let version = 1
 
-    /// Operations this helper implements. PR-012 onward extends this list.
+    /// Operations this helper implements. PR-013 onward extends this list.
     ///
     /// Kept in exact agreement with `HELPER_OPERATIONS` in
     /// `packages/platform-mac/src/protocol/operations.ts`. Adding cases does
@@ -29,6 +29,20 @@ public enum HelperProtocol {
         // PR-013
         case accessibilitySample = "accessibility.sample"
         case accessibilityElementAt = "accessibility.element-at"
+        // PR-014
+        case speechInputAvailability = "speech.input.availability"
+        case speechInputStart = "speech.input.start"
+        case speechInputStop = "speech.input.stop"
+        case speechInputCancel = "speech.input.cancel"
+        case speechInputPoll = "speech.input.poll"
+        case speechOutputAvailability = "speech.output.availability"
+        case speechOutputSpeak = "speech.output.speak"
+        case speechOutputStop = "speech.output.stop"
+        case speechOutputPoll = "speech.output.poll"
+        // PR-012
+        case captureStart = "capture.start"
+        case captureStop = "capture.stop"
+        case capturePull = "capture.pull"
     }
 
     public static let readyEventName = "helper.ready"
