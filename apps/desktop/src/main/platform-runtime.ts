@@ -12,6 +12,7 @@ import {
   MacObservationAdapter,
   MacPermissionAdapter,
   MacSpeechInputAdapter,
+  MacSpeechOutputAdapter,
   MacWindowAdapter,
   NativeHelperTransport,
   resolveHelperBinary,
@@ -70,6 +71,16 @@ import {
  * because PR-010's `PILOT_HOTKEY_FIXTURE` states have nowhere else to live.
  * The substitution is visible at the call site, and the boundary table in
  * `main/index.ts` says which build is which.
+ *
+ * ## Speech output (PR-033)
+ *
+ * `speechOutput` is the symmetric member to `speechInput`, and it follows the
+ * same rule: real on both helper branches, `null` on `fakes`. What the
+ * composition root does about `null` differs from voice input, and deliberately
+ * — there is no fake synthesiser anywhere. `main/speech-runtime.ts` takes the
+ * `null` as its degraded mode and completes every chunk silently, which is what
+ * a Mac with no installed voice does too (system-design §16: the streamed text
+ * is what the user keeps either way).
  */
 
 /** Development switch: run the macOS stack against the Node helper stub. */
@@ -127,6 +138,15 @@ export interface PlatformRuntime {
    * follow-up 13) and disposal has to release the microphone.
    */
   readonly speechInput: MacSpeechInputAdapter | null;
+  /**
+   * `AVSpeechSynthesizer` behind the helper (PR-014/PR-033), or `null` on the
+   * fake build.
+   *
+   * Concrete rather than `SpeechOutputAdapter` for the same reason
+   * `speechInput` is: disposal has to silence anything still queued, and
+   * `voiceCatalog()` is richer than the contract's identifier list.
+   */
+  readonly speechOutput: MacSpeechOutputAdapter | null;
   /**
    * Present only on the fake build. The panel's window-lifecycle controls act
    * on it, and `main/index.ts` offers them only when it is here — so a build on
@@ -337,6 +357,7 @@ export function createPlatformRuntime(options: PlatformRuntimeOptions = {}): Pla
       accessibility: null,
       hotkey: null,
       speechInput: null,
+      speechOutput: null,
       fakeWindows: windows,
       fakePermissions: permissions,
       transport: null,
@@ -411,6 +432,16 @@ export function createPlatformRuntime(options: PlatformRuntimeOptions = {}): Pla
       ? {}
       : { pollIntervalMs: options.speechPollIntervalMs }),
   });
+  // PR-033. Not started either: the synthesiser opens when the machine has a
+  // sentence to speak, and `main/speech-runtime.ts` asks it once at startup
+  // whether it has a voice at all.
+  const speechOutput = new MacSpeechOutputAdapter({
+    transport,
+    logger,
+    ...(options.speechPollIntervalMs === undefined
+      ? {}
+      : { pollIntervalMs: options.speechPollIntervalMs }),
+  });
 
   logger.info('running on the macOS platform adapters', {
     kind: choice.kind,
@@ -427,6 +458,7 @@ export function createPlatformRuntime(options: PlatformRuntimeOptions = {}): Pla
     accessibility,
     hotkey,
     speechInput,
+    speechOutput,
     fakeWindows: null,
     fakePermissions: null,
     transport,
@@ -444,6 +476,10 @@ export function createPlatformRuntime(options: PlatformRuntimeOptions = {}): Pla
       // clears audio). Awaited before the transport goes, because the release
       // is a round trip.
       await speechInput.dispose().catch(() => undefined);
+      // Silences anything still queued in the synthesiser (PR-033). Awaited for
+      // the same reason: the stop is a round trip, and a helper that goes away
+      // first would leave the last sentence playing until the process exits.
+      await speechOutput.dispose().catch(() => undefined);
       if (choice.owned) {
         await transport.stop();
       }

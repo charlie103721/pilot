@@ -137,7 +137,7 @@ swift build -c release --package-path packages/platform-mac/native   # optional:
 pnpm --filter @pilot/desktop run build:helper -- --require-native     # fails if Swift is missing
 pnpm package
 pnpm --filter @pilot/desktop exec node scripts/verify-bundle.js       # expect `helper: native`
-open apps/desktop/release/mac-arm64/Pilot.app
+open "$(find apps/desktop/release -maxdepth 2 -name 'Pilot.app' | head -1)"   # mac-arm64 or mac-x64
 ```
 
 `--require-native` is the difference that matters: without it the hook falls
@@ -981,3 +981,82 @@ PILOT_HOTKEY_FIXTURE=permission-unattributed pnpm dev # PR-011's verdict refuses
 PILOT_SPEECH_DISCLOSURE=remote pnpm dev               # the audio would leave the Mac
 ```
 
+
+## Demo (PR-033 — spoken response)
+
+```sh
+pnpm demo:speak                             # headless walkthrough, no display needed
+```
+
+**This closes the voice loop.** PR-032 made Pilot hear; PR-033 makes it speak.
+The last fake boundary in `docs/system-design.md` §5 went with it —
+`createSilentSpeechOutputAdapter` is deleted, and `MacSpeechOutputAdapter`
+(PR-014) over `AVSpeechSynthesizer` drives the machine's `speak` and
+`stop-speech` instead. Nothing changed inside `@pilot/interaction`: PR-026's
+`SpeechOutputBinding` already cuts an answer into `<speechId>#<n>` chunks, plays
+them in order and reports one completion for the whole answer, and PR-033 hands
+it a different adapter and nothing else.
+
+`apps/desktop/src/main/speech-runtime.ts` is the new code, and it exists for one
+rule: **no `error` ever leaves the speech-output seam.**
+
+| what the synthesiser did | what the machine is told |
+| --- | --- |
+| `started` / `finished` / `stopped` | the same event, with the same chunk id |
+| `error` for a chunk | `finished` for that chunk — silent, and the stream carries on |
+| `speak()` rejected | `started` then `finished` for that chunk |
+| there is no synthesiser (no helper, or no installed voice) | `started` then `finished` for every chunk |
+
+That is not defensiveness. The interaction table's `speech-failed` row goes to
+`error` **and tears the run down with it**, so a synthesiser failing on chunk 2
+of an answer the model is still streaming would abort the run and lose the rest
+of the reply — the opposite of §16's "TTS fails → continue showing streamed
+text". Every silenced chunk is counted and logged; none of them costs the
+answer.
+
+**Read this first.** `docs/implementation.md`'s demo for PR-033 — "hear the
+answer while it also streams in the panel" — **is only half runnable here**:
+
+- **Nothing has ever been spoken aloud.** There is no macOS, no
+  `AVSpeechSynthesizer`, no voice and no audio device, and the Swift that would
+  speak has never been compiled (runbook §5 amendment 8). Every `started`,
+  `finished`, `stopped` and `error` is the Node helper stub answering a script.
+- **No model is real** (`docs/handoff.md` §2). Pi's faux provider, scripted.
+
+The walkthrough prints eight sections:
+
+1. **The boundary that changed**, and the voices the platform reports.
+2. **Ask, and the answer is spoken while it streams** — three sentences, three
+   utterances, in order, and the panel's *Speaking* indicator going up once and
+   down once for the whole answer.
+3. **The per-chunk identifiers, read off the wire** (runbook follow-up 5). Every
+   `speech.output.speak` matched against `speechChunkId(stream, n)`, zero
+   callbacks discarded as `unknown-chunk`, and the answer reporting completion.
+   This is the way this PR fails silently, so it is checked at the protocol.
+4. **The synthesiser fails mid-answer** (§16) — and the answer is still there,
+   complete, out of `error`, with the text box live. Then a Mac with no voice at
+   all, which asks the platform for nothing.
+5. **`stop()` for a stream the synthesiser never started** (follow-up 15): a
+   no-op, not an error.
+6. **Interrupting speech**, measured at this seam against §17's 300 ms budget —
+   command in, synthesiser told.
+7. **A model that goes quiet mid-sentence** (follow-ups 6 and 25): the same
+   answer with and without `createTimeoutScheduler()`, which the app now passes.
+8. **What none of it proves**, printed by the demo itself.
+
+In the app, the same thing by hand — the whole real stack, on Linux, against the
+stub. The synthesiser needs a script that *finishes*, or the first answer leaves
+the panel in `speaking` for ever:
+
+```sh
+PILOT_HELPER_STUB_PATH="$PWD/packages/platform-mac/test/support/helper-stub.ts" \
+  PILOT_HELPER_STUB='{"permissions":{"screen-recording":"granted","accessibility":"granted","microphone":"granted","speech-recognition":"granted"},"speechOutput":{"scripts":[[{"type":"started"},{"type":"finished"}]]}}' \
+  PILOT_LOG_LEVEL=debug pnpm dev
+```
+
+Watch `desktop.main.speech-out` at `debug`, and the `speech output` line at
+startup: `real=true available=true` means there is a synthesiser with a voice,
+`silent` in the `shell ready` line means this build reads its answers instead of
+speaking them. On a plain `pnpm dev` on Linux there is no helper and therefore
+no synthesiser, so every answer is silent — the same code path a Mac with no
+installed voice takes.

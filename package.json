@@ -29,6 +29,7 @@
     "demo:look": "pnpm --filter @pilot/desktop run demo:look",
     "demo:ask": "pnpm --filter @pilot/desktop run demo:ask",
     "demo:talk": "pnpm --filter @pilot/desktop run demo:talk",
+    "demo:speak": "pnpm --filter @pilot/desktop run demo:speak",
     "demo:voice": "pnpm build && pnpm --filter @pilot/interaction run demo:voice",
     "demo:response": "pnpm build && pnpm --filter @pilot/interaction run demo:response",
     "demo:interrupt": "pnpm build && pnpm --filter @pilot/interaction run demo:interrupt",
