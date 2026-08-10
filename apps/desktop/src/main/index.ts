@@ -44,6 +44,10 @@ import { createFakeWindowDemoDriver } from './window-demo.js';
  * the frames land in a real `ObservationCore` ring behind PR-019's real
  * `PilotScreenContextService` (`main/observation-runtime.ts`).
  *
+ * PR-030 replaced one more: **the screen-context service behind
+ * `observe_screen`**. `FakeScreenContextService` is gone from the real path, so
+ * a model that calls the tool reaches the same facade "Look now" does.
+ *
  * What is still fake, and who takes each one:
  *
  * | boundary        | today                                      | owner   |
@@ -51,7 +55,7 @@ import { createFakeWindowDemoDriver } from './window-demo.js';
  * | permissions     | real adapter; fake only when `kind: fakes`  | —       |
  * | window list     | real adapter; fake only when `kind: fakes`  | —       |
  * | screen capture  | real; **no capture at all** on `kind: fakes`| —       |
- * | `observe_screen`| `FakeScreenContextService` on the agent side| PR-030  |
+ * | `observe_screen`| real `PilotScreenContextService`            | —       |
  * | question anchor | `FakeQuestionAnchorSource`                 | PR-031  |
  * | speech in       | `FakeSpeechInputAdapter`                   | PR-032  |
  * | speech out      | silent adapter                             | PR-033  |
@@ -109,11 +113,6 @@ if (!singleInstance.isPrimary) {
   });
   logger.info('model source', { description: modelSource.description });
 
-  // The agent (PR-029). The capability gate (PR-020) runs inside this call,
-  // before Pi's `Agent` exists and before any tool is registered, so a refusal
-  // costs zero provider requests.
-  const agentRuntime = createAgentRuntime({ conversationId, source: modelSource, logger });
-
   // The platform (PR-028). One decision, in one place: the real macOS adapters
   // when there is a helper to talk to, the fakes otherwise, and the reason
   // either way. `start()` is awaited inside `app.whenReady()` below, because it
@@ -125,7 +124,9 @@ if (!singleInstance.isPrimary) {
 
   // The observation boundary (PR-028). Built before the controller because the
   // controller takes its `ObservationControlPort` — runbook follow-up 23: "PR-028
-  // passes the real capture lifecycle there".
+  // passes the real capture lifecycle there" — and now also before the agent,
+  // which takes its `ScreenContextService` (PR-030, the other half of the same
+  // follow-up).
   const observation = createObservationRuntime({
     capture: platform.capture,
     windows: platform.windows,
@@ -133,6 +134,24 @@ if (!singleInstance.isPrimary) {
     ...(platform.permissions.attribution === undefined
       ? {}
       : { attribution: platform.permissions.attribution.bind(platform.permissions) }),
+    logger,
+  });
+
+  // The agent (PR-029). The capability gate (PR-020) runs inside this call,
+  // before Pi's `Agent` exists and before any tool is registered, so a refusal
+  // costs zero provider requests.
+  //
+  // `screenContext` is PR-030's whole change on this side, and it is one
+  // argument: `observe_screen` now reaches PR-019's real
+  // `PilotScreenContextService` — the *same instance* the interaction table's
+  // "Look now" drives — instead of `FakeScreenContextService`. One instance
+  // matters: the §10 rate limiter, the scene lineage, the retention guard and
+  // the one decoded frame are shared, so a model look and a user look cannot
+  // disagree about what is on screen or evade each other's limits.
+  const agentRuntime = createAgentRuntime({
+    conversationId,
+    source: modelSource,
+    screenContext: observation.screenContext,
     logger,
   });
 

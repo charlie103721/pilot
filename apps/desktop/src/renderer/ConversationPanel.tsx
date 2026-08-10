@@ -261,11 +261,35 @@ export function ConversationPanel({
       <StateBadge view={view} />
 
       {view.lastError === null ? null : (
-        <div className="banner banner--error" role="alert" data-testid="conversation-error">
+        <div
+          className="banner banner--error"
+          role="alert"
+          data-testid="conversation-error"
+          data-observation-failure={view.observationFailure?.failure ?? 'none'}
+        >
           <p className="banner__message">{view.lastError.userMessage}</p>
+          {/* PR-030: a refused look says whether looking again could help, and
+              which §10 rule refused when a policy rule is what refused. Both
+              come from `readObservationFailure`; nothing here decides. */}
+          {view.observationFailure === null ? null : (
+            <p className="banner__hint" data-testid="conversation-observation-hint">
+              {view.observationFailure.hint}
+            </p>
+          )}
           <dl className="banner__meta">
             <dt>Code</dt>
             <dd data-testid="conversation-error-code">{view.lastError.code}</dd>
+            {view.observationFailure === null ? null : (
+              <>
+                <dt>Look</dt>
+                <dd data-testid="conversation-observation-failure">
+                  {view.observationFailure.failure}
+                  {view.observationFailure.policyRule === null
+                    ? ''
+                    : ` · ${view.observationFailure.policyRule}`}
+                </dd>
+              </>
+            )}
           </dl>
           <button
             type="button"

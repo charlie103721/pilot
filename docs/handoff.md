@@ -108,6 +108,21 @@ PILOT_HELPER_BINARY="$(pwd)/packages/platform-mac/native/.build/debug/PilotHelpe
 #    …and from inside the packaged .app, which is the only layout where TCC can
 #    plausibly attribute Screen Recording to Pilot:
 open apps/desktop/release/mac-arm64/Pilot.app
+
+# 8. PR-030 — the MODEL looking at a real window. Run it after step 7: it is
+#    step 7's path plus the agent, so a failure here that step 7 did not show is
+#    in the tool or the model, not in capture.
+#    First the stub-driven walkthrough, which already passes on Linux:
+pnpm demo:look
+
+#    Then the real thing. Pick a window in the panel, then TYPE a question that
+#    can only be answered by looking — "what does this toggle do?", "what is the
+#    error message on this screen?" — and watch three things (below):
+PILOT_HELPER_BINARY="$(pwd)/packages/platform-mac/native/.build/debug/PilotHelper" \
+  PILOT_LOG_LEVEL=debug pnpm dev
+
+#    And press **Look now** with no question in flight, which is the same
+#    observation without the model in the way.
 ```
 
 Notes:
@@ -399,6 +414,41 @@ Also worth capturing while you are there:
   pointer *timeline* records the element on every sample; `PILOT_LOG_LEVEL=debug`
   shows whether grounding is degraded.
 
+### What to look for in step 8 (PR-030)
+
+This is the first time the **model** has been able to see a screen at all. Four
+things, in order:
+
+1. **Does the panel show "Looking at the screen" while it looks?** The
+   conversation state badge says it, and the observation indicator beside the
+   window picker gains "Pilot is reading an image of this window right now —
+   this window only." Both appear only while an observation is in flight. If the
+   answer arrives with neither ever appearing, the tool never called the facade
+   and the model answered from nothing — check the debug log for `observation
+   allowed`.
+2. **Does the answer describe the window you actually selected?** Ask about
+   something visible only in that window, then repeat the question with a
+   *different* window selected. A model that answers the first correctly and the
+   second from the first window's contents is a lineage failure, and it is the
+   one failure in this PR that is a privacy breach rather than a bug. Report it
+   with the `scene` ids from the debug log.
+3. **`capture-to-observation` in the developer diagnostics.** §17 budgets image
+   preprocessing under 150 ms; the Linux container measures 71–135 ms for a
+   `png` source (PR-018), and the stub's frames are 3 KB rather than a real
+   window's. This is the first honest number.
+4. **Press Look now with no question in flight, and again while paused.** The
+   first should produce an observation and return to *Watching*; the second is
+   refused by the transition table before anything is captured. Then revoke
+   Screen Recording in System Settings while Pilot is watching and press Look
+   now: the panel must show a sentence ("Pilot needs Screen Recording permission
+   to look at your screen.") plus "Looking again will not help until this is
+   fixed", **and the text box must stay usable** (§16). A raw message like
+   "Screen policy [...]" reaching the banner is a PR-030 defect.
+
+Also worth capturing while you are there: whether a real model calls
+`observe_screen` **at all** without being told to, and how often. Nothing here
+can answer that — the demo and the tests script the call.
+
 **Fallback in use:** Mac-gated code is written unverified and batched here
 (runbook amendment 8, user decision). Accepted risk: PR-011 through PR-015
 accumulate on top of an uncompiled helper. PR-011 additionally ships an
@@ -419,6 +469,11 @@ here against the Node helper stub (`pnpm demo:observe`, and
 `apps/desktop/test/main/observation-runtime.test.ts`), and **not one pixel,
 permission prompt or accessibility element in it has ever been real**. Step 7 is
 what produces that answer.
+PR-030 puts the model on the end of that same path — `observe_screen` reaches
+the real `PilotScreenContextService`, a real image reaches the provider's inbox
+(`pnpm demo:look`, `apps/desktop/test/main/model-observation.test.ts`) — and
+inherits both gaps at once: the image is the stub's bytes and the provider is
+Pi's faux one. Step 8 is what produces that answer.
 
 ---
 
@@ -464,6 +519,19 @@ compaction summary quality. Add one more now that a real session exists: **how a
 real model behaves when a run is aborted mid-sentence.** Pi reports an abort as a
 final assistant message rather than an event (`docs/pi-notes.md`), and the faux
 provider's version of that is necessarily tidier than a real provider's.
+
+**PR-030 added the largest one yet: whether a model *decides* to look.** The
+tool now reaches a real screen-context service, and an image really does arrive
+in the provider's inbox — but the faux provider does not read it, and *that* it
+called `observe_screen` is scripted by the demo and the tests
+(`createScriptedModelSource`). So nothing here says anything about the two
+questions that decide whether point-and-ask works at all: does the model call
+the tool when answering needs the screen, and does it call it *again* when its
+last observation is stale (system-design §11's whole premise). The first real
+session should be watched for both, and for the third question underneath them:
+whether a JPEG/PNG of a 1440-px window is legible enough for the model to read
+small UI text at all. PR-043's grounding checklist is where that gets measured;
+until then it is unknown, not assumed.
 
 ---
 
@@ -564,6 +632,10 @@ reversible; raise any that look wrong.
 | **"Look now" asks for `view: 'window'`, `moment: 'current'`** (PR-028) | `moment: 'current'` is the honest reading of "look now" — a fresh capture rather than whichever frame is in the ring. `view: 'window'` rather than `'both'` because a pointer crop is cropped around the *question* anchor and there is no anchor until PR-031 wires one; cropping around a pointer nobody pointed with would be a picture of the wrong thing. It also means an unchanged frame is passed through unencoded (PR-018), so the ordinary look costs no re-encode. The model's own `observe_screen` chooses its own view and moment and reaches the same facade through PR-030. |
 | **A failing attribution verdict makes the observation path read the permissions as `denied`** (PR-028, closing runbook follow-up 16) | PR-011's verdict answers a different question from the permission API: "macOS says granted" and "the grant reaches this process" are not the same claim. Under the `enforce` policy the adapter throws before reporting anything, but under `warn` — and against the stub, where the identity is invented — a `granted` state would otherwise flow straight into `ScreenContextConditions` and Pilot would capture nothing while reporting no error. `observationPermissionConditions` maps `helper-attributed` and `bundle-mismatch` onto `denied`; `unknown` is deliberately left alone, because PR-011 calls it a non-answer rather than a failure. |
 | **`ObservationAdapter.subscribeEvents` added as an *optional* member** (PR-012) | Capture has to report why it stopped — window lost, screen locked, protected content — and how many frames it refused; the four verbatim methods from system-design §5 carry none of that. Optional keeps it source-compatible: every existing implementation, including the shared fakes, still satisfies the interface untouched. Same shape as PR-011's `PermissionAdapter.attribution?()`. |
+| **The model and the user share one `ScreenContextService` instance, not two** (PR-030) | `createAgentRuntime({ screenContext: observation.screenContext })` passes the object the interaction port already drives, rather than building a second facade over the same session. Consequence worth knowing: §10's rate limiter (2 observations/second) counts a model look and a "Look now" **together**, so a user who presses Look now twice while the model is looking will see a `policy-rejected` refusal. That is the intended reading — the limit exists to bound how much of the screen leaves the machine, and it would be meaningless if a second caller had its own budget — and it also means one scene lineage, one retention guard and one decoded frame. `pnpm demo:look` §6 shows the refusal happening. **Say if you would rather the user's own looks were exempt**; it is a second rate limiter, and it would be a deliberate weakening of a §10 bound. |
+| **A "Look now" refusal is rewritten into PR-021's shape, but a curated sentence survives** (PR-030) | The tool already attaches `describeObserveScreenFailure`'s sentence and a `retryable` flag; the manual path threw whatever the facade threw, and `PilotError.userMessage` defaults to the *technical* message. `main/observation-failure.ts` now maps every manual refusal onto the same coarse failure kind — but keeps the `userMessage` when the producer wrote a distinct one, because PR-017's §10 rule table is more specific than the eleven coarse kinds: `unmaskable-secure-region` ("Pilot cannot hide a password field it cannot locate") would otherwise be flattened into `protected-content` ("This application blocks screen capture"), which is coarser *and false*. Cost: the two paths can show two different sentences for the same code. **Say if you would rather one sentence per failure kind everywhere**; it is deleting one conditional. |
+| **The failure mapping happens in the main process and crosses IPC as data** (PR-030) | `describeObserveScreenFailure` lives in `@pilot/agent`, which pulls Pi in with it, and the panel's view models are bundled into Chromium — so importing it renderer-side would have put a Pi type in the renderer, which PR-029 recorded as the thing to keep out. The mapping runs where the refusal is produced and the result rides on `SerializedPilotError.details`, which `serializedPilotErrorSchema` already validates, so **no IPC contract changed**. `src/observation/failure-view.ts` is the renderer-safe reader, and a compile-time assertion in `main/observation-failure.ts` fails the build if the two ever disagree about the tool's name. |
+| **`ObservationView` gained `looking`, and `capturing` was left alone** (PR-030) | system-design §14 asks the user be able to see Pilot looking at their screen. PR-009's indicator answers a different question — "may Pilot watch this window" — and it is the app's single answer to it, so it was not touched and no seventh indicator state was added. `looking` is a second boolean, true in exactly the one interaction state (`observing-screen`) that both the model's tool call and "Look now" pass through. Both are rendered, side by side, because "Pilot may watch this" and "Pilot is reading this right now" are different promises and collapsing them would make the more sensitive one invisible. |
 
 ---
 
@@ -584,6 +656,7 @@ reversible; raise any that look wrong.
 | Phase 3 — integration (028…036) | **In progress.** PR-029 (text conversation with a real Pi session) first, because it is the one integration step fully verifiable on Linux. PR-028 and everything from PR-030 onward also need the Mac (§1); nothing past PR-029 can be *demonstrated against a real model* until the Codex sign-in (§2). |
 | Phase 3 — integration (028…036) | In progress. **PR-029 is merged**: the desktop app holds real, multi-turn, interruptible text conversations through a real `PiAgentSession` — against a faux provider, because §2 is still open. Observation, speech, permissions, the window list and persistence are still fake. The remaining steps mostly need the Mac (§1) and a signed-in model (§2). |
 | Phase 3 — integration (028…036) | In progress. **PR-028 is merged**: the observation boundary is real. The window picker, the permission states and the capture lifecycle run on `MacWindowAdapter`, `MacPermissionAdapter`, `MacAccessibilityAdapter` and `MacObservationAdapter`, the frames land in a real `ObservationCore` ring, and PR-019's `PilotScreenContextService` answers behind it — verified end to end against the Node helper stub, and **never once against macOS** (§1 step 7). Speech, the model, persistence and the agent-side `observe_screen` (PR-030) are still fake. |
+| Phase 3 — integration (028…036) | In progress. **PR-030 is merged**: the model can see the selected window. `observe_screen` reaches PR-019's real `PilotScreenContextService` — the same instance "Look now" drives — and a real image reaches the provider's inbox; the observing state is visible while it happens and a refusal reaches the user as a sentence. Selected-window-only was re-proved against the real service. **Never once against macOS, and never once against a real model** (§1 step 8, §2): the pixels are the Node helper stub's and the tool call is scripted. Speech, persistence, the question anchor and the model itself are still fake. |
 | Phase 4 — providers (037…039) | Not started. PR-037 (Codex) is the one the user's decision selects. |
 | Phase 5 — hardening and release (040…044) | Not started. |
 
@@ -831,6 +904,28 @@ demo executed against the merged tree.
   to produce frames over ~1.8 MB the three-second ring will not hold three
   seconds, and the fix is either `quality`/scale on the capture options or going
   back to JPEG and paying the decode. §1 step 7 asks for the number.
+- **The model can now see a screen, and no model has ever decided to** (PR-030).
+  This is the gap PR-030 opens rather than closes. The path is real end to end —
+  tool, §10 policy, image pipeline, frame ring, tool result, provider inbox — but
+  the two facts that make point-and-ask work are untested by construction:
+  whether a model calls `observe_screen` when answering needs the screen, and
+  whether it can *read* the resulting image well enough to answer about small UI
+  text. Both need a signed-in model (§2) and a real window (§1 step 8), and
+  neither exists here. If the first turns out to be unreliable, the lever is the
+  tool description and the system prompt (`packages/agent/src/system-prompt.ts`,
+  `observe-screen.ts`), both of which are one string; if the second is, the
+  levers are the encoding decisions PR-018 recorded, and PR-043's grounding
+  checklist is where the evidence comes from.
+- **One rate limiter now serves two callers** (PR-030). §10 allows 2
+  observations a second and the model and the user share the budget, because
+  they share the facade. Nobody has yet seen a real conversation where the model
+  looks two or three times in one turn — the faux provider looks exactly when it
+  is scripted to — so whether the limit is *right* for a real model is unknown.
+  A model that looks three times in a second sees the third refused as
+  `policy-rejected` and is told, in the tool's own words, to answer from the
+  observations it already has. That is the designed behaviour; whether it is the
+  useful one is a PR-043 question. It is one field in
+  `MVP_SCREEN_CONTEXT_POLICY`.
 - **Nothing has ever spoken to a real provider** (PR-029). The whole agent path
   now runs — capability gate, envelope, `Agent.prompt`, streamed deltas, tool
   calls, abort — but always against Pi's faux provider, which is a cooperative,

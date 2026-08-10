@@ -152,6 +152,14 @@ body {
   margin: 0;
 }
 
+/* PR-030: whether looking again could help. Quieter than the message it
+   follows — it is advice, not the failure. */
+.banner__hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .transcript {
   flex: 1;
   border: 1px solid var(--border);
@@ -533,6 +541,17 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--muted);
+}
+
+/* PR-030: present only while an observation is in flight. It shares the row
+   with the capture state and must not reserve space when empty. */
+.observation__looking {
+  font-size: 11px;
+  color: var(--live-text);
+}
+
+.observation__looking[data-looking='false'] {
+  display: none;
 }
 
 .observation__detail,

@@ -144,7 +144,12 @@ These came from plan review; the implementation doc has not been edited to
 include them:
 
 1. **PR-030** additionally implements the **"Look now"** manual observation
-   action (`dp/m1.md` Phase 4; missing from implementation.md).
+   action (`dp/m1.md` Phase 4; missing from implementation.md). **DONE by
+   PR-030.** The command and its transition row existed since PR-006 and the
+   panel control since PR-010; PR-028 built the port method behind it. PR-030
+   made it reach the real facade end to end, gave its refusal the same shape a
+   tool refusal has, and asserted the whole path
+   (`apps/desktop/test/main/model-observation.test.ts`, `pnpm demo:look`).
 2. **PR-029…PR-036 run on a development model profile** produced by the
    PR-005 spike (an API key configured by hand). The provider settings UI and
    real auth flows arrive in Phase 4 — don't block Phase 3 on them.
@@ -212,6 +217,7 @@ the two in step.
 | **Selected-window capture** — the first real pixel | `pnpm --filter @pilot/platform-mac demo:capture` (run the row above first; without a Screen Recording grant this cannot work) | PR-012 | **yes** |
 | **Global push-to-talk against a real `CGEventTap`** | `pnpm --filter @pilot/platform-mac demo:hotkey`, then again from inside the packaged `.app`; hold Right Option **with another app in front** | PR-015 | **yes** |
 | **Observation inside the app** — pick a real window, look, pause, close it | `pnpm demo:observe` (passes on Linux against the stub), then `PILOT_HELPER_BINARY=… PILOT_LOG_LEVEL=debug pnpm dev`, then the packaged `.app` | PR-028 | **yes** |
+| **The model looking at a real window** — ask a typed question that makes it call `observe_screen` | `pnpm demo:look` (passes on Linux against the stub and a scripted faux provider), then the same question in `pnpm dev` against the real helper | PR-030 | **yes** |
 
 A Swift compile failure is a **PR-003 defect** in the transport files, a
 **PR-011 defect** in `PermissionModel.swift`, `Attribution.swift`,
@@ -376,9 +382,9 @@ with no native image dependency. PR-019 is unblocked.
 — the system-design §5 interface, assembled over PR-016's buffers and lineage,
 PR-017's execution order and PR-018's pixels. `packages/agent`'s
 `observe_screen` tool can now be pointed at the real service instead of
-`FakeScreenContextService` (PR-030), and PR-028 has a `ScreenContextService` to
-put behind the desktop shell. Demo: `pnpm --filter @pilot/observation
-demo:context`.
+`FakeScreenContextService` (**done — PR-030**), and PR-028 has a
+`ScreenContextService` to put behind the desktop shell. Demo: `pnpm --filter
+@pilot/observation demo:context`.
 
 ### Phase 3 — in flight
 
@@ -386,17 +392,20 @@ demo:context`.
 | --- | --- |
 | 028 | **Observe a real selected window.** `FakePermissionAdapter`, `FakeWindowAdapter` and `createMockObservationControlPort` are gone from the shell's real path: `main/platform-runtime.ts` chooses `MacWindowAdapter` / `MacPermissionAdapter` / `MacAccessibilityAdapter` / `MacObservationAdapter` when there is a helper to talk to, and `main/observation-runtime.ts` puts a real `ObservationCore` ring and PR-019's `PilotScreenContextService` behind the interaction table's `start-capture` / `stop-capture` / `clear-buffers` / `request-observation`. Closed follow-ups 16, 17 and 23; confirmed 18. **Never run against macOS** (`docs/handoff.md` §1 step 7). Demo: `pnpm demo:observe`. |
 | 029 | **Text conversation with a real Pi session.** `FakeInteractionController` and `FakeAgentSession` are gone from `apps/desktop`: the panel now drives `@pilot/interaction`'s real machine over a real `PiAgentSession`. Typed question in, streamed answer out, multi-turn, interruptible, with the capability gate refusing an unsupported profile before anything is sent. Closed runbook follow-ups 1, 4, 10 and 11, and decided 2. Demo: `pnpm demo:agent`. |
+| 030 | **Model-requested real observation.** `FakeScreenContextService` is gone from the shell's real path: `createAgentRuntime({ screenContext: observation.screenContext })` points `observe_screen` at the *same* `PilotScreenContextService` instance "Look now" drives. That really was one argument (PR-028 and PR-029 both said so, and both were right); the rest of the PR is the three things around it — **"Look now"** end to end through the machine (runbook amendment 1), the **observing state** made visible (`ObservationView.looking`, beside `capturing`, which was not re-derived), and **refusals surfaced** through PR-021's `describeObserveScreenFailure`. Closed follow-ups 23, 27 and 28. Demo: `pnpm demo:look`. |
 
 PR-029 replaced exactly one fake boundary — the agent. PR-028 replaced exactly
-one more — observation. Speech, the model, persistence, the question anchor and
-the agent-side `observe_screen` (`FakeScreenContextService`, PR-030) are still
-fake, each named in the table at the top of `apps/desktop/src/main/index.ts`
-with the PR that takes it. **The model is still faux** (`docs/handoff.md` §2):
-no sign-in has happened, so nothing has ever talked to a real provider. **And
-nothing has ever captured a pixel**: there is no macOS here, so PR-028's whole
-path is exercised against the Node helper stub
+one more — observation. PR-030 replaced one more — the screen-context service
+behind `observe_screen`. Speech, the model, persistence and the question anchor
+are still fake, each named in the table at the top of
+`apps/desktop/src/main/index.ts` with the PR that takes it. **The model is still
+faux** (`docs/handoff.md` §2): no sign-in has happened, so nothing has ever
+talked to a real provider, and *that the model calls `observe_screen`* is
+scripted in the demo and the tests rather than decided by a model. **And nothing
+has ever captured a pixel**: there is no macOS here, so PR-028's and PR-030's
+whole path is exercised against the Node helper stub
 (`packages/platform-mac/test/support/helper-stub.ts`) and its verification is
-outstanding in `docs/handoff.md` §1 step 7.
+outstanding in `docs/handoff.md` §1 steps 7 and 8.
 
 ### Cross-lane issues found while merging — read before adding a lane
 
@@ -549,7 +558,9 @@ Open items a later PR must close. Each was raised by the lane that found it.
 | 19 | **PR-032 must wire the hotkey adapter to the controller.** `MacHotkeyAdapter` emits `hotkey-down`/`hotkey-up`; the controller takes `push-to-talk-down`/`push-to-talk-up`. The mapping is one `subscribe` and a `switch`, but two details are not optional: a `hotkey-up` with `synthetic: true` must still dispatch `push-to-talk-up` (it is how a dead tap releases the microphone), and `hotkey-availability-changed` must reach the UI or an unavailable shortcut looks like a broken one. | PR-032 |
 | 20 | **The app must own the `ConversationStore` lifecycle** (PR-023). `openConversationStore({ conversationId, directory })` → `store.restore()` → `new PiAgentSession({ store, restore })`, and `store.close()` on `before-quit`. Three details are not optional. (a) The SQLite **writer lease** is per process: a second instance fails immediately with a `WriterLeaseHeldError` (`isWriterLeaseHeld(error)`, `details.reason === 'writer-lease-held'`, `code: 'internal'`) — pair it with `app.requestSingleInstanceLock()` and surface `error.userMessage`; a crashed process holds it for 30 s more and then the next launch takes over by itself, so do not delete the database to "fix" a launch. (b) Skip `restore` and the user's history is silently invisible to the model even though it is on disk. (c) Skip `store.close()` and every relaunch inside 30 s fails. `packages/agent/demo/persistence-demo.mjs` shows the whole sequence. | PR-036 |
 | 22 | **PR-037 replaces the development model source** (PR-029). `apps/desktop/src/main/index.ts` calls `createDevelopmentModelSource()` from `@pilot/agent`, which returns a `ModelSource` — profile, `Models`, `Model`, `toolSupport`, a request counter and one line of description — backed by Pi's faux provider. Everything downstream consumes that interface and nothing else, so a real provider is one call site. Until then the app is honest about it: the description is logged at startup and printed in the demo header, and the faux answers say in their own text that they did not come from a model. | PR-037 |
-| 23 | **The two mocked ports PR-029 left, and where they attach** (PR-029). ~~`createInteractionRuntime({ observation })` … **PR-028 passes the real capture lifecycle there**.~~ **PR-028's half is CLOSED**: `main/index.ts` passes `observation.port` from `createObservationRuntime`, and `createMockObservationControlPort` survives only as the default for a caller that supplies nothing (the scripted desktop suites). **PR-030's half is still open**: `createAgentRuntime({ screenContext })` still defaults to `FakeScreenContextService`, so the *model* still cannot see a screen. PR-030 passes `observation.screenContext` — the same `PilotScreenContextService` instance the port already drives — and changes nothing else on the agent side. | ~~PR-028~~ / PR-030 |
+| 23 | ~~**The two mocked ports PR-029 left, and where they attach** (PR-029).~~ **CLOSED — PR-028's half, then PR-030's.** `main/index.ts` passes `observation.port` to `createInteractionRuntime` and `observation.screenContext` to `createAgentRuntime`, so the model's `observe_screen` and the user's "Look now" reach **the same `PilotScreenContextService` instance**. Both mocks survive only as defaults for a caller that supplies nothing (the scripted desktop suites). It was indeed one argument on the agent side and nothing else — PR-029 and PR-028 were right about that, and the two things that were *not* free are recorded as their own rows below (27, 28). One instance rather than two is load-bearing: the §10 rate limiter, the scene lineage, the retention guard and the single decoded frame are shared, so a model look cannot spend, evade or diverge from a user look. `apps/desktop/test/main/model-observation.test.ts` asserts the identity (`agent.screenContext === observation.screenContext`) and the shared budget. | ~~PR-028~~ / ~~PR-030~~ |
+| 27 | ~~**A "Look now" refusal reached the panel as a technical message.**~~ **CLOSED by PR-030.** `PilotError.userMessage` defaults to `message`, so an adapter failure surfaced to the user as, say, "helper exited during capture.pull". `main/observation-failure.ts` now gives a manual refusal the shape PR-021 gives a tool refusal — the coarse `failure` kind from `failureForErrorCode`, the `retryable` flag, and `describeObserveScreenFailure`'s sentence as the fallback — while **keeping** a curated `userMessage` where the §10 rule table wrote one, because `unmaskable-secure-region` says more than `protected-content` can. The renderer reads it with `readObservationFailure` (`src/observation/failure-view.ts`), which imports nothing from `@pilot/agent` and therefore keeps Pi out of Chromium. | ~~PR-030~~ |
+| 28 | ~~**Nothing in the observation surface said Pilot was looking *right now*.**~~ **CLOSED by PR-030.** PR-009's six-state indicator answers "may Pilot watch this window"; §14 also asks the user be able to see the moment an image is read. `ObservationView.looking` (true in `observing-screen`, the one state both the model's tool call and "Look now" pass through) is a second, additive fact beside `capturing` — which is **not** re-derived, still `indicator === 'observing'`, still the one answer in the app. | ~~PR-030~~ |
 | 24 | **Speech output is silent, not absent** (PR-029). The shell needs *something* behind `SpeechOutputAdapter` and `FakeSpeechOutputAdapter` was the wrong thing: it reports `started` and then waits for a test to call `finish()`, so an app wired to it enters `speaking` on the first answer and stays there for ever. `createSilentSpeechOutputAdapter` reports `started` then `finished` on the next microtask — the shape of a synthesiser with nothing to say. **PR-033 replaces it with `MacSpeechOutputAdapter`**, and should delete the silent one rather than leave two. | PR-033 |
 | 25 | **`createTimeoutScheduler()` is still not passed** (follow-up 6's remaining wiring). PR-029 deliberately did not add it. The scheduler exists to release a *spoken* tail from a run that stalls, and with speech output silent there is nothing to release and no way to verify the behaviour — wiring it now would be an unobserved change to timing. **PR-033 should pass it when it passes a real synthesiser.** | PR-033 / PR-035 |
 | 26 | **`PiAgentSessionOptions.tools` is `readonly AgentTool<never>[]`, which nothing real is assignable to** (PR-029). `AgentTool`'s schema parameter appears in `execute`'s parameter position, so every call site in the agent lane wrote `tool as unknown as AgentTool<never>`. PR-029 moved that cast behind `asSessionTool()` (additive, in `packages/agent/src/session.ts`) so the composition root contains no cast. The real fix is to widen the field — Pi's own `Agent` types it `AgentTool<any>[]` — which is a deliberate contract change, not integration work. | a focused contract PR, if wanted |
