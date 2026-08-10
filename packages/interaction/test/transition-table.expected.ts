@@ -312,7 +312,9 @@ export const EXPECTED_TRANSITION_TABLE: readonly string[] = [
   'error + set-observation-enabled -> resting | reject(illegal-transition)',
   'error + push-to-talk-down -> reject(illegal-transition)',
   'error + push-to-talk-up -> reject(illegal-transition)',
-  'error + submit-text -> reject(illegal-transition)',
+  // PR-025 / system-design §16: a failed recogniser must leave the user able to
+  // type instead, so this is the one command `error` accepts besides recovery.
+  'error + submit-text -> thinking | reject(empty-input)',
   'error + look-now -> reject(illegal-transition)',
   'error + interrupt -> reject(nothing-to-interrupt)',
   'error + stop-speaking -> reject(nothing-to-interrupt)',

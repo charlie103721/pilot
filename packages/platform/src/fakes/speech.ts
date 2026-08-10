@@ -123,6 +123,31 @@ export class FakeSpeechInputAdapter implements SpeechInputAdapter {
   emitLateFinal(utteranceId: UtteranceId, transcript: string): void {
     this.#emitter.emit({ type: 'final', utteranceId, transcript });
   }
+
+  /**
+   * Test control: emit a partial without ending the utterance.
+   *
+   * The scripted path only speaks on `stop()`; a real recogniser streams
+   * hypotheses while the key is still held, and PR-025 has to bind that.
+   */
+  emitPartial(utteranceId: UtteranceId, transcript: string): void {
+    this.#emitter.emit({ type: 'partial', utteranceId, transcript });
+  }
+
+  /**
+   * Test control: fail an utterance mid-flight, the way a recogniser that loses
+   * the audio session does (system-design §16, "STT fails").
+   */
+  emitError(utteranceId: UtteranceId, message: string): void {
+    if (this.#active === utteranceId) {
+      this.#active = null;
+    }
+    this.#emitter.emit({ type: 'error', utteranceId, error: new Error(message) });
+  }
+
+  get activeUtteranceId(): UtteranceId | null {
+    return this.#active;
+  }
 }
 
 export interface FakeSpeechOutputAdapterOptions {

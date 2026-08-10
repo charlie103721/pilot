@@ -9,6 +9,7 @@ import {
   type ObservedWindow,
   type PermissionKind,
   type PermissionSnapshot,
+  type UtteranceId,
 } from '@pilot/shared';
 import type {
   AgentSession,
@@ -25,6 +26,7 @@ import type { InteractionInput } from './inputs.js';
 import { InteractionMachine, type Clock, type TransitionOutcome } from './machine.js';
 import { rejectionError, type InteractionRejection } from './rejection.js';
 import type { ObservationControlPort, QuestionEnvelopeFactory } from './ports.js';
+import { SpeechInputBinding, type VoiceDiagnostic } from './speech-binding.js';
 
 /**
  * The `InteractionController` implementation.
@@ -97,15 +99,14 @@ export class PilotInteractionController implements InteractionController {
   readonly #machine: InteractionMachine;
   readonly #views = new Listeners<PilotViewState>();
   readonly #rejections = new Listeners<InteractionRejection>();
+  readonly #diagnostics = new Listeners<VoiceDiagnostic>();
   readonly #unsubscribes: Unsubscribe[] = [];
 
-  readonly #speechInput: SpeechInputAdapter;
+  readonly #speech: SpeechInputBinding;
   readonly #speechOutput: SpeechOutputAdapter;
   readonly #agent: AgentSession;
   readonly #envelopes: QuestionEnvelopeFactory;
   readonly #observation: ObservationControlPort | undefined;
-  readonly #requireOnDeviceSpeech: boolean;
-  readonly #speechLocale: string | undefined;
 
   #view: PilotViewState;
   #pending: Promise<void> = Promise.resolve();
@@ -124,17 +125,24 @@ export class PilotInteractionController implements InteractionController {
         ? {}
         : { requiredPermissions: options.requiredPermissions }),
     });
-    this.#speechInput = options.speechInput;
     this.#speechOutput = options.speechOutput;
     this.#agent = options.agent;
     this.#envelopes = options.envelopes;
     this.#observation = options.observation;
-    this.#requireOnDeviceSpeech = options.requireOnDeviceSpeech ?? true;
-    this.#speechLocale = options.speechLocale;
     this.#view = this.#machine.viewState;
 
-    this.#unsubscribes.push(
-      this.#speechInput.subscribe((event) => {
+    // PR-025: the speech adapter is reached only through the binding, which
+    // owns "exactly one active utterance" at the adapter layer. Events that
+    // reach `onEvent` have already been proved to belong to the live utterance;
+    // everything else is a diagnostic and never becomes a machine input.
+    this.#speech = new SpeechInputBinding({
+      speechInput: options.speechInput,
+      requireOnDevice: options.requireOnDeviceSpeech ?? true,
+      ...(options.speechLocale === undefined ? {} : { locale: options.speechLocale }),
+      onDiagnostic: (diagnostic) => {
+        this.#diagnostics.emit(diagnostic);
+      },
+      onEvent: (event) => {
         switch (event.type) {
           case 'partial':
             this.send({
@@ -158,7 +166,10 @@ export class PilotInteractionController implements InteractionController {
             });
             return;
         }
-      }),
+      },
+    });
+
+    this.#unsubscribes.push(
       this.#speechOutput.subscribe((event) => {
         switch (event.type) {
           case 'started':
@@ -237,6 +248,23 @@ export class PilotInteractionController implements InteractionController {
   /** Rejected transitions, including discarded stale results. */
   subscribeRejections = this.#rejections.subscribe;
 
+  /**
+   * Speech-adapter traffic the binding refused to act on: a callback for a dead
+   * utterance, a second finalize, a teardown call for something already closed.
+   * These never reach the machine, so they are reported here instead.
+   */
+  subscribeVoiceDiagnostics = this.#diagnostics.subscribe;
+
+  /** Everything {@link subscribeVoiceDiagnostics} has reported, bounded. */
+  get voiceDiagnostics(): readonly VoiceDiagnostic[] {
+    return this.#speech.diagnostics;
+  }
+
+  /** The utterance the speech adapter is allowed to talk about, if any. */
+  get liveUtteranceId(): UtteranceId | null {
+    return this.#speech.liveUtteranceId;
+  }
+
   snapshot(): PilotViewState {
     return this.#view;
   }
@@ -287,12 +315,16 @@ export class PilotInteractionController implements InteractionController {
     }
     this.#unsubscribes.length = 0;
     await this.#pending.catch(() => undefined);
+    // Releases the microphone if an utterance was still open (system-design
+    // §11: pause, lock, logout and shutdown must clear audio buffers).
+    await this.#speech.dispose().catch(() => undefined);
     await this.#speechOutput.stop().catch(() => undefined);
     await this.#agent.interrupt('abort', 'controller disposed').catch(() => undefined);
     await this.#observation?.stop().catch(() => undefined);
     await this.#observation?.clear().catch(() => undefined);
     this.#views.clear();
     this.#rejections.clear();
+    this.#diagnostics.clear();
   }
 
   /** Resolves once every queued effect (and anything they caused) has run. */
@@ -344,17 +376,13 @@ export class PilotInteractionController implements InteractionController {
         await this.#observation?.clear();
         return;
       case 'start-listening':
-        await this.#speechInput.start({
-          utteranceId: effect.utteranceId,
-          requireOnDevice: this.#requireOnDeviceSpeech,
-          ...(this.#speechLocale === undefined ? {} : { locale: this.#speechLocale }),
-        });
+        await this.#speech.start(effect.utteranceId);
         return;
       case 'stop-listening':
-        await this.#speechInput.stop(effect.utteranceId);
+        await this.#speech.stop(effect.utteranceId);
         return;
       case 'cancel-listening':
-        await this.#speechInput.cancel(effect.utteranceId);
+        await this.#speech.cancel(effect.utteranceId);
         return;
       case 'submit-question': {
         const envelope = await this.#envelopes.create({

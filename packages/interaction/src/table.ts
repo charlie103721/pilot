@@ -758,7 +758,12 @@ export const TRANSITIONS: Readonly<Record<InteractionState, TransitionRow>> = {
   error: {
     'push-to-talk-down': deny('illegal-transition'),
     'push-to-talk-up': deny('illegal-transition'),
-    'submit-text': deny('illegal-transition'),
+    // `submit-text` is deliberately *not* denied here (PR-025). system-design
+    // §16: when STT fails, Pilot "offers text input" — and a failed recogniser
+    // is exactly what leaves the machine in `error`. Falling through to the
+    // global rule makes typing the documented way out: the question is
+    // submitted through the same path a spoken one takes, and the patch clears
+    // `lastError`, so the error is dismissed by being answered.
     'look-now': deny('illegal-transition'),
     interrupt: deny('nothing-to-interrupt'),
     'stop-speaking': deny('nothing-to-interrupt'),
