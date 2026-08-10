@@ -82,6 +82,41 @@ export interface StubDisplay {
   isPrimary: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// PR-015 shapes
+// ---------------------------------------------------------------------------
+
+export type StubHotkeyTapState =
+  'active' | 'stopped' | 'accessibility-denied' | 'creation-failed' | 'disabled';
+
+export type StubHotkeyTapChange =
+  | 'started'
+  | 'stopped'
+  | 'disabled-by-timeout'
+  | 'disabled-by-user-input'
+  | 're-enabled'
+  | 'failed';
+
+export interface StubHotkeyBinding {
+  keyCode: number;
+  label: string;
+  isModifierKey: boolean;
+  requiredModifiers: string[];
+}
+
+/**
+ * One scripted thing the "tap" does after `hotkey.start` has been answered.
+ *
+ * The stub deliberately plays a script *verbatim*, including auto-repeat and
+ * duplicate phases that the real Swift gate would have dropped. That makes it a
+ * hostile helper, which is the useful kind: it proves the host-side coalescer
+ * works on its own rather than inheriting correctness from a Swift file that
+ * has never been compiled.
+ */
+export type StubHotkeyStep =
+  | { key: 'down' | 'up'; autorepeat?: boolean; keyCode?: number }
+  | { tap: StubHotkeyTapChange; state?: StubHotkeyTapState; detail?: string; held?: boolean };
+
 /** One state of the desktop, as `windows.list` would report it. */
 export interface StubDesktop {
   windows?: StubWindow[];
@@ -163,6 +198,27 @@ export interface StubConfig {
    * deterministically: no timers, no sleeping, no races.
    */
   desktopScript?: StubDesktop[];
+
+  // -------------------------------------------------------------------------
+  // PR-015
+  // -------------------------------------------------------------------------
+
+  /** `AXIsProcessTrusted()` stand-in. Default true. */
+  hotkeyAccessibility?: boolean;
+  /** `CGEventTapCreate` returns null even though Accessibility is granted. */
+  hotkeyTapFails?: boolean;
+  /** Script played after every `hotkey.start`. */
+  hotkeyScript?: StubHotkeyStep[];
+  /**
+   * Successive scripts. Call *n* of `hotkey.start` plays entry *n*, and the
+   * last entry repeats — the same shape as `desktopScript`.
+   *
+   * The cursor lives in the stub **process**, so a helper restart begins again
+   * at entry 0. That is faithful: a restarted helper has no tap and no memory
+   * of the key either. Use `hotkeyScript` when the behaviour should survive a
+   * restart.
+   */
+  hotkeyScripts?: StubHotkeyStep[][];
 }
 
 // ---------------------------------------------------------------------------
@@ -390,6 +446,133 @@ class StubDesktopScript {
   }
 }
 
+const DEFAULT_STUB_BINDING: StubHotkeyBinding = {
+  keyCode: 61,
+  label: 'Right Option',
+  isModifierKey: true,
+  requiredModifiers: [],
+};
+
+/** Live tap state, mutated by `hotkey.start`/`.stop` and by a played script. */
+class StubHotkeyTable {
+  private readonly config: StubConfig;
+  private readonly scripts: StubHotkeyStep[][];
+  private startCount = 0;
+  private sequence = 0;
+  binding: StubHotkeyBinding = DEFAULT_STUB_BINDING;
+  tap: StubHotkeyTapState = 'stopped';
+  held = false;
+  detail = '';
+  counters = {
+    emitted: 0,
+    suppressed: 0,
+    disabledByTimeout: 0,
+    disabledByUserInput: 0,
+    reEnabled: 0,
+  };
+
+  constructor(config: StubConfig) {
+    this.config = config;
+    this.scripts =
+      config.hotkeyScripts ?? (config.hotkeyScript === undefined ? [] : [config.hotkeyScript]);
+  }
+
+  get accessibilityTrusted(): boolean {
+    return this.config.hotkeyAccessibility !== false;
+  }
+
+  start(binding: StubHotkeyBinding): void {
+    this.binding = binding;
+    this.held = false;
+    if (!this.accessibilityTrusted) {
+      this.tap = 'accessibility-denied';
+      this.detail = 'AXIsProcessTrusted() is false; grant Accessibility to Pilot';
+      return;
+    }
+    if (this.config.hotkeyTapFails === true) {
+      this.tap = 'creation-failed';
+      this.detail = 'CGEventTapCreate returned null although Accessibility is granted';
+      return;
+    }
+    this.tap = 'active';
+    this.detail = '';
+  }
+
+  stop(): void {
+    this.tap = 'stopped';
+    this.held = false;
+    this.detail = '';
+  }
+
+  /** The script for this `hotkey.start`. The last entry repeats. */
+  nextScript(): StubHotkeyStep[] {
+    if (this.scripts.length === 0) {
+      return [];
+    }
+    const script = this.scripts[Math.min(this.startCount, this.scripts.length - 1)] ?? [];
+    this.startCount += 1;
+    return script;
+  }
+
+  keyPayload(step: { key: 'down' | 'up'; autorepeat?: boolean; keyCode?: number }): unknown {
+    this.sequence += 1;
+    this.counters.emitted += 1;
+    this.held = step.key === 'down';
+    return {
+      phase: step.key,
+      keyCode: step.keyCode ?? this.binding.keyCode,
+      at: Date.now(),
+      sequence: this.sequence,
+      autorepeat: step.autorepeat === true,
+    };
+  }
+
+  applyTapChange(step: {
+    tap: StubHotkeyTapChange;
+    state?: StubHotkeyTapState;
+    detail?: string;
+    held?: boolean;
+  }): void {
+    if (step.tap === 'disabled-by-timeout') {
+      this.counters.disabledByTimeout += 1;
+    }
+    if (step.tap === 'disabled-by-user-input') {
+      this.counters.disabledByUserInput += 1;
+    }
+    if (step.tap === 're-enabled') {
+      this.counters.reEnabled += 1;
+    }
+    this.tap =
+      step.state ??
+      (step.tap === 're-enabled' || step.tap === 'started'
+        ? 'active'
+        : step.tap === 'stopped'
+          ? 'stopped'
+          : 'disabled');
+    if (step.detail !== undefined) {
+      this.detail = step.detail;
+    }
+    if (step.held !== undefined) {
+      this.held = step.held;
+    }
+    if (this.tap !== 'active') {
+      // A tap that is off cannot know whether the key is still down.
+      this.held = false;
+    }
+  }
+
+  status(): unknown {
+    return {
+      binding: this.binding,
+      tap: this.tap,
+      accessibilityTrusted: this.accessibilityTrusted,
+      held: this.held,
+      detail: this.detail,
+      counters: { ...this.counters },
+    };
+  }
+}
+
 function desktopPayload(desktop: StubDesktop, includeAllLayers: boolean): unknown {
   const all = desktop.windows ?? [];
   const windows = includeAllLayers ? all : all.filter((window) => window.layer === 0);
@@ -409,6 +592,8 @@ function main(): void {
   const helperVersion = config.helperVersion ?? '0.0.0-stub';
   const echoBinary = config.echoBinary ?? true;
   const permissions = new StubPermissionTable(config);
+  const hotkey = new StubHotkeyTable(config);
+  let eventCounter = 0;
   const desktops = new StubDesktopScript(
     config.desktopScript ?? (config.desktop === undefined ? [{}] : [config.desktop]),
   );
@@ -474,6 +659,47 @@ function main(): void {
     );
   }
 
+  /** Writes one unsolicited event frame, exactly as the Swift helper does. */
+  const emit = (op: string, payload: unknown): void => {
+    eventCounter += 1;
+    write(
+      encodeFrame(
+        JSON.stringify({
+          kind: 'event',
+          protocolVersion: PROTOCOL_VERSION,
+          id: `evt-${String(eventCounter)}`,
+          op,
+          issuedAt: Date.now(),
+          payload,
+        }),
+      ),
+    );
+  };
+
+  /**
+   * Plays a hotkey script one step at a time, on the immediate queue.
+   *
+   * Deferred rather than written inline with the response so the host's
+   * `hotkey.start` promise settles before the first key arrives — which is the
+   * order a real tap produces, and the order that makes tests read the way the
+   * feature behaves.
+   */
+  const playHotkeyScript = (steps: StubHotkeyStep[]): void => {
+    if (steps.length === 0) {
+      return;
+    }
+    setImmediate(() => {
+      for (const step of steps) {
+        if ('key' in step) {
+          emit('hotkey.key', hotkey.keyPayload(step));
+        } else {
+          hotkey.applyTapChange(step);
+          emit('hotkey.tap', { change: step.tap, status: hotkey.status() });
+        }
+      }
+    });
+  };
+
   const respond = (request: RequestMessage, binary: Buffer): void => {
     const corruptible = request.op !== 'health';
     const id =
@@ -503,6 +729,7 @@ function main(): void {
 
     let body: string;
     let attachment: Buffer = Buffer.alloc(0);
+    let pendingHotkeyScript: StubHotkeyStep[] = [];
 
     if (request.op === 'health') {
       body = ok({
@@ -562,6 +789,29 @@ function main(): void {
               ) ?? null);
         body = ok({ window, display, screenLocked: desktop.screenLocked ?? false });
       }
+    } else if (request.op === 'hotkey.start') {
+      const binding = payloadOf?.binding as Partial<StubHotkeyBinding> | undefined;
+      if (
+        typeof binding?.keyCode !== 'number' ||
+        typeof binding.label !== 'string' ||
+        typeof binding.isModifierKey !== 'boolean'
+      ) {
+        body = fail('hotkey.start requires a well-formed binding');
+      } else {
+        hotkey.start({
+          keyCode: binding.keyCode,
+          label: binding.label,
+          isModifierKey: binding.isModifierKey,
+          requiredModifiers: binding.requiredModifiers ?? [],
+        });
+        body = ok({ status: hotkey.status() });
+        pendingHotkeyScript = hotkey.nextScript();
+      }
+    } else if (request.op === 'hotkey.stop') {
+      hotkey.stop();
+      body = ok({ status: hotkey.status() });
+    } else if (request.op === 'hotkey.status') {
+      body = ok({ status: hotkey.status() });
     } else {
       body = fail(`unknown operation "${request.op}"`);
     }
@@ -570,6 +820,7 @@ function main(): void {
     if (config.duplicateResponse === true) {
       write(encodeFrame(body, attachment));
     }
+    playHotkeyScript(pendingHotkeyScript);
 
     answered += 1;
     if (config.crashAfterRequests !== undefined && answered >= config.crashAfterRequests) {

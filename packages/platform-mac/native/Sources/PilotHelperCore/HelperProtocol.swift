@@ -26,9 +26,16 @@ public enum HelperProtocol {
         case permissionsAttribution = "permissions.attribution"
         case windowsList = "windows.list"
         case windowsGet = "windows.get"
+        // PR-015
+        case hotkeyStart = "hotkey.start"
+        case hotkeyStop = "hotkey.stop"
+        case hotkeyStatus = "hotkey.status"
     }
 
     public static let readyEventName = "helper.ready"
+    /// PR-015. The only unsolicited events the helper emits besides readiness.
+    public static let hotkeyKeyEventName = "hotkey.key"
+    public static let hotkeyTapEventName = "hotkey.tap"
 
     public static func now() -> Int {
         Int(Date().timeIntervalSince1970 * 1000)

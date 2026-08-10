@@ -14,13 +14,15 @@ import {
   permissionStatusOperation,
 } from './permission-ops.js';
 import { windowGetOperation, windowListOperation } from './window-ops.js';
+import { hotkeyStartOperation, hotkeyStatusOperation, hotkeyStopOperation } from './hotkey-ops.js';
 
 /**
  * The closed set of operations the helper exposes (system-design §4:
  * "restricted to explicit operations").
  *
  * PR-003 shipped transport only: `health` and `echo`. PR-011 appends the
- * permission and window operations. The transport itself never grows a generic
+ * permission and window operations; PR-015 appends the push-to-talk hotkey
+ * operations. The transport itself never grows a generic
  * "run anything" call, and `HELPER_PROTOCOL_VERSION` is unchanged — adding
  * operations is backwards compatible in both directions, because an unknown
  * operation is already a typed `invalid-request` on the helper and an
@@ -96,6 +98,10 @@ export const HELPER_OPERATIONS = {
   permissionAttribution: permissionAttributionOperation,
   windowList: windowListOperation,
   windowGet: windowGetOperation,
+  // PR-015
+  hotkeyStart: hotkeyStartOperation,
+  hotkeyStop: hotkeyStopOperation,
+  hotkeyStatus: hotkeyStatusOperation,
 } as const;
 
 export const HELPER_OPERATION_NAMES: readonly string[] = Object.values(HELPER_OPERATIONS).map(

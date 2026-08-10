@@ -23,6 +23,7 @@
   "scripts": {
     "demo": "node test/demo.ts",
     "demo:permissions": "node test/demo-permissions.ts",
+    "demo:hotkey": "node test/demo-hotkey.ts",
     "helper:build": "swift build --package-path native -c debug",
     "helper:build:release": "swift build --package-path native -c release",
     "helper:test": "swift test --package-path native"
@@ -31,5 +32,8 @@
     "@pilot/platform": "workspace:*",
     "@pilot/shared": "workspace:*",
     "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@pilot/interaction": "workspace:*"
   }
 }

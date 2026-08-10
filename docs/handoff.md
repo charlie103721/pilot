@@ -55,6 +55,18 @@ pnpm --filter @pilot/platform-mac demo:permissions
 
 PILOT_HELPER_BINARY="$(pwd)/apps/desktop/release/mac-arm64/Pilot.app/Contents/Resources/helper/PilotHelper" \
   pnpm --filter @pilot/platform-mac demo:permissions
+
+# 6. PR-015 — the global push-to-talk hotkey. THIS ONE PROMPTS TOO
+#    (Accessibility, and possibly Input Monitoring — see below).
+#    Section 1 of this demo is the *only* place anything in Pilot has ever
+#    tried to observe a key press.
+pnpm --filter @pilot/platform-mac demo:hotkey
+
+#    Then the same thing from inside the packaged .app, which is the only
+#    layout where TCC can plausibly attribute the tap to Pilot rather than to
+#    a loose executable:
+PILOT_HELPER_BINARY="$(pwd)/apps/desktop/release/mac-arm64/Pilot.app/Contents/Resources/helper/PilotHelper" \
+  pnpm --filter @pilot/platform-mac demo:hotkey
 ```
 
 Notes:
@@ -65,10 +77,10 @@ Notes:
   Either way, send the compiler output; it gets fixed, not worked around. The
   authors could not compile any of it and deliberately avoided constructs they
   were unsure of.
-- **Steps 1–4 raise no TCC prompt. Step 5 does.** That separation is
+- **Steps 1–4 raise no TCC prompt. Steps 5 and 6 do.** That separation is
   deliberate: it isolates "does the helper build and talk" from "does macOS
-  trust it". Do steps 1–4 first; if the helper does not build, step 5 cannot
-  tell you anything.
+  trust it". Do steps 1–4 first; if the helper does not build, steps 5 and 6
+  cannot tell you anything.
 - `--require-native` in step 3 is the flag that matters. Without it the build
   silently stages a placeholder, and a bundle that cannot observe the screen is
   indistinguishable from one that can until someone tries it.
@@ -119,11 +131,56 @@ Also worth capturing while you are there, since nothing else will produce it:
   two authorization enums map the way `PermissionStateMapper` assumes (they
   disagree: `1` is `restricted` for AVFoundation and `denied` for Speech).
 
+### What to look for in step 6 (PR-015)
+
+This is the first time anything in Pilot has tried to observe a key press. Five
+things, in order:
+
+1. **Does the demo's first line say "Swift helper"?** If it says "Node stub",
+   the build did not land where `resolveHelperBinary()` looks and everything
+   below is the Linux simulation again, not a real tap.
+2. **Section 1, the normal press.** Hold Right Option for about a second and
+   release it. Expect exactly one `hotkey-down` and one `hotkey-up`, with a
+   plausible `held` time. **Then do it again with another application in
+   front** — a browser, Terminal, anything — because that, not the first run, is
+   the actual requirement. A shortcut that only works when Pilot is focused is
+   not push-to-talk.
+3. **Whether it prompts for Accessibility, or for Input Monitoring, or both.**
+   This is the open question. The code gates on `AXIsProcessTrusted()`, which is
+   the permission Pilot models. If macOS instead (or additionally) demands
+   **Input Monitoring**, `CGEventTapCreate` returns null with Accessibility
+   already granted, and the demo prints `listener-rejected` with Input
+   Monitoring named in the detail. **Report that**: it means Pilot needs a fifth
+   permission kind, which is a contract change across `@pilot/shared`, the
+   onboarding UI and the helper.
+4. **Whether Left Option triggers it.** Hold *Left* Option: nothing should
+   happen. The left/right distinction comes from a hand-written device-flag
+   table (`HotkeyDeviceMask` in `HotkeyModel.swift`) checked against Apple's
+   headers and nothing else. If Left Option fires, that table is wrong.
+5. **Hold the key and switch Spaces, or open Mission Control, then release it
+   somewhere else.** macOS can lose the key-up. Pilot should either see the real
+   release or, after 30 seconds, print a synthetic one
+   (`SYNTHETIC (held-too-long)`). What it must never do is stay held forever —
+   in the real app that is an open microphone.
+
+Also worth capturing while you are there:
+
+- Whether holding a rebound *normal* key (section 8 uses F13) produces
+  auto-repeat that the native gate drops, or whether repeats reach the host and
+  are only folded there. Both work; which one happens tells us whether
+  `kCGKeyboardEventAutorepeat` behaves as assumed.
+- Whether the tap is ever disabled by timeout in ordinary use. If the counters
+  in section 3 move during a real run, the callback is too slow and that is a
+  defect, not a curiosity.
+
 **Fallback in use:** Mac-gated code is written unverified and batched here
 (runbook amendment 8, user decision). Accepted risk: PR-011 through PR-015
 accumulate on top of an uncompiled helper. PR-011 additionally ships an
 attribution check whose *logic* is fully tested on Linux but whose *answer* is
-unknown until step 5 runs.
+unknown until step 5 runs. PR-015 ships an event tap that has never been
+created, for a key that has never been pressed; its coalescing, pairing and
+permission-fallback logic is fully tested on Linux against a scripted stub, but
+whether macOS lets the tap exist at all is unknown until step 6 runs.
 
 ---
 
@@ -188,6 +245,10 @@ reversible; raise any that look wrong.
 | **The screen policy grew four groups beyond the interface printed in system-design §10** (PR-017) | §10's printed `ScreenPolicy` has no field for a ring byte ceiling (§17 requires one), for pointer retention (an utterance outlives the three-second frame ring), for image byte limits (§14 requires size *and* count limits on image tool results), or for the secure-content rule (§10 step 4 and §14 require one). `ScreenContextPolicy` in `packages/observation` adds them; `toScreenPolicyContract()` projects back onto the printed shape and a test pins that projection to `MVP_SCREEN_CONTEXT_POLICY`, so the numbers cannot drift. **`packages/shared` was not changed** — three lanes were running in parallel and none of the additions needed to cross a package boundary. |
 | **New image byte ceilings were chosen, not derived** (PR-017) | Nothing in the docs states one. 4 MiB per image and 8 MiB per observation: a 1440-px JPEG at quality 0.75 is a few hundred kilobytes, so these only fire on a pathological encode, and they bound the base64 payload (4/3 inflation) at ~10.7 MiB. **Say if you want them tighter** — they are one field in a frozen record. |
 | **Secure content defaults to `redact`, and refuses when it cannot mask** (PR-017) | §14 allows masking password fields but demands the product warn that screenshots can still contain secrets. Where macOS reports a secure field *without* bounds, Pilot cannot mask it; the default (`requireMaskableBounds: true`) refuses the observation rather than shipping it under a redaction claim it does not meet. The alternative — send it and warn — is available as a one-field policy override. |
+| **Push-to-talk gets a new contract file rather than a seat on `PlatformAdapter`** (PR-015) | `HotkeyAdapter` lives in a new `packages/platform/src/hotkey.ts` with its own fake, exported by one added line in each index. Extending the `PlatformAdapter` composite would have forced every implementer — including the fakes the other four lanes are building against right now — to grow a member, which is not an additive change. PR-032 injects the hotkey adapter alongside the platform adapter. **Say if you would rather it be a member of the composite**; moving it later is mechanical, moving it now would collide with three PRs in flight. |
+| **The helper pushes hotkey events, breaking PR-011's snapshot-diff rule** (PR-015) | PR-011 deliberately avoided helper-side events (a background thread writing frames means a write lock and a second failure surface). That is still right for windows. It is wrong for a key press: key-down is what stops speech against a 300 ms budget (system-design §17), and polling fast enough would be tens of round trips a second forever. So the hotkey is the one subsystem that pushes, and the Swift side gained a lock-protected `FrameWriter`. Cost: `HelperServer` and `HelperRuntime` changed (additively — see the README's contract note). |
+| **Accessibility denial is a state, not an exception** (PR-015) | `hotkey.start` with no Accessibility grant *succeeds* and reports `unavailable(permission-missing)`. Throwing would tempt a caller into treating a routine, user-fixable condition as a crash, and system-design §16 requires the user always keep a way to ask a question. The panel pairs this with PR-025's `isTextFallbackAvailable(state)` — that pairing is runbook follow-up 4 and is still PR-032's to wire. |
+| **Numbers chosen, not derived, for push-to-talk coalescing** (PR-015) | Nothing in the docs states them. A press within **30 ms** of the previous release is switch chatter and is dropped; a press held longer than **30 s** gets a synthetic release; the event tap may be re-enabled **5 times per 60 s** before being declared dead. All three are single fields. **Say if any looks wrong** — the 30 s ceiling in particular is a guess about how long a person might reasonably hold a push-to-talk key. |
 | **`before-and-after` takes a comparison *window*, not two moments** (PR-017) | §9 says "two bounded frames around a relevant scene transition" but the tool input carries no timestamps, so someone has to choose them. The enforcer takes `comparisonWindow: {from, to}` and returns the earliest frame at or after `from` and the latest at or before `to`; PR-019 sets the window around the transition it finds in the scene lineage. The default window is the whole local buffer up to the question anchor. |
 
 ---
@@ -197,7 +258,7 @@ reversible; raise any that look wrong.
 | Phase | State |
 | --- | --- |
 | Phase 1 — foundations (PR-001…007) | **Complete.** All seven merged. |
-| Phase 2 — capability lanes | In progress. **Merged:** PR-008, PR-011, PR-016, PR-017, PR-020, PR-021, PR-022a, PR-024, PR-025. **In flight:** PR-009, PR-012, PR-013, PR-014, PR-018, PR-022b, PR-026. **Remaining:** PR-010, PR-015, PR-019, PR-023, PR-027. |
+| Phase 2 — capability lanes | In progress. **Merged:** PR-008, PR-011, PR-015, PR-016, PR-017, PR-020, PR-021, PR-022a, PR-024, PR-025. **In flight:** PR-009, PR-012, PR-013, PR-014, PR-018, PR-022b, PR-026. **Remaining:** PR-010, PR-019, PR-023, PR-027. |
 | Phase 3 — integration (028…036) | Not started. Blocked on Phase 2; most steps also need the Mac (§1) and a signed-in model (§2). |
 | Phase 4 — providers (037…039) | Not started. PR-037 (Codex) is the one the user's decision selects. |
 | Phase 5 — hardening and release (040…044) | Not started. |
@@ -229,6 +290,21 @@ demo executed against the merged tree.
     bundle inside the app (so the identity is deliberate rather than
     accidental) or moving these calls into the Electron main process. Both are
     larger than PR-011 and neither has been designed.
+- **Push-to-talk may need a permission Pilot does not model** (PR-015). The
+  event tap is gated on Accessibility, which is one of the four permission kinds
+  in `@pilot/shared`. On macOS 10.15+ a keyboard tap may *also* require **Input
+  Monitoring** (`kTCCServiceListenEvent`), which is a separate TCC service with
+  its own System Settings pane and its own prompt. Nothing in the code models
+  it, because adding a fifth `PermissionKind` is a contract change across
+  `@pilot/shared`, the onboarding UI, the helper and four lanes' fakes — and it
+  would have been a guess.
+
+  What is in place today: if `CGEventTapCreate` returns null while Accessibility
+  is granted, that is reported as a distinct `listener-rejected` state naming
+  Input Monitoring in its detail, rather than being blamed on Accessibility and
+  sending the user to a pane that will not help. §1 step 6 is what settles it.
+  If it turns out to be required, expect a small, contained follow-up: one more
+  permission kind, one more settings URL, one more onboarding row.
 - **`sharp` prebuilds inside packaged Electron (arm64)** — PR-018 owns image
   encoding; the packaging interaction has not been tested.
 - **Double-JPEG legibility of small text** — capture encodes once, the

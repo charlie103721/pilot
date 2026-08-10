@@ -207,17 +207,23 @@ the two in step.
 | Codex sign-in probe | `docs/pi-notes.md` §9.1 | PR-005 | no |
 | Desktop shell visual demo | `pnpm dev` — menu bar item, panel, fake states | PR-002 | no |
 | **TCC attribution + real permissions and windows** | `pnpm --filter @pilot/platform-mac demo:permissions`, then again with `PILOT_HELPER_BINARY` pointing inside the packaged `.app` | PR-011 | **yes** |
+| **Global push-to-talk against a real `CGEventTap`** | `pnpm --filter @pilot/platform-mac demo:hotkey`, then again from inside the packaged `.app`; hold Right Option **with another app in front** | PR-015 | **yes** |
 
-A Swift compile failure is a **PR-003 defect** in the transport files and a
+A Swift compile failure is a **PR-003 defect** in the transport files, a
 **PR-011 defect** in `PermissionModel.swift`, `Attribution.swift`,
-`WindowModel.swift`, `PermissionProbes.swift` and `WindowEnumerator.swift`:
-either way, send the compiler output and it gets fixed, not worked around.
+`WindowModel.swift`, `PermissionProbes.swift` and `WindowEnumerator.swift`, and
+a **PR-015 defect** in `HotkeyModel.swift`, `HotkeyTap.swift` and
+`FrameWriter.swift` (PR-015 also edited `HelperServer.swift` and
+`HelperProtocol.swift` additively): either way, send the compiler output and it
+gets fixed, not worked around.
 
-Every row but the last raises **no TCC prompt** — that separation is
+Every row but the last two raises **no TCC prompt** — that separation is
 deliberate, isolating "does the helper build and talk" from "does macOS trust
-it". The last row is the second question, and it is the one that settles the
-top structural risk in the plan (§7). What to look for is spelled out in
-`docs/handoff.md` §1.
+it". The last two rows are the second question. The permissions row settles the
+top structural risk in the plan (§7); the push-to-talk row settles whether
+Accessibility alone is enough for a keyboard tap or macOS also demands Input
+Monitoring, which Pilot does not model. What to look for in each is spelled out
+in `docs/handoff.md` §1.
 
 ## 6. Verification commands
 
@@ -357,7 +363,8 @@ Open items a later PR must close. Each was raised by the lane that found it.
 | 1 | **PR-029 must pass `renderAnchoredQuestionEnvelope`** (exported from `@pilot/interaction`) as `PilotSessionOptions.renderEnvelope`, or teach `packages/agent`'s `renderQuestionEnvelope` about `anchor`. PR-024 deliberately did not edit the agent renderer because that lane was running in parallel. Left undone, an unknown pointer prints to the model as `-1.000, -1.000` — a coordinate the model would reasonably treat as real. | PR-029 |
 | 2 | **`QuestionEnvelope.pointer` uses a sentinel, not `null`.** system-design §8 types it as a required numeric pair, so "no pointer was recorded" is carried as `UNKNOWN_NORMALIZED_POINT` (`-1,-1`, deliberately outside `[0,1]`) plus `grounding: 'pointer-unknown'`, read through `envelopePointerKnown()`. Making it nullable is the cleaner shape and needs a coordinated change across two readers. | PR-029 or a focused contract PR |
 | 3 | **`QuestionAnchorSource` is declared on the interaction side** because no contract exposed scene plus pointer-by-instant/interval to that lane. It mirrors `PointerTimeline.select`/`.between` including the tie-break, so PR-031's adapter is the identity function. If it belongs on `ScreenContextService` instead, moving it is mechanical. | PR-031 |
-| 4 | **The panel must offer text input in the `error` state.** PR-025 changed the transition table so `error + submit-text` is accepted (system-design §16: "STT fails → … then offer text input"); a failed recogniser is exactly what puts the machine in `error`. `isTextFallbackAvailable(state)` (exported from `@pilot/interaction`, derived from the table) is the affordance test the renderer should use — if the panel disables its text box whenever `state === 'error'`, the documented fallback is unreachable in the app even though the machine allows it. | PR-010 or PR-032 |
+| 4 | **The panel must offer text input in the `error` state.** PR-025 changed the transition table so `error + submit-text` is accepted (system-design §16: "STT fails → … then offer text input"); a failed recogniser is exactly what puts the machine in `error`. `isTextFallbackAvailable(state)` (exported from `@pilot/interaction`, derived from the table) is the affordance test the renderer should use — if the panel disables its text box whenever `state === 'error'`, the documented fallback is unreachable in the app even though the machine allows it. **PR-015 adds a second trigger for the same affordance**: when `HotkeyAdapter` reports `availability.status !== 'active'` there is no way to speak at all, so the text box is the only way to ask. Pair `isHotkeyUsable()` with `isTextFallbackAvailable()` and show `hotkeyUnavailableMessage()`. | PR-010 or PR-032 |
+| 6 | **PR-032 must wire the hotkey adapter to the controller.** `MacHotkeyAdapter` emits `hotkey-down`/`hotkey-up`; the controller takes `push-to-talk-down`/`push-to-talk-up`. The mapping is one `subscribe` and a `switch`, but two details are not optional: a `hotkey-up` with `synthetic: true` must still dispatch `push-to-talk-up` (it is how a dead tap releases the microphone), and `hotkey-availability-changed` must reach the UI or an unavailable shortcut looks like a broken one. | PR-032 |
 | 5 | **The app must wire the observation notebook** (PR-022a). `createObservationNotebook()` from `@pilot/agent` has to be passed *twice* — as `createObserveScreenTool({ onObservation: notebook.note })` and as `new PiAgentSession({ visualContext: { summaryFor: notebook.summaryFor } })`. Wire neither and pruning still holds the image limits, but every replacement record degrades to "No description of that frame was recorded." — truthful, and useless. `packages/agent/demo/visual-context-demo.mjs` shows the wiring. | PR-029 |
 
 ## 9. Quick start for a new session

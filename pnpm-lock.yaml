@@ -144,6 +144,10 @@ importers:
       zod:
         specifier: ^4.4.3
         version: 4.4.3
+    devDependencies:
+      '@pilot/interaction':
+        specifier: workspace:*
+        version: link:../interaction
 
   packages/shared:
     dependencies:

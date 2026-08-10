@@ -15,19 +15,32 @@ public enum HelperOutcome {
 /// PR-003 implemented transport only: `health` (the host's startup handshake
 /// and liveness probe) and `echo` (which round-trips the binary body so the
 /// length-prefixed payload path is exercised before PR-012 needs it). PR-011
-/// added the permission and window operations.
+/// added the permission and window operations; PR-015 added the push-to-talk
+/// hotkey operations, and with them the first thing the helper *pushes*: two
+/// event frames written from the tap's own thread through `onEvent`.
 ///
-/// `handle(frame:)` remains a function of its input and its two injected
+/// `handle(frame:)` remains a function of its input and its three injected
 /// services, so the XCTest target exercises every branch — including the
-/// permission and window ones — without a window server, a TCC prompt or a
-/// spawned process.
+/// permission, window and hotkey ones — without a window server, a TCC prompt,
+/// an event tap or a spawned process.
 public final class HelperServer {
     public let helperVersion: String
     private let processIdentifier: Int
     private let startedAt: Date
     private let permissions: PermissionService
     private let windows: WindowService
+    private let hotkey: HotkeyService
+    private let eventLock = NSLock()
     private var eventCounter = 0
+
+    /// Where unsolicited event frames go (PR-015).
+    ///
+    /// Set by `HelperRuntime.run`, which points it at a `FrameWriter` so the
+    /// tap thread and the request loop cannot interleave a write. Left `nil` in
+    /// tests, where events are collected directly.
+    ///
+    /// Called from the hotkey tap's thread; the closure must be safe there.
+    public var onEvent: ((Frame) -> Void)?
 
     /// The services default to the live ones, so `main.swift` is unchanged and
     /// the PR-003 initialiser call still compiles.
@@ -36,24 +49,66 @@ public final class HelperServer {
         processIdentifier: Int = Int(ProcessInfo.processInfo.processIdentifier),
         startedAt: Date = Date(),
         permissions: PermissionService = SystemPermissionService(),
-        windows: WindowService = SystemWindowService()
+        windows: WindowService = SystemWindowService(),
+        hotkey: HotkeyService = SystemHotkeyService()
     ) {
         self.helperVersion = helperVersion
         self.processIdentifier = processIdentifier
         self.startedAt = startedAt
         self.permissions = permissions
         self.windows = windows
+        self.hotkey = hotkey
+
+        hotkey.onKey = { [weak self] report in
+            self?.emit(op: HelperProtocol.hotkeyKeyEventName, payload: report.jsonObject)
+        }
+        hotkey.onTapChange = { [weak self] change, status in
+            self?.emit(
+                op: HelperProtocol.hotkeyTapEventName,
+                payload: ["change": change.rawValue, "status": status.jsonObject]
+            )
+        }
+    }
+
+    /// Releases anything the helper owns outside the request loop. Called once
+    /// when the loop ends, so a tap cannot outlive the process's stdio.
+    public func shutdown() {
+        _ = hotkey.stop()
+        hotkey.onKey = nil
+        hotkey.onTapChange = nil
+        onEvent = nil
     }
 
     private var uptimeMilliseconds: Int {
         max(0, Int(Date().timeIntervalSince(startedAt) * 1000))
     }
 
+    private func nextEventId() -> String {
+        eventLock.lock()
+        defer { eventLock.unlock() }
+        eventCounter += 1
+        return "evt-\(eventCounter)"
+    }
+
+    /// Builds and dispatches one event frame. Encoding failures are dropped
+    /// rather than killing the process: a hotkey event that cannot be encoded
+    /// is a bug, but a dead push-to-talk is recoverable and a dead helper is
+    /// not.
+    private func emit(op: String, payload: [String: Any]) {
+        guard let sink = onEvent else {
+            return
+        }
+        let message = HelperProtocol.eventMessage(id: nextEventId(), op: op, payload: payload)
+        guard let text = try? HelperProtocol.encode(message) else {
+            return
+        }
+        sink(Frame(messageText: text))
+    }
+
     /// The `helper.ready` event written once, before the first request.
     public func readyFrame() throws -> Frame {
-        eventCounter += 1
         let message = HelperProtocol.eventMessage(
-            id: "evt-\(eventCounter)",
+            id: nextEventId(),
             op: HelperProtocol.readyEventName,
             payload: [
                 "helperVersion": helperVersion,
@@ -186,6 +241,25 @@ public final class HelperServer {
                     "screenLocked": outcome.screenLocked,
                 ]
             )
+        case .hotkeyStart:
+            let payload = request.payload["binding"] as? [String: Any]
+            guard let binding = HotkeyBinding.from(payload: payload) else {
+                // A malformed binding is refused rather than defaulted: silently
+                // listening for some other key than the user configured is worse
+                // than not listening at all.
+                return failure(
+                    request: request,
+                    code: "invalid-request",
+                    domain: "ipc",
+                    message: "hotkey.start requires a well-formed binding"
+                )
+            }
+            let started = hotkey.start(binding: binding)
+            return success(request: request, payload: ["status": started.jsonObject])
+        case .hotkeyStop:
+            return success(request: request, payload: ["status": hotkey.stop().jsonObject])
+        case .hotkeyStatus:
+            return success(request: request, payload: ["status": hotkey.status().jsonObject])
         }
     }
 
@@ -256,16 +330,23 @@ public enum HelperRuntime {
     ) -> Int32 {
         let decoder = FrameDecoder()
 
+        // PR-015: every frame now goes through one lock-protected writer,
+        // because the hotkey tap writes from its own thread. Two interleaved
+        // writes on a length-prefixed protocol desynchronise the stream, and
+        // the host answers that by killing the helper.
+        let writer = FrameWriter(handle: output)
         func write(_ frame: Frame) -> Bool {
-            do {
-                let bytes = try FrameCodec.encode(frame)
-                output.write(Data(bytes))
+            if writer.write(frame) {
                 return true
-            } catch {
-                errorOutput.write(Data("pilot-helper: could not encode a frame\n".utf8))
-                return false
             }
+            errorOutput.write(Data("pilot-helper: could not write a frame\n".utf8))
+            return false
         }
+
+        server.onEvent = { frame in
+            _ = writer.write(frame)
+        }
+        defer { server.shutdown() }
 
         if announceReady {
             do {
