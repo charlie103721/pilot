@@ -5,6 +5,8 @@ import {
   type ConversationId,
   type Logger,
   type ModelProfile,
+  // PR-039 (additive import).
+  type PilotError,
   type QuestionEnvelope,
   type SerializedPilotError,
 } from '@pilot/shared';
@@ -194,6 +196,18 @@ export interface AgentRuntimeOptions {
   /** Reads `PILOT_CONTEXT_WINDOW`. Defaults to `process.env`. */
   readonly env?: Readonly<Record<string, string | undefined>>;
   readonly logger?: Logger;
+  /**
+   * A provider that is configured but cannot be used (ADDED BY PR-039).
+   *
+   * Optional and additive, which is the shape runbook cross-lane issue 8 says
+   * survives a three-way merge. It exists because a local endpoint can fail in
+   * ways a capability check cannot express — nothing listening, no model
+   * loaded, an HTTP server that is not an API — and a session built anyway
+   * would look like a working model until the first question. Supplying it
+   * takes exactly the same path as a capability refusal: a refusing session
+   * whose every answer is this error's `userMessage`.
+   */
+  readonly blockedBy?: PilotError;
 }
 
 /**
@@ -253,6 +267,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
   let telemetry: AgentTelemetrySink | undefined;
 
   try {
+    // PR-039. Thrown rather than branched so a provider that is configured and
+    // unusable takes the identical refusal path a capability refusal takes —
+    // one refusing session, one place that builds it, one place to change.
+    if (options.blockedBy !== undefined) {
+      throw options.blockedBy;
+    }
     const session = new PiAgentSession({
       conversationId: options.conversationId,
       profile: source.profile,
@@ -330,12 +350,17 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
     // The gate is the only thing that has run, so nothing has been sent. Said
     // out loud because "refused" and "failed after asking" are very different
     // privacy claims (system-design §12).
-    logger.warn('capability gate refused the configured model', {
-      code: error.code,
-      provider: source.profile.provider,
-      model: source.profile.model,
-      providerRequests: source.requestCount(),
-    });
+    logger.warn(
+      options.blockedBy === undefined
+        ? 'capability gate refused the configured model'
+        : 'the configured provider is unusable; the session will refuse every question',
+      {
+        code: error.code,
+        provider: source.profile.provider,
+        model: source.profile.model,
+        providerRequests: source.requestCount(),
+      },
+    );
     const session = createRefusedAgentSession(options.conversationId, source.profile, error);
     return {
       session,

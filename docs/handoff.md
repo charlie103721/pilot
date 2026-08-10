@@ -328,6 +328,121 @@ grep -a "the memorable thing you asked" \
 #    …and from inside the packaged `.app`, which is the layout the paths in (a)
 #    and (e) are written for:
 open "$(packaged_app)"
+
+# 17. PR-039 — A REAL LOCAL MODEL. This is the first step in the whole project
+#    that talks to an actual language model, and it needs no Mac and no Swift
+#    helper: it can be run on any machine that can serve a model. It raises no
+#    TCC prompt and makes no sound. If you only do one thing from this section,
+#    it is a strong candidate, because it unblocks the model half of every
+#    "NOT REAL: no model" caveat in steps 10–16.
+#
+#    NOTHING IN THIS PROJECT HAS EVER SPOKEN TO AN INFERENCE SERVER. Every
+#    provider request Pilot has ever made went either to Pi's faux provider or
+#    to a stub HTTP server written for PR-039 that contains no model at all.
+#
+#    First the stub-driven walkthrough, which already passes on Linux — so a
+#    difference against your server is a difference in the *server*, not in the
+#    wiring:
+pnpm demo:local
+
+#    Then a real one. Any OpenAI-compatible server will do; these are the three
+#    the code was written against on paper (docs/pi-notes.md §9.3):
+#      Ollama     — `ollama serve`, then `ollama pull qwen2.5vl:7b`   → :11434/v1
+#      llama.cpp  — `llama-server -m <model.gguf> --mmproj <mmproj.gguf> -c 32768`
+#                                                                     → :8080/v1
+#      LM Studio  — start the local server from the Developer tab      → :1234/v1
+#
+#    Check the shim answers before involving Pilot at all:
+curl -s http://127.0.0.1:11434/v1/models | head -c 400; echo
+
+#    Then run Pilot against it. PILOT_LOCAL_MODEL is optional — leave it out and
+#    Pilot uses whatever the endpoint is serving:
+PILOT_LOCAL_BASE_URL=http://127.0.0.1:11434/v1 \
+  PILOT_LOCAL_MODEL=qwen2.5vl:7b \
+  PILOT_LOG_LEVEL=debug pnpm dev
+
+#    …and, on the Mac, the same thing with the real helper so the model is
+#    looking at a real window rather than at a fixture:
+PILOT_LOCAL_BASE_URL=http://127.0.0.1:11434/v1 \
+  PILOT_HELPER_BINARY="$(pwd)/packages/platform-mac/native/.build/debug/PilotHelper" \
+  PILOT_LOG_LEVEL=debug pnpm dev
+
+#    …and from inside the packaged `.app`, which cannot read your shell, so the
+#    variables have to be exported into the launch:
+PILOT_LOCAL_BASE_URL=http://127.0.0.1:11434/v1 open -a "$(packaged_app)" --args
+#
+#    SEVEN THINGS ONLY YOU CAN ANSWER, in order of value:
+#
+#      (a) WHICH SERVER, WHICH MODEL, WHICH VERSION. Record them. Everything
+#          below is about one server and does not generalise; the wire shapes
+#          Pilot depends on (SSE `choices[].delta`, `tool_calls` deltas,
+#          `image_url` data URIs) are conventions, not a specification, and
+#          nothing in this repository has ever seen a real one.
+#
+#      (b) DOES THE CAPABILITY PROBE AGREE WITH REALITY? The startup log prints
+#          `vision probed ok`/`no` and `tools probed ok`/`no`. Both can be
+#          wrong in both directions and both matter:
+#           · The vision probe shows the model an 8×8 solid swatch and asks it
+#             to name the colour from a list of six. A model that cannot see
+#             and guesses is right ONE TIME IN SIX, so a `probed ok` you do not
+#             believe is worth re-running. Report a FALSE PASS if you see one.
+#           · A genuinely vision-capable model that is simply bad at naming
+#             colours will be refused. That is a FALSE FAIL and it is the more
+#             likely of the two. `PILOT_LOCAL_VISION_COMPREHENSION=0` accepts
+#             the model's claim instead (it then only checks the endpoint does
+#             not reject the image). If you need that flag, say so — the probe
+#             should probably become "two swatches" or "a shape", and a real
+#             model is the only way to know.
+#           · The tool probe tells the model to call a no-argument tool and
+#             looks for `tool_calls`. Small local models frequently advertise
+#             tool support and never emit a call; if yours is refused here,
+#             that is the probe working, not failing.
+#
+#      (c) DOES IT ACTUALLY ANSWER ABOUT THE SCREEN? Select a window, put the
+#          pointer on a control, and ask "what is this?". The failure this
+#          whole PR is built around is SILENT: `pi-ai` says images passed to a
+#          non-vision model are ignored, not rejected, so a wrong-but-confident
+#          answer is the symptom. Ask something only the screen can answer.
+#
+#      (d) ADVERTISED VERSUS ACTUAL CONTEXT WINDOW — the open question from
+#          PR-036, and the reason this step exists at all. The startup line
+#          reads e.g. `contextWindow: 8192 tokens (model; local endpoint
+#          advertised 8192)` or `32768 tokens (local-ceiling; local endpoint
+#          advertised 131072)`. Record THREE numbers:
+#            1. what `curl -s <base>/models` reports (`meta.n_ctx`,
+#               `loaded_context_length`, or nothing at all — say which);
+#            2. what your server was actually started with (`-c`, `num_ctx`,
+#               `OLLAMA_CONTEXT_LENGTH`);
+#            3. where the answers START GETTING WORSE. Ask twenty-odd questions
+#               in one conversation and note the turn at which it loses the
+#               thread.
+#          Number 3 is the one nothing in this repository can measure, and it
+#          is the number the 32 768 ceiling is a guess at. If your 7B model
+#          holds up at 32k, say so and the ceiling can rise; if it degrades at
+#          8k, say that and it should fall.
+#
+#      (e) DOES THE KEYLESS PATH WORK? Pilot sends `Authorization: Bearer
+#          no-key-required` when you set no key, because Pi's own
+#          `openai-completions` client refuses to build a request without one.
+#          Every server tried on paper ignores it. If yours 401s, that is a
+#          defect worth reporting and the fix is one line.
+#
+#      (f) THE FAILURE MESSAGES, AGAINST A REAL SERVER. Each of these should
+#          produce a sentence you can act on rather than a stack trace. Try at
+#          least the first two — they are one keystroke each:
+#            - stop the server and relaunch Pilot   → "Nothing is listening at …"
+#            - drop the `/v1` from the base URL     → "Most local servers put …"
+#            - point it at a plain web server       → "not an OpenAI-compatible …"
+#            - name a model the server is not serving → it should list the ones
+#              it IS serving, read off `/v1/models`
+#          If any of them produces something technical instead, send the log
+#          line: the message is the deliverable here, not the detection.
+#
+#      (g) LATENCY. `pnpm demo:local` prints the probe's round trip against a
+#          stub on the same machine (single-digit ms). Against a real server
+#          the probe is three requests, one of which loads the model, and it
+#          runs at STARTUP — before the panel appears. If it makes launch feel
+#          slow, say how slow; the probe can move behind the first question.
 ```
 
 Notes:
@@ -1074,6 +1189,27 @@ decisions, named UI elements, unresolved questions"; Pilot's summary quotes the
 transcript rather than asking a model to write one, and whether those quotes let
 a real model carry on a twenty-turn conversation is a judgement nobody has made.
 The first long real session is the test.
+
+**PR-039 opens a route around this whole section, and it needs no sign-in.**
+The local OpenAI-compatible profile talks to a model server the user runs
+themselves: `PILOT_LOCAL_BASE_URL=http://127.0.0.1:11434/v1 pnpm dev` and Pilot
+is on a real provider implementation, with no credential, no network and no
+second Pilot process. If a machine with Ollama, llama.cpp or LM Studio on it is
+easier to reach than a Codex sign-in, **§1 step 17 answers most of the questions
+above sooner and more cheaply than PR-037 will** — does the model decide to
+look, does it answer about the pointed-at control, does it read a replacement
+record as history, is a 1440-px window legible. A small local vision model is a
+weaker test than `gpt-5.5` and it is an enormously better test than a scripted
+one.
+
+Two caveats before that is quoted as "PR-039 unblocks §2". First, **it does not
+close this section**: the Codex sign-in is still the thing PR-037 needs and the
+thing runbook amendment 7 records as the user's choice. Second, **PR-039 has
+never run against a real inference server either.** Its endpoint is a stub
+written for the PR (`packages/agent/src/stub-openai-endpoint.ts`) which answers
+in OpenAI shapes and contains no model. What it establishes is that Pilot's
+half is right *given* a server that behaves as the OpenAI convention describes;
+whether llama.cpp does is §1 step 17 (a).
 
 ---
 

@@ -6,6 +6,8 @@ import { createTimeoutScheduler } from '@pilot/interaction';
 import { createDevelopmentModelSource, resolveDevelopmentModelFixture } from '@pilot/agent';
 import { IPC_TRANSPORT } from '../ipc/channels.js';
 import { createAgentRuntime } from './agent-runtime.js';
+// PR-039 (additive import).
+import { resolveLocalModelSource } from './local-model.js';
 import { ConversationGate } from './conversation-gate.js';
 import { createLiveConversationDriver } from './conversation-driver.js';
 import {
@@ -188,13 +190,20 @@ if (!singleInstance.isPrimary) {
       logger,
     });
 
-    // The model. There is no model access on this machine (docs/handoff.md §2),
-    // so this is Pi's own faux provider behind a real `Models` collection —
-    // runbook amendments 2 and 7. The line is logged rather than assumed: a build
-    // that is not talking to a real model must say so where anyone can see it.
-    const modelSource = createDevelopmentModelSource({
-      fixture: resolveDevelopmentModelFixture(process.env['PILOT_MODEL_FIXTURE']),
-    });
+    // The model. PR-039 added the first real provider: set PILOT_LOCAL_BASE_URL
+    // and Pilot talks to the user's own OpenAI-compatible endpoint, health- and
+    // capability-probed before a session exists (`main/local-model.ts`). With
+    // it unset there is still no model access on this machine
+    // (docs/handoff.md §2), so the fallback is Pi's own faux provider behind a
+    // real `Models` collection — runbook amendments 2 and 7. Either way the
+    // line is logged rather than assumed: a build that is not talking to a real
+    // model must say so where anyone can see it.
+    const local = await resolveLocalModelSource({ env: process.env, logger });
+    const modelSource =
+      local.source ??
+      createDevelopmentModelSource({
+        fixture: resolveDevelopmentModelFixture(process.env['PILOT_MODEL_FIXTURE']),
+      });
     logger.info('model source', { description: modelSource.description });
 
     // The platform (PR-028). One decision, in one place: the real macOS adapters
@@ -243,6 +252,9 @@ if (!singleInstance.isPrimary) {
       source: modelSource,
       screenContext: observation.screenContext,
       ...(durable.store === null ? {} : { store: durable.store, restore: durable.restore }),
+      // PR-039: a local endpoint that is configured and unusable refuses every
+      // question with the reason, instead of looking like a working model.
+      ...(local.blockedBy === null ? {} : { blockedBy: local.blockedBy }),
       logger,
     });
 

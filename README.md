@@ -1249,3 +1249,82 @@ The `durable conversation opened` line prints the directory and
 `contextWindow`. `restored: 0` after a real conversation means the transcript is
 on disk and the model was never told about it, which is the failure runbook
 follow-up 20 (b) exists for.
+
+## Demo (PR-039 — local OpenAI-compatible profile)
+
+```sh
+pnpm demo:local                             # headless walkthrough, no display needed
+```
+
+The first Pilot profile that talks to a **real provider implementation** rather
+than to Pi's faux one: the user's own OpenAI-compatible model server, reached
+directly over HTTP by the one app. There is no second Pilot service and no
+helper process in this path — `docs/implementation.md`'s PR-039 line requires
+that, and the walkthrough runs the composition root's own
+`resolveLocalModelSource` → `createAgentRuntime` → `createInteractionRuntime`
+and nothing else.
+
+**The endpoint in the walkthrough is a stub written for this PR**
+(`packages/agent/src/stub-openai-endpoint.ts`): an HTTP server on 127.0.0.1 that
+answers in OpenAI shapes with scripted replies. It is **not an inference server
+and contains no language model** — there is no llama.cpp, Ollama, LM Studio, GPU
+or model weights on the machine this repository is developed on. It stands in
+for the *user's* server exactly as `FakeScreenContextService` stands in for a
+screen. `docs/handoff.md` §1 step 17 is the list of questions only a real
+endpoint can answer.
+
+Configure it for real with two environment variables:
+
+```sh
+PILOT_LOCAL_BASE_URL=http://127.0.0.1:11434/v1 \
+  PILOT_LOCAL_MODEL=qwen2.5vl:7b \
+  PILOT_LOG_LEVEL=debug pnpm dev
+```
+
+`PILOT_LOCAL_MODEL` is optional — leave it out and Pilot asks the endpoint what
+it is serving. `PILOT_LOCAL_API_KEY` is there for servers that want one and is
+never written to disk. With `PILOT_LOCAL_BASE_URL` unset nothing changes: the app
+keeps the development source, because an unset variable means "not configured",
+never "configured and broken".
+
+**Why a local profile needs a probe and a hosted one does not.** A hosted
+provider's catalogue is curated; `GET /v1/models` on a local server reports ids
+and nothing else — no `input`, no context window, no tool support. So the one
+verified derivation Pilot has (`Model.input.includes("image")`) has nothing to
+derive from, and `docs/pi-notes.md` §2.3 makes guessing unsurvivable: a
+non-vision model handed an image does not error, the image is *silently
+ignored*, and the user gets a confident answer about a screen the model never
+saw. Pilot therefore asks the endpoint, with real requests, before a session
+exists: an 8×8 solid-colour swatch it draws itself and one sentence. Tool
+support is asked too — which makes this the first Pilot profile whose
+`supportsTools` is a measurement (`verified`) rather than a default
+(`assumed`), notwithstanding `docs/pi-notes.md` §6.3, which is about Pi
+*metadata* and remains true of it.
+
+Eleven ways a local endpoint can be unusable, each with its own sentence, are
+printed in section 4 of the walkthrough — nothing listening, an HTTP server that
+is not an API, a missing `/v1`, no model loaded, the wrong model id, a server
+that wants a key, a model that cannot accept images, **a model that accepts an
+image and cannot read it**, a server that rejects tool definitions, a model that
+accepts tools and ignores them, and a loaded context below Pi's compaction
+reserve. The last of those is a warning rather than a refusal; the others stop
+Pilot, and a configured-but-unusable endpoint **never falls back silently** to
+the development model — the app boots with `agent: refused` and every question is
+answered with the reason.
+
+**Section 5 is the one to read.** It shows the capability gate refusing a model
+that claims vision it does not have, and proves "before any screen data is sent"
+as a number rather than as a claim: the endpoint's own request log shows three
+probe requests, zero streamed requests, zero screen captures taken, and total
+image bytes equal to the probe's own 74-byte swatch.
+
+**On the context window.** `main/context-window.ts` (PR-036) caps a loopback
+endpoint at 32 768 because an advertised window is a configuration value rather
+than a measurement. PR-039 improves that on one axis and not on the other, and
+section 8 says which: a server that reports `meta.n_ctx` is stating what its own
+process has *allocated*, which is a fact and is believed when it is smaller —
+llama.cpp's undocumented default of 4096 is far below the cap and now produces a
+warning. It is never believed when it is larger, because a server that allocated
+128k has not made a 7B model good at 128k, and that is the question the cap was
+written for. Nothing here measures where quality degrades;
+`PILOT_CONTEXT_WINDOW` is still how a user who knows better says so.
