@@ -23,7 +23,8 @@ import { PilotInteractionController } from './controller.js';
 import { PilotQuestionEnvelopeFactory } from './envelope.js';
 import { FakeQuestionAnchorSource, RecordingObservationPort } from './fakes.js';
 import { recordPointerPath } from './recordings.js';
-import { isTextFallbackAvailable, type VoiceDiagnostic } from './speech-binding.js';
+import { isTextFallbackAvailable } from './speech-binding.js';
+import type { VoiceDiagnostic } from './voice-diagnostics.js';
 import type { InteractionInput } from './inputs.js';
 
 /**
@@ -110,9 +111,22 @@ interface Harness {
 }
 
 function describeDiagnostic(diagnostic: VoiceDiagnostic): string {
-  return diagnostic.kind === 'discarded-event'
-    ? `discarded ${diagnostic.event} for ${diagnostic.utteranceId}: ${diagnostic.reason}`
-    : `ignored ${diagnostic.call}() for ${diagnostic.utteranceId}: ${diagnostic.reason}`;
+  switch (diagnostic.kind) {
+    case 'discarded-event':
+      return `discarded ${diagnostic.event} for ${diagnostic.utteranceId}: ${diagnostic.reason}`;
+    case 'ignored-call':
+      return `ignored ${diagnostic.call}() for ${diagnostic.utteranceId}: ${diagnostic.reason}`;
+    case 'discarded-chunk':
+      return `discarded chunk ${String(diagnostic.sequence)} of ${diagnostic.speechId}: ${
+        diagnostic.reason
+      }`;
+    case 'discarded-speech-event':
+      return `discarded ${diagnostic.event} for ${diagnostic.speechId}: ${diagnostic.reason}`;
+    case 'ignored-speech-call':
+      return `ignored ${diagnostic.call}() for ${diagnostic.speechId ?? '(any stream)'}: ${
+        diagnostic.reason
+      }`;
+  }
 }
 
 function createHarness(options: {

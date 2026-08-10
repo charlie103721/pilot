@@ -314,6 +314,10 @@ describe('answer accumulation', () => {
         speechId: harness.machine.context.activeSpeechId,
         utteranceId: harness.machine.context.activeUtteranceId,
         text: 'That is the Auto Renew toggle.',
+        // PR-026: one chunk, and the last one, so the binding may report the
+        // stream complete as soon as it drains.
+        sequence: 0,
+        final: true,
       },
     ]);
     expect(harness.machine.viewState.transcript.at(-1)?.pending).toBe(false);
