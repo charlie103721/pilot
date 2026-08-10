@@ -24,6 +24,16 @@ import { DEFAULT_SCREEN_CONTEXT_POLICY, type ScreenContextPolicy } from './scree
  * - **bounds verification** ({@link RetentionGuard.verifyBounds}) that the ring
  *   and pointer timeline were actually built with the policy's numbers. PR-041
  *   can call it directly.
+ *
+ * PR-019 added the fourth thing on that list: the **image cache**. The frame
+ * ring is not the only place a screenshot lives — {@link PilotImageProcessor}
+ * keeps at most one *decoded* frame so `view: 'both'` decodes its source once
+ * instead of twice, and a decoded frame is a screenshot in the plainest
+ * possible form. It is memory-only and never written anywhere, but "cleared on
+ * pause and lock" has to mean every copy or it means nothing, so the guard now
+ * takes an {@link ImageCache} and drops it inside the same call. The
+ * post-condition covers it too: {@link RetentionClearReport.imageCacheCleared}
+ * is `false` only when no cache was wired, never when one was and survived.
  */
 
 export const RETENTION_EVENTS = [
@@ -61,6 +71,15 @@ const TERMINAL_EVENTS: ReadonlySet<RetentionEvent> = new Set<RetentionEvent>([
   'logout',
 ]);
 
+/**
+ * Anything holding decoded pixels that must be dropped alongside the ring
+ * (PR-019, closing runbook follow-up 16). {@link PilotImageProcessor} satisfies
+ * it structurally, so nothing has to import the image pipeline to wire it.
+ */
+export interface ImageCache {
+  clear(): void;
+}
+
 export interface RetentionClearReport {
   readonly event: RetentionEvent;
   readonly reason: ClearReason;
@@ -70,6 +89,11 @@ export interface RetentionClearReport {
   readonly clearedPointerSamples: number;
   readonly sceneEnded: string | null;
   readonly lineageReset: boolean;
+  /**
+   * True when a decoded-frame cache was wired and has been dropped (PR-019).
+   * `false` means no cache was configured — never that one survived the clear.
+   */
+  readonly imageCacheCleared: boolean;
   /** Always `true` on return; the guard throws rather than reporting `false`. */
   readonly empty: boolean;
 }
@@ -95,6 +119,12 @@ export interface RetentionGuardOptions {
   readonly logger?: Logger;
   /** Reset alongside every clear, so a pause does not throttle the next session. */
   readonly rateLimiter?: ObservationRateLimiter;
+  /**
+   * Decoded-frame cache dropped alongside the buffers (PR-019). Pass the
+   * {@link PilotImageProcessor} the enforcer renders through; anything with a
+   * `clear()` satisfies it.
+   */
+  readonly images?: ImageCache;
   /** Called after each clear, for diagnostics. Never receives frame content. */
   readonly onClear?: (report: RetentionClearReport) => void;
 }
@@ -104,6 +134,7 @@ export class RetentionGuard {
   readonly #policy: ScreenContextPolicy;
   readonly #logger: Logger;
   readonly #rateLimiter: ObservationRateLimiter | null;
+  readonly #images: ImageCache | null;
   readonly #onClear: ((report: RetentionClearReport) => void) | null;
 
   #clears = 0;
@@ -113,7 +144,13 @@ export class RetentionGuard {
     this.#policy = options.policy ?? DEFAULT_SCREEN_CONTEXT_POLICY;
     this.#logger = options.logger ?? nullLogger;
     this.#rateLimiter = options.rateLimiter ?? null;
+    this.#images = options.images ?? null;
     this.#onClear = options.onClear ?? null;
+  }
+
+  /** Whether a decoded-frame cache is wired into this guard (PR-019). */
+  get hasImageCache(): boolean {
+    return this.#images !== null;
   }
 
   get policy(): ScreenContextPolicy {
@@ -139,6 +176,10 @@ export class RetentionGuard {
       this.#core.resetLineage();
     }
     this.#rateLimiter?.reset();
+    // The decoded frame goes with the encoded ones. Dropped before the
+    // post-condition below, so "buffers empty" and "no decoded screenshot
+    // retained" are established by the same call rather than by two callers.
+    this.#images?.clear();
     this.#clears += 1;
 
     if (!this.#core.isEmpty()) {
@@ -164,6 +205,7 @@ export class RetentionGuard {
       clearedPointerSamples: result.pointerSamples,
       sceneEnded: result.scene?.sceneId ?? null,
       lineageReset,
+      imageCacheCleared: this.#images !== null,
       empty: true,
     };
     this.#logger.info('retention clear', {
@@ -173,6 +215,7 @@ export class RetentionGuard {
       clearedBytes: report.clearedBytes,
       clearedPointerSamples: report.clearedPointerSamples,
       lineageReset,
+      imageCacheCleared: report.imageCacheCleared,
     });
     this.#onClear?.(report);
     return report;
