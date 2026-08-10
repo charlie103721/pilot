@@ -6,3 +6,9 @@ coverage/
 
 # Transient git worktrees used by parallel agent sessions.
 .claude/worktrees/
+
+# SwiftPM build output (packages/platform-mac/native). `Package.resolved` is
+# deliberately not ignored: it must be committed once the helper gains
+# dependencies.
+.build/
+.swiftpm/
