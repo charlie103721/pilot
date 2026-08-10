@@ -23,7 +23,12 @@ import {
   type QuestionEnvelope,
   type RunId,
 } from '@pilot/shared';
-import { assertSupportsVisualConversation, capabilitiesOf } from './model-profile.js';
+import {
+  assertCapabilityDecision,
+  verifyProfileAgainstModel,
+  type CapabilityConfidence,
+  type CapabilityReport,
+} from './capability.js';
 import { pruneVisualContext, stripImageBlocks } from './visual-context.js';
 
 /**
@@ -104,6 +109,12 @@ export interface PiAgentSessionOptions {
   readonly idFactory?: IdFactory;
   /** Renders an envelope into the user turn. Defaults to {@link renderQuestionEnvelope}. */
   readonly renderEnvelope?: (envelope: QuestionEnvelope) => string;
+  /**
+   * Whether `profile.supportsTools` was explicitly configured (`'verified'`)
+   * or defaulted (`'assumed'`). Reporting only; it does not change the gate.
+   * Carried through from the profile store so diagnostics can say which.
+   */
+  readonly toolSupport?: CapabilityConfidence;
 }
 
 /** Default text rendering of a question envelope (system-design §8). */
@@ -155,6 +166,12 @@ export class PiAgentSession implements AgentSession {
   readonly conversationId: ConversationId;
   readonly profile: ModelProfile;
   readonly capabilities: AgentSessionCapabilities;
+  /**
+   * The capability decision that let this session exist, including where each
+   * capability came from and whether the endpoint is remote. Superset of
+   * {@link capabilities}; diagnostics and the privacy panel read this.
+   */
+  readonly capabilityReport: CapabilityReport;
 
   readonly #agent: Agent;
   readonly #listeners = new Set<Listener>();
@@ -168,10 +185,23 @@ export class PiAgentSession implements AgentSession {
   #disposed = false;
 
   constructor(options: PiAgentSessionOptions) {
-    assertSupportsVisualConversation(options.profile);
+    // THE GATE (PR-020). Runs before `new Agent(...)`, before any tool is
+    // registered, and therefore before any screen data can be requested or
+    // sent. It re-probes `Model.input` rather than trusting the stored
+    // profile, because a non-vision model does NOT error on an image — pi-ai
+    // silently ignores it, and the user would get a confident answer about a
+    // screen the model never saw.
+    const report = assertCapabilityDecision(
+      verifyProfileAgainstModel(
+        options.profile,
+        options.model,
+        options.toolSupport === undefined ? {} : { toolSupport: options.toolSupport },
+      ),
+    );
     this.conversationId = options.conversationId;
     this.profile = options.profile;
-    this.capabilities = capabilitiesOf(options.profile);
+    this.capabilityReport = report;
+    this.capabilities = { vision: report.vision, tools: report.tools };
     this.#ids = options.idFactory ?? createIdFactory();
     this.#transcript = options.transcript;
     this.#renderEnvelope = options.renderEnvelope ?? renderQuestionEnvelope;
