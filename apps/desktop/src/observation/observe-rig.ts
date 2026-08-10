@@ -1,5 +1,5 @@
 import { nullLogger, type Logger, type ObservedWindow } from '@pilot/shared';
-import { NativeHelperTransport } from '@pilot/platform-mac';
+import { NativeHelperTransport, type MacHotkeyAdapter } from '@pilot/platform-mac';
 import type { PilotInteractionController } from '@pilot/interaction';
 import { createAgentRuntime } from '../main/agent-runtime.js';
 import { ConversationGate } from '../main/conversation-gate.js';
@@ -19,6 +19,7 @@ import {
 } from '../main/question-anchor.js';
 import { PermissionGate } from '../main/permission-gate.js';
 import { createSettingsShortcut } from '../main/settings-shortcut.js';
+import { createVoiceRuntime, type VoiceRuntime } from '../main/voice-runtime.js';
 import { WindowGate } from '../main/window-gate.js';
 import { createDevelopmentModelSource, type ModelSource } from '@pilot/agent';
 import { asConversationId } from '@pilot/shared';
@@ -136,6 +137,19 @@ export interface ObservationRigOptions {
    * request and proves nothing the tests do not ask for.
    */
   readonly recordRequests?: boolean;
+  /**
+   * Stuck-key watchdog interval for the push-to-talk tap (PR-032). Long by
+   * default, like every other timer here: a walkthrough that raced a
+   * one-second watchdog would print a synthetic release nobody asked for.
+   */
+  readonly holdWatchdogIntervalMs?: number;
+  /**
+   * Drain interval for the recogniser's event queue (PR-032). Left at
+   * `MacSpeechInputAdapter`'s own 60 ms, because unlike every other poller here
+   * this one is what makes a *partial* transcript arrive at all, and the point
+   * of the demo is watching them arrive.
+   */
+  readonly speechPollIntervalMs?: number;
 }
 
 /** One operation, as it crossed the framed stdio protocol. */
@@ -162,6 +176,22 @@ export interface ObservationRig {
    * poller feeds and the same inputs the facade reads.
    */
   readonly anchoring: QuestionAnchorRuntime;
+  /**
+   * Push-to-talk (PR-032), over the *same* `MacHotkeyAdapter` the panel's
+   * availability comes from and dispatching into the same controller.
+   *
+   * **Not started.** `voice.start()` establishes attribution and installs the
+   * tap; a rig that installed it on construction would play the stub's hotkey
+   * script into every PR-028/030/031 walkthrough that never asked for a key.
+   */
+  readonly voice: VoiceRuntime;
+  /**
+   * The tap itself, for the two things `VoiceRuntime` deliberately does not
+   * expose: re-issuing `hotkey.start` (which is how the Node stub is asked to
+   * play its *next* scripted key — on a Mac the user simply presses the key)
+   * and running the stuck-key watchdog by hand.
+   */
+  readonly hotkey: MacHotkeyAdapter;
   /**
    * Every helper operation sent since the rig was built, oldest first — empty
    * unless {@link ObservationRigOptions.recordRequests} was set.
@@ -240,6 +270,10 @@ export async function createObservationRig(
     ...(options.capturePollIntervalMs === undefined
       ? {}
       : { capturePollIntervalMs: options.capturePollIntervalMs }),
+    holdWatchdogIntervalMs: options.holdWatchdogIntervalMs ?? 3_600_000,
+    ...(options.speechPollIntervalMs === undefined
+      ? {}
+      : { speechPollIntervalMs: options.speechPollIntervalMs }),
     // `permissionIdentity` is left to the platform runtime's own stub default
     // (the identity `helper-stub.ts` claims), so PR-011's verdict comes back
     // `matched` and the *failing* verdict stays a scriptable case rather than
@@ -249,6 +283,15 @@ export async function createObservationRig(
   // starts a transport it created itself.
   await transport.start();
   await platform.start();
+
+  // The rig always runs against a helper, so `createPlatformRuntime` always
+  // takes a `macos-stub` branch and both voice adapters exist. Stated rather
+  // than assumed, because the alternative is a confusing failure much later.
+  const hotkeyAdapter = platform.hotkey;
+  const speechAdapter = platform.speechInput;
+  if (hotkeyAdapter === null || speechAdapter === null) {
+    throw new Error(`the rig expected the macOS adapters, got kind=${platform.kind}`);
+  }
 
   const observation = createObservationRuntime({
     capture: platform.capture,
@@ -278,11 +321,14 @@ export async function createObservationRig(
     targets: observation.targets,
     logger,
   });
+  // PR-032's wiring, in the rig exactly as in `main/index.ts`: the real
+  // recogniser behind the machine's `start-listening`/`stop-listening`.
   const { controller } = createInteractionRuntime({
     agent: agent.session,
     conversationId,
     observation: observation.port,
     envelopes: anchoring.envelopes,
+    speechInput: speechAdapter,
     logger,
   });
   controller.subscribe((view) => {
@@ -303,7 +349,26 @@ export async function createObservationRig(
     }
   });
 
-  const conversation = new ConversationGate({ interaction: controller, logger });
+  // PR-032. `voice.pushToTalk` rather than the adapter, so the panel's
+  // availability carries the attribution refusal too (runbook follow-up 12),
+  // and `speechInput` as the disclosure source (follow-up 13).
+  const voice = createVoiceRuntime({
+    hotkey: hotkeyAdapter,
+    dispatch: (command) => {
+      conversation.noteCommand(command);
+      controller.dispatch(command);
+    },
+    ...(platform.permissions.attribution === undefined
+      ? {}
+      : { attribution: platform.permissions.attribution.bind(platform.permissions) }),
+    logger,
+  });
+  const conversation = new ConversationGate({
+    interaction: controller,
+    hotkey: voice.pushToTalk,
+    speech: speechAdapter,
+    logger,
+  });
   observation.attachTelemetry(conversation.telemetry);
   const observationInteraction = createObservationInteraction(controller);
   const windows = new WindowGate({
@@ -346,6 +411,8 @@ export async function createObservationRig(
     transport,
     agent,
     anchoring,
+    voice,
+    hotkey: hotkeyAdapter,
     wire,
     async firstWindow(): Promise<ObservedWindow> {
       const state = await windows.refresh();
@@ -363,6 +430,9 @@ export async function createObservationRig(
       return window;
     },
     async dispose(): Promise<void> {
+      // Voice first, exactly as in `main/index.ts`: the tap releases a held key
+      // before the controller that would have to handle the press is torn down.
+      await voice.dispose();
       windows.dispose();
       conversation.dispose();
       permissions.dispose();

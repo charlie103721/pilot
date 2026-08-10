@@ -1,5 +1,6 @@
 import { app, ipcMain, type IpcMainInvokeEvent } from 'electron';
 import { asConversationId, createIdFactory, createJsonSink, createLogger } from '@pilot/shared';
+import type { HotkeyAdapter, InteractionCommand, SpeechInputAdapter } from '@pilot/platform';
 import { FakeHotkeyAdapter, FakeSpeechInputAdapter } from '@pilot/platform/fakes';
 import { createDevelopmentModelSource, resolveDevelopmentModelFixture } from '@pilot/agent';
 import { IPC_TRANSPORT } from '../ipc/channels.js';
@@ -28,6 +29,7 @@ import { createSettingsShortcut } from './settings-shortcut.js';
 import { DesktopShell } from './shell.js';
 import { enforceSingleInstance } from './single-instance.js';
 import type { TrayMenuItem } from './tray.js';
+import { createVoiceRuntime } from './voice-runtime.js';
 import { WindowGate } from './window-gate.js';
 import { createFakeWindowDemoDriver } from './window-demo.js';
 
@@ -54,6 +56,15 @@ import { createFakeWindowDemoDriver } from './window-demo.js';
  * `ScreenContextInputs.anchor` is set at submission, so a typed question is
  * grounded on where the pointer was when it was asked.
  *
+ * PR-032 replaced one more, and it is where voice enters the conversation:
+ * **speech input**. The real `CGEventTap` (PR-015) and the real Apple Speech
+ * recogniser (PR-014) drive the controller — `main/voice-runtime.ts` maps
+ * `hotkey-down`/`hotkey-up` onto `push-to-talk-down`/`push-to-talk-up` and
+ * gates the whole path on PR-011's attribution verdict, and
+ * `createInteractionRuntime` is handed `MacSpeechInputAdapter` instead of
+ * `FakeSpeechInputAdapter`. **No key has ever been pressed and no audio has
+ * ever been recorded** — everything below runs against the Node helper stub.
+ *
  * What is still fake, and who takes each one:
  *
  * | boundary        | today                                      | owner   |
@@ -63,7 +74,8 @@ import { createFakeWindowDemoDriver } from './window-demo.js';
  * | screen capture  | real; **no capture at all** on `kind: fakes`| —       |
  * | `observe_screen`| real `PilotScreenContextService`            | —       |
  * | question anchor | real `ObservationCore` pointer timeline     | —       |
- * | speech in       | `FakeSpeechInputAdapter`                   | PR-032  |
+ * | push-to-talk    | real `CGEventTap`; fake on `kind: fakes`    | —       |
+ * | speech in       | real Apple Speech; fake on `kind: fakes`    | —       |
  * | speech out      | silent adapter                             | PR-033  |
  * | model           | Pi's faux provider                         | PR-037  |
  * | persistence     | none (in-memory session)                   | PR-036  |
@@ -175,11 +187,45 @@ if (!singleInstance.isPrimary) {
     logger,
   });
 
-  // The interaction controller (PR-006/024/025/026/027), real at last. The
-  // recogniser it is given is still mocked; it is constructed here rather than
-  // inside the runtime so the replay bar can make recognition *fail*, which is
-  // the one §16 case a command cannot express.
-  const speechInput = new FakeSpeechInputAdapter();
+  // Voice input (PR-032). The tap and the recogniser come from the same branch
+  // of `createPlatformRuntime`, so they are chosen together: either this build
+  // has a helper and both are real, or it has neither and both are fakes. The
+  // fakes are kept — unlike capture, which PR-028 left absent rather than fake —
+  // because both of them complete on their own (the fake recogniser finalises
+  // on `stop()`, which is the release of the key) and because PR-010's
+  // `PILOT_HOTKEY_FIXTURE` states have nowhere else to live.
+  //
+  // Nothing about the controller changes with the real recogniser: PR-025's
+  // `SpeechInputBinding` already absorbs one that finalises early, finalises
+  // twice or calls back after cancel, and Apple Speech does all three.
+  //
+  //   PILOT_HOTKEY_FIXTURE=permission-missing pnpm dev   # no way to speak
+  //   PILOT_SPEECH_DISCLOSURE=remote pnpm dev            # audio would leave
+  const voiceAdapters = ((): {
+    readonly hotkey: HotkeyAdapter;
+    readonly speechInput: SpeechInputAdapter;
+    /** Present only on the fake build; the one route to a *failed* recogniser. */
+    readonly fakeSpeech: FakeSpeechInputAdapter | null;
+    readonly real: boolean;
+  } => {
+    const hotkey = platform.hotkey;
+    const speech = platform.speechInput;
+    if (hotkey !== null && speech !== null) {
+      return { hotkey, speechInput: speech, fakeSpeech: null, real: true };
+    }
+    const fakeSpeech = new FakeSpeechInputAdapter();
+    return {
+      hotkey: new FakeHotkeyAdapter({
+        availability: resolveHotkeyAvailability(process.env['PILOT_HOTKEY_FIXTURE']),
+      }),
+      speechInput: fakeSpeech,
+      fakeSpeech,
+      real: false,
+    };
+  })();
+  const speechInput = voiceAdapters.speechInput;
+
+  // The interaction controller (PR-006/024/025/026/027), real at last.
   const { controller } = createInteractionRuntime({
     agent: agentRuntime.session,
     conversationId,
@@ -252,23 +298,51 @@ if (!singleInstance.isPrimary) {
     }
   });
 
+  /**
+   * The one way a command reaches the machine, whatever dispatched it.
+   *
+   * A function declaration so push-to-talk can be wired before the conversation
+   * gate exists: the gate needs `voice.pushToTalk`, and the voice runtime needs
+   * a dispatch that has already told the gate about the command (§17 counts an
+   * abandoned question once, wherever it was abandoned from).
+   */
+  function dispatchCommand(command: InteractionCommand): void {
+    conversation.noteCommand(command);
+    controller.dispatch(command);
+  }
+
+  // Push-to-talk, wired (PR-032, runbook follow-ups 12 and 19). Built before
+  // the conversation gate because the gate takes `voice.pushToTalk` as its
+  // availability source: the mapping and the availability come from one object,
+  // so the panel can never be told the shortcut works while nothing is
+  // listening to it.
+  const voice = createVoiceRuntime({
+    hotkey: voiceAdapters.hotkey,
+    dispatch: dispatchCommand,
+    // Follow-up 12. `MacPermissionAdapter.attribution()` caches, so this is the
+    // same verdict `observation.refreshAttribution()` established and not a
+    // second round trip. Absent on the fake build, which has no seam to read.
+    ...(platform.permissions.attribution === undefined
+      ? {}
+      : { attribution: platform.permissions.attribution.bind(platform.permissions) }),
+    logger,
+  });
+
   // Conversation and developer diagnostics (PR-010). Built before the window
   // gate so every command the window gate dispatches passes through
   // `noteCommand` too — a question abandoned by changing the observed window is
   // the same abort as one abandoned with the Interrupt button.
-  //
-  //   PILOT_HOTKEY_FIXTURE=permission-missing pnpm dev   # no way to speak
-  //   PILOT_SPEECH_DISCLOSURE=remote pnpm dev            # audio would leave
   const replayClock = createReplayClock();
-  const hotkeyAdapter = new FakeHotkeyAdapter({
-    availability: resolveHotkeyAvailability(process.env['PILOT_HOTKEY_FIXTURE']),
-  });
   const conversation = new ConversationGate({
     interaction: controller,
-    hotkey: hotkeyAdapter,
-    // PR-032 replaces this with `MacSpeechInputAdapter`; the route to the panel
-    // is what PR-010 owed (runbook follow-up 13).
+    hotkey: voice.pushToTalk,
+    // PR-032 closes runbook follow-up 13: `MacSpeechInputAdapter.disclosure()`
+    // finally has a route to the renderer. On the fake build the environment
+    // fixture still stands in, because a fake recogniser has no honest answer.
     ...(() => {
+      if (voiceAdapters.real) {
+        return { speech: voiceAdapters.speechInput };
+      }
       const speech = createFakeSpeechDisclosureSource(
         resolveSpeechDisclosure(process.env['PILOT_SPEECH_DISCLOSURE']),
       );
@@ -282,10 +356,6 @@ if (!singleInstance.isPrimary) {
   // bytes and the active image count — are the ones PR-010 deliberately left to
   // this PR, because none of them can be seen from the view-state stream.
   observation.attachTelemetry(conversation.telemetry);
-  // Availability only. Turning `hotkey-down`/`hotkey-up` into
-  // `push-to-talk-down`/`push-to-talk-up` is runbook follow-up 19, owned by
-  // PR-032; wiring it here would put the same mapping in two places.
-  void hotkeyAdapter.start();
 
   // Window picker and observation controls (PR-009), on the platform's own
   // enumeration (PR-028). `report` is `controller.send`, so `windows-changed`,
@@ -335,11 +405,18 @@ if (!singleInstance.isPrimary) {
           selected: () => controller.snapshot().selectedWindow,
         });
   // The panel's "Replay" bar. Since PR-029 it holds real conversations against
-  // the real controller instead of replaying scripted view states.
+  // the real controller instead of replaying scripted view states — and since
+  // PR-032 its `spoken-question` fixture really does open the tap's utterance
+  // through the real recogniser.
+  //
+  // `speech` is the one thing a command cannot express: making recognition
+  // *fail*. It exists only on the fake build; against a helper the same state is
+  // reached by scripting the helper, which for the stub is
+  // `PILOT_HELPER_STUB='{"speechInput":{"startFailsWith":{"code":"permission-denied"}}}'`.
   const conversationFixtureDriver = createLiveConversationDriver({
     controller,
     gate: conversation,
-    speech: speechInput,
+    ...(voiceAdapters.fakeSpeech === null ? {} : { speech: voiceAdapters.fakeSpeech }),
     logger,
   });
 
@@ -370,6 +447,26 @@ if (!singleInstance.isPrimary) {
       });
     }
     await observation.refreshAttribution();
+
+    // PR-032, and the order is the whole of runbook follow-up 12: attribution
+    // is established *before* anything can open the microphone. `voice.start()`
+    // reads the verdict, refuses the voice path outright when macOS credits
+    // Pilot's grants elsewhere, and only otherwise installs the tap. It does
+    // not throw for anything the user could act on — a missing Accessibility
+    // grant is an availability state the panel renders, beside a text box that
+    // stays live (§16).
+    try {
+      const status = await voice.start();
+      logger.info('push-to-talk', {
+        availability: status.availability.status,
+        real: voiceAdapters.real,
+        binding: status.binding.label,
+      });
+    } catch (cause) {
+      logger.error('the push-to-talk tap could not be installed; typing is the way to ask', {
+        cause: String(cause),
+      });
+    }
 
     const trayHost = createElectronTrayHost({
       onSelect: (id: TrayMenuItem['id']) => shell?.tray.select(id),
@@ -424,6 +521,8 @@ if (!singleInstance.isPrimary) {
       platform: platform.kind,
       platformReason: platform.reason,
       capture: observation.captureAvailable ? 'available' : 'unavailable',
+      pushToTalk: voice.availability().status,
+      voice: voiceAdapters.real ? 'real' : 'fake',
     });
   };
 
@@ -449,7 +548,12 @@ if (!singleInstance.isPrimary) {
     // guard: system-design §13 lists process shutdown among the occasions the
     // buffers must be cleared, and `shutdown` is terminal, so the scene lineage
     // goes with them.
-    const quitting = shell?.dispose() ?? Promise.resolve();
+    //
+    // Voice goes first: stopping the tap releases a key that is still held, and
+    // the controller's own dispose then cancels the utterance and closes the
+    // microphone. The other order would let a press arrive at a disposed
+    // controller.
+    const quitting = voice.dispose().then(() => shell?.dispose() ?? Promise.resolve());
     void quitting
       .then(() => observation.dispose())
       .then(() => platform.dispose())

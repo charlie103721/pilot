@@ -136,6 +136,29 @@ pnpm demo:ask
 #    window, and then with the pointer over a DIFFERENT application's window.
 PILOT_HELPER_BINARY="$(pwd)/packages/platform-mac/native/.build/debug/PilotHelper" \
   PILOT_LOG_LEVEL=debug pnpm dev
+
+# 12. PR-032 — PUSH-TO-TALK, FOR REAL. THIS ONE PROMPTS (Accessibility for the
+#    tap, Microphone and Speech Recognition for the recogniser), OPENS THE
+#    MICROPHONE AND LISTENS TO YOU. Run it after steps 5, 7 and 9.
+#
+#    NOTHING IN THIS PROJECT HAS EVER PRESSED A KEY OR RECORDED A SECOND OF
+#    AUDIO. This step is the first.
+#
+#    First the stub-driven walkthrough, which already passes on Linux — so a
+#    difference on the Mac is a difference in the *platform*, not in the wiring:
+pnpm demo:talk
+
+#    Then the real thing, and the instruction matters: put ANOTHER APPLICATION
+#    IN FRONT — a browser, Notes, anything — before you touch the key. A
+#    shortcut that only works while Pilot has focus is not push-to-talk.
+#    Pick a window in Pilot's panel first, then click away, then HOLD RIGHT
+#    OPTION, speak a question about that window, and let go.
+PILOT_HELPER_BINARY="$(pwd)/packages/platform-mac/native/.build/debug/PilotHelper" \
+  PILOT_LOG_LEVEL=debug pnpm dev
+
+#    …and then from inside the packaged .app, which is the only layout where TCC
+#    can plausibly attribute Accessibility and the Microphone to Pilot:
+open apps/desktop/release/mac-arm64/Pilot.app
 ```
 
 Notes:
@@ -511,6 +534,59 @@ or before the anchor. `moment: 'question'` refuses with `frame-unavailable`
 when it does not, and on a motionless window that is the same assumption step 6
 item 4 is about — from the third side.
 
+### What to look for in step 12 (PR-032)
+
+This is the first time anything in this project has **pressed a key** or
+**recorded audio**. Six things, in order — and do the first one before you speak
+a word, because it is the one that can be answered without a microphone.
+
+1. **Does the tap exist at all, and with which permission?** Watch the startup
+   log for `desktop.main.voice` / `push-to-talk is wired to the interaction
+   controller` and the `availability` on it. `active` means macOS let a
+   `CGEventTap` exist. `unavailable/permission-missing` after Accessibility has
+   been granted is the important negative result: **it means macOS also wants
+   Input Monitoring, which Pilot does not model anywhere** (runbook §5a). If
+   that is what happens, say so — it is a design gap, not a bug, and it changes
+   PR-042's entitlements and PR-008's onboarding copy.
+2. **Does the key work while another application is in front?** That is the
+   whole feature (`docs/product-spec.md` FR-11). Test it with a browser
+   focused, not with Pilot focused. A shortcut that only fires when Pilot has
+   focus means the tap is not global and the `CGEventTap` location is wrong.
+3. **Does Right Option insert anything, anywhere?** It is a live dead-key
+   modifier on some layouts. Hold it in a text field in another app and check
+   nothing is typed. If it is, the binding is wrong for that keyboard layout and
+   the default has to change — say which layout you use.
+4. **Does the live transcript grow while you speak?** Partial results are what
+   make holding the key feel like anything at all. If the panel only fills in at
+   the end, Apple Speech is not returning partials for that locale, or the 60 ms
+   drain (`DEFAULT_SPEECH_POLL_INTERVAL_MS`) is being outrun.
+5. **Does what you said become the question you meant?** Say a sentence with a
+   proper noun and a number in it. Also try **letting go early** and **letting
+   go late** — Apple Speech endpoints on its own, so a `final` before the key is
+   released is normal and PR-025's binding is built for it. What must never
+   happen: a question submitted *twice*, or a question submitted with the
+   previous utterance's words.
+6. **Revoke the Microphone while Pilot is running, then press the key.** System
+   Settings → Privacy & Security → Microphone. Expect the panel to land in
+   `error` with "Pilot needs Microphone access to listen…" **and the text box to
+   stay live**. If the text box is not usable there, stop — that is the single
+   most important behaviour in this PR and the one §16 does not permit failing.
+
+Also worth capturing while you are there: what
+`speech disclosure` reports for your locale (§7 of `pnpm demo:talk` shows the
+two shapes). If this Mac cannot recognise your language **on device**, Pilot
+refuses to listen rather than sending the audio to Apple — that is
+system-design §11 working as designed, and it will look like a broken
+microphone unless the disclosure is on screen. Say which locale you are on.
+
+And one thing only a Mac can settle: **the attribution verdict for the voice
+path**. PR-032 refuses voice outright on `helper-attributed` or
+`bundle-mismatch`. If step 5 came back with either of those, push-to-talk will
+be off before you press anything, with the sentence "macOS is giving Pilot's
+microphone and Accessibility permissions to another program…". That is correct
+behaviour, but it means steps 2–6 above cannot run until the packaged `.app`
+produces `matched`.
+
 **Fallback in use:** Mac-gated code is written unverified and batched here
 (runbook amendment 8, user decision). Accepted risk: PR-011 through PR-015
 accumulate on top of an uncompiled helper. PR-011 additionally ships an
@@ -547,6 +623,18 @@ hit-tested**, so nothing anywhere has checked that the crop is centred on what
 the user was actually pointing at. The frames it crops are real decodable
 screenshots rendered by `renderSyntheticScreen`, because the stub's own frames
 do not decode. Step 9 is what produces that answer.
+PR-032 turns the whole thing on with a key and a voice — `MacHotkeyAdapter` and
+`MacSpeechInputAdapter` drive the interaction controller (`pnpm demo:talk`,
+`apps/desktop/test/main/voice-runtime.test.ts`,
+`apps/desktop/test/voice/talk-demo.test.ts`) — and its gap is the plainest one
+in this file: **no key has ever been pressed and no audio has ever been
+recorded.** Not one `CGEventTap` has been created, not one microphone opened,
+not one word recognised. Every key transition and every transcript in every test
+and demo is the Node helper stub playing a script it was handed. What is proven
+is that Pilot's half behaves correctly given a tap and a recogniser that
+misbehave the way macOS's do — early finals, double finals, callbacks after
+cancel, a tap the system switches off mid-press. Whether macOS lets Pilot have
+either is step 12.
 
 ---
 
@@ -617,6 +705,14 @@ whether a model prefers the crop to the full frame, whether it uses
 "the window changed while the question was being asked". Watch the first real
 session for all three, and for the failure that would be invisible in a
 transcript: an answer that is confidently about the wrong control.
+
+PR-032 adds the question that only a real model *and* a real microphone can
+answer together: **does a spoken question survive the trip?** Every question the
+model has ever been asked here was typed by a test, so it was spelled correctly
+and punctuated. A transcript is neither. Watch the first real spoken session for
+whether the model copes with a recogniser's rendering of a proper noun, a
+version number or a UI label — and for the failure that a transcript makes
+invisible, an answer that is confidently about a word the user did not say.
 
 ---
 
@@ -727,6 +823,11 @@ reversible; raise any that look wrong.
 | **The app now sends `ownerPid` with every pointer grounding** (PR-031, runbook cross-lane issue 12) | `AccessibilityGroundingTarget.ownerPid` is optional and **both** of PR-013's defences against describing another application's element are conditional on it. PR-028 omitted it, which cost nothing until PR-031 made the element reach a prompt — and then it put a label from the *other* stub window straight into the model's request. `ownerPidFor` reads the pid off `MacWindowAdapter.lastSnapshot` structurally, so a `WindowAdapter` without that getter still works and simply falls back to the geometric check. **The real fix is `ownerPid` on the window contract** (runbook follow-up 29); until it lands, any new caller of `ground`/`groundFast` must pass it by hand, and nothing in the type system will say so. |
 | **`ScreenContextAnchor.at` is the pointer sample's instant, not the submission's** (PR-031) | `screenContextAnchor` (PR-019) projects `QuestionAnchor.at`, which is when the anchoring *sample* was taken, and the facade selects the frame at or before it. In the app the two are within the same skew bound the envelope uses (±1000 ms, and in practice a few milliseconds at 30 Hz), so it behaves as "the screen when you asked". It was left as PR-019 wrote it rather than overridden with `askedAt`: selecting a frame at or before the sample the question is grounded on is the more defensible reading, and changing another lane's projection inside an integration PR is what the phase rules exclude. **Consequence worth knowing:** on a Mac where pointer sampling falls behind, `moment: 'question'` selects an older frame than it needs to — §1 step 9 item 3 asks for the number. |
 | **`ObservationView` gained `looking`, and `capturing` was left alone** (PR-030) | system-design §14 asks the user be able to see Pilot looking at their screen. PR-009's indicator answers a different question — "may Pilot watch this window" — and it is the app's single answer to it, so it was not touched and no seventh indicator state was added. `looking` is a second boolean, true in exactly the one interaction state (`observing-screen`) that both the model's tool call and "Look now" pass through. Both are rendered, side by side, because "Pilot may watch this" and "Pilot is reading this right now" are different promises and collapsing them would make the more sensitive one invisible. |
+| **Voice is gated on TCC attribution, and the refusal is a hotkey availability** (PR-032, closing runbook follow-up 12) | PR-011's verdict answers "does the grant reach this process", which is the question a `granted` microphone cannot answer on its own; without the gate the recogniser would open a microphone it does not really have and hear silence. The verdict is read **once**, through `MacPermissionAdapter.attribution()` (cached, so no extra round trip), **before** `hotkey.start()` — reading it afterwards would leave a window in which a press already opened the microphone. It is reported as a `HotkeyAvailability` rather than thrown, because that is the surface PR-010 already renders beside the live text box (§16). `unknown` is left alone, as PR-028 leaves it alone. **Say if you would rather voice ran anyway on a failing verdict** and let the user discover the silence; it is one condition. |
+| **`HOTKEY_UNAVAILABLE_REASONS` gained `permission-unattributed`** (PR-032) | **A contract change, additive.** The existing `permission-missing` carries the sentence "Pilot needs Accessibility permission… " and a `PermissionKind` to route the user to System Settings. Both are *wrong advice* for an attribution failure: the permission exists, it is simply attached to another identity, and granting it again changes nothing — the fix is to run the installed `.app`. Reusing the code would have produced a confidently wrong instruction, which is the exact failure PR-011 exists to prevent, one layer up. One new member, one new `case` in `hotkeyUnavailableMessage`, no IPC schema change (the wire carries the sentence and the blocking permission, not the reason). |
+| **The fake hotkey and the fake recogniser stay on the build with no helper** (PR-032) | PR-028 chose the opposite for capture — no adapter at all rather than `FakeObservationAdapter`, because a fake that only produces a frame when a test calls `emitNext()` looks like it might work and never does (runbook cross-lane issue 10). Voice is not that shape: `FakeHotkeyAdapter` and `FakeSpeechInputAdapter` both *complete on their own* under the app's own calls (the fake recogniser finalises on `stop()`, which is the release of the key), so a Linux `pnpm dev` remains a usable dev loop instead of a dead shortcut. It also keeps PR-010's `PILOT_HOTKEY_FIXTURE` and `PILOT_SPEECH_DISCLOSURE` states reachable, which have nowhere else to live. The substitution happens at the composition root, in one visible block, and the boundary table at the top of `main/index.ts` says which build is which. |
+| **A denied microphone reaches §16 through `error`, not through onboarding** (PR-032) | Two different things are called "the microphone is denied". If the *permission gate* reports it, the machine rests in `needs-permission` and PR-008's onboarding — not the composer — is the way out; that is PR-006's design and PR-032 does not touch it. If the *recogniser* refuses at the moment of the press — TCC revoked since the last poll, or a disclosure that will not allow recording — the machine is in `listening`, the throw becomes `failure`, the table answers `error`, and the text box is live with the adapter's own sentence beside it. `pnpm demo:talk` §5 does not assert this; it types the question from `error` and gets it answered. |
+| **`LiveConversationDriver.speech` became optional** (PR-032) | The panel's "Replay" bar could make recognition fail because the recogniser was `FakeSpeechInputAdapter` and had an `emitError` control. A real one fails when the platform makes it fail. Rather than keep a fake beside the real adapter purely to drive one fixture, the option is now absent on a helper build and the `stt-failure` fixture says what to do instead — `PILOT_HELPER_STUB` with `speechInput.startFailsWith`, which reaches the same state through the real code path. A dev affordance that lies about which layer failed is worse than one that is honest about needing a scripted helper. |
 
 ---
 
@@ -749,6 +850,7 @@ reversible; raise any that look wrong.
 | Phase 3 — integration (028…036) | In progress. **PR-028 is merged**: the observation boundary is real. The window picker, the permission states and the capture lifecycle run on `MacWindowAdapter`, `MacPermissionAdapter`, `MacAccessibilityAdapter` and `MacObservationAdapter`, the frames land in a real `ObservationCore` ring, and PR-019's `PilotScreenContextService` answers behind it — verified end to end against the Node helper stub, and **never once against macOS** (§1 step 7). Speech, the model, persistence and the agent-side `observe_screen` (PR-030) are still fake. |
 | Phase 3 — integration (028…036) | In progress. **PR-030 is merged**: the model can see the selected window. `observe_screen` reaches PR-019's real `PilotScreenContextService` — the same instance "Look now" drives — and a real image reaches the provider's inbox; the observing state is visible while it happens and a refusal reaches the user as a sentence. Selected-window-only was re-proved against the real service. **Never once against macOS, and never once against a real model** (§1 step 8, §2): the pixels are the Node helper stub's and the tool call is scripted. Speech, persistence, the question anchor and the model itself are still fake. |
 | Phase 3 — integration (028…036) | In progress. **PR-031 is merged: point-and-ask works.** The §6 question anchor is resolved at submission from the real pointer timeline and handed to the same `PilotScreenContextService` the tool holds, so `moment: 'question'` answers from the frame that was on screen when the question was asked, `view: 'pointer'` crops around the anchor, and the element under it reaches the model as `targetRole`. `FakeQuestionAnchorSource` is gone from the real path and `ScreenContextInputs` has no unwired input left. It also fixed a real leak PR-028 left (runbook cross-lane issue 12). **Never once against macOS, and never once against a real model**: no real pointer has ever been read and no real accessibility element has ever been hit-tested (§1 step 9, §2). Speech, persistence and the model itself are still fake. |
+| Phase 3 — integration (028…036) | In progress. **PR-032 is merged: voice enters the conversation.** Holding the push-to-talk key opens a real recogniser, the live transcript grows partial by partial in the panel, releasing the key submits what was heard as the question, and the utterance's key-down/key-up instants reach PR-031's anchor — so `pointerSampleCount`, `pointerCrossedWindowBorder` and `sceneRevisedDuringUtterance` stop being degenerate with no change to the anchoring code. Voice is gated on PR-011's attribution verdict, and the §16 text box is proved reachable in every failure mode (dead tap, denied microphone, refused attribution, unavailable shortcut). **No key has ever been pressed and no audio has ever been recorded** (§1 step 12): every key transition and every transcript comes from the Node helper stub. Speech *output*, persistence and the model itself are still fake. |
 | Phase 4 — providers (037…039) | Not started. PR-037 (Codex) is the one the user's decision selects. |
 | Phase 5 — hardening and release (040…044) | Not started. |
 
@@ -776,6 +878,34 @@ demo executed against the merged tree.
   tested — second writer, crashed writer, and a zombie whose write is rejected
   after a takeover — but only against a temporary directory on Linux, never
   against a real Electron quit or a real force-quit on macOS.
+
+- **Push-to-talk may need a permission Pilot does not model** (PR-032). The
+  whole feature rests on a `CGEventTap`, and PR-015 assumes Accessibility is
+  what macOS asks for. Recent macOS also gates keyboard taps behind **Input
+  Monitoring**, which appears nowhere in `docs/system-design.md` §4, in
+  `PermissionKind`, in PR-008's onboarding, or in PR-042's entitlements. If §1
+  step 12 item 1 comes back `unavailable/permission-missing` *after*
+  Accessibility has been granted, that is the answer, and the fix touches four
+  places rather than one. Nothing here can settle it: no `CGEventTap` has ever
+  been created. The failure is at least loud rather than silent — the shortcut
+  reports itself unavailable with a sentence and the text box stays live — so a
+  user is never left holding a key that does nothing.
+
+- **Whether a real recogniser returns partials at all** (PR-032). The live
+  transcript is what makes holding a key feel like anything, and every partial
+  in every test here is a string the stub was handed. Apple Speech returns
+  partials for some locales and effectively not for others, and Pilot's own
+  60 ms drain adds latency on top. If §1 step 12 item 4 shows the panel filling
+  in only at the end, the feature still *works* — the accepted transcript is
+  what becomes the question — but it will feel broken while the key is held,
+  and that is a product problem rather than a bug.
+
+- **Right Option is a live dead-key modifier on some keyboard layouts**
+  (PR-015, now reachable). PR-015 chose it because it types nothing on US
+  layouts; on several others it composes accented characters. Nothing here can
+  test it. §1 step 12 item 3 asks for it explicitly, and if it inserts
+  characters in another application the default binding has to change — which
+  is a one-line change plus a settings surface that does not exist yet.
 
 - **TCC attribution for the spawned Swift helper** remains the top structural
   risk in the plan. PR-011 has landed the *detection* for it — a typed

@@ -47,8 +47,14 @@ export interface LiveConversationDriverOptions {
    * The mocked recogniser. Needed for exactly one thing the commands cannot
    * express: making recognition *fail*, which is the §16 case where the text
    * box is the only way left to ask.
+   *
+   * **Optional since PR-032**, because on a build with a helper the recogniser
+   * is `MacSpeechInputAdapter` and has no `emitError`: a real recogniser fails
+   * when the platform makes it fail, not when a panel control asks. The `stt-
+   * failure` fixture then reports that it needs a scripted helper rather than
+   * pretending, and the named stub configuration is in `main/index.ts`.
    */
-  readonly speech: Pick<FakeSpeechInputAdapter, 'emitError'>;
+  readonly speech?: Pick<FakeSpeechInputAdapter, 'emitError'>;
   readonly logger?: Logger;
 }
 
@@ -104,7 +110,10 @@ export function createLiveConversationDriver(
     dispatch({ type: 'push-to-talk-down' });
     await controller.settled();
     // The mocked recogniser answers on `stop()`, so the transcript arrives
-    // synchronously with the key release, exactly as `push-to-talk-up` intends.
+    // with the key release, exactly as `push-to-talk-up` intends. Against a
+    // real recogniser (PR-032) the transcript arrives when the recogniser has
+    // one — which is why `settle()` waits on the controller and is bounded
+    // rather than assuming anything about when that is.
     dispatch({ type: 'push-to-talk-up' });
     await settle();
   };
@@ -132,6 +141,12 @@ export function createLiveConversationDriver(
         }
 
         case 'stt-failure': {
+          if (speech === undefined) {
+            logger.warn('this build cannot fail recognition from the panel', {
+              how: 'script the helper: PILOT_HELPER_STUB speechInput.startFailsWith',
+            });
+            return;
+          }
           dispatch({ type: 'push-to-talk-down' });
           await controller.settled();
           const utteranceId: UtteranceId | null = controller.liveUtteranceId;

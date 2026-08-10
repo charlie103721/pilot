@@ -87,6 +87,16 @@ export function resolveHotkeyAvailability(raw: string | undefined): HotkeyAvaila
         reason: 'listener-rejected',
         detail: 'The system refused to create the event tap.',
       };
+    // PR-032, runbook follow-up 12: the permissions read as granted but macOS
+    // credits them elsewhere, so voice is refused before the tap is installed.
+    // Reachable on the fake build without a Mac and without editing source.
+    case 'permission-unattributed':
+      return {
+        status: 'unavailable',
+        reason: 'permission-unattributed',
+        permission: 'microphone',
+        detail: 'macOS attributes Pilot’s permissions to helper-attributed (inferred).',
+      };
     case 'unsupported':
       return {
         status: 'unavailable',

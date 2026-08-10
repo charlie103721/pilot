@@ -894,3 +894,90 @@ scene, the revision, the skew and the target role at submission, and
 `observation allowed` with `targetRole` when the look happens. The stub's frames
 do not decode, so a `view: 'pointer'` observation is refused there — that is the
 stub's limit, not the anchor's, and `pnpm demo:ask` is where the crop is real.
+
+## Demo (PR-032 — real push-to-talk input)
+
+```sh
+pnpm demo:talk                              # headless walkthrough, no display needed
+```
+
+**This is where voice enters the conversation.** Until PR-032 every question in
+this repository was typed. One fake boundary went — **speech input**:
+`FakeHotkeyAdapter` and `FakeSpeechInputAdapter` are gone from the shell's real
+path, and `MacHotkeyAdapter` (PR-015) and `MacSpeechInputAdapter` (PR-014) drive
+the interaction controller instead. `apps/desktop/src/main/voice-runtime.ts` is
+the whole of the new code: it maps `hotkey-down`/`hotkey-up` onto the machine's
+`push-to-talk-down`/`push-to-talk-up`, publishes `hotkey-availability-changed`
+to the panel, and establishes PR-011's TCC attribution verdict **before**
+anything can open the microphone.
+
+Nothing changed in the recogniser handling, and that is the point: PR-025's
+`SpeechInputBinding` already absorbs a recogniser that finalises before the key
+is released, finalises twice, or calls back after `cancel` — and Apple Speech
+does all three. PR-032 hands it a different adapter and nothing else.
+
+**Read this first.** `docs/implementation.md`'s demo for PR-032 — "hold Right
+Option in another app, speak, release, and see the question submitted" —
+**cannot be run here at all**:
+
+- **No key has ever been pressed.** There is no macOS, no `CGEventTap`, and the
+  Swift that would create one has never been compiled (runbook §5 amendment 8).
+  Every key transition in the walkthrough is the Node helper stub playing a
+  script.
+- **No audio has ever been recorded.** No microphone has been opened, no
+  `AVAudioEngine` has run, and no `SFSpeechRecognizer` has produced a word.
+  Every partial and every final is a string the stub was handed.
+- **No model is real** (`docs/handoff.md` §2). Pi's faux provider, scripted.
+
+What the walkthrough *does* prove is that Pilot's half is correct given a tap
+and a recogniser that behave as macOS's do — including badly. `docs/handoff.md`
+§1 step 12 is the Mac run that settles the rest.
+
+The walkthrough prints eight sections:
+
+1. **The boundary that changed**, and the platform kind behind it.
+2. **Hold the key, speak, release** — `observing` → `listening` → the live
+   transcript growing partial by partial, exactly as `ConversationPanel`
+   renders it → `transcribing` → the accepted transcript submitted as the
+   question → the answer.
+3. **The utterance interval reaches the anchor.** PR-031 built the anchor over
+   `utteranceStartedAt`/`askedAt`; with a typed question both are "now", so
+   `pointerSampleCount`, `pointerCrossedWindowBorder` and
+   `sceneRevisedDuringUtterance` are degenerate by construction. Push-to-talk
+   fills them with real key-down and key-up instants, and the pointer really
+   does move during the hold. **The anchoring code needed no change.**
+4. **The event tap dies while the key is held.** The synthetic `hotkey-up`
+   still dispatches `push-to-talk-up`, the recogniser lets go of the
+   microphone, and the words it did hear still become the question.
+5. **The microphone is denied at the moment of the press.** `error`, with the
+   adapter's own sentence — and then the same question typed from `error`, and
+   answered. §16's fallback is demonstrated, not asserted.
+6. **macOS credits Pilot's permissions to something else** (runbook follow-up
+   12). The tap is never started, the panel says why, and typing still works.
+7. **Where the audio would go** (runbook follow-up 13): the real adapter's
+   `disclosure()` reaching the panel's gate state, on device and not.
+8. **What none of it proves**, printed by the demo itself.
+
+In the app, the same thing by hand — the whole real stack, on Linux, against the
+stub (use the long `PILOT_HELPER_STUB` from the PR-028 section above, and add a
+scripted tap and recogniser):
+
+```sh
+PILOT_HELPER_STUB_PATH="$PWD/packages/platform-mac/test/support/helper-stub.ts" \
+  PILOT_HELPER_STUB='{"permissions":{"screen-recording":"granted","accessibility":"granted","microphone":"granted","speech-recognition":"granted"},"hotkeyScript":[{"key":"down"},{"key":"up"}],"speechInput":{"scripts":[{"steps":[{"on":"start","emit":[{"type":"partial","transcript":"what does this"}]},{"on":"stop","emit":[{"type":"final","transcript":"What does this do?"}]}]}]}}' \
+  PILOT_LOG_LEVEL=debug pnpm dev
+```
+
+`hotkeyScript` replays on every `hotkey.start`, and the first one happens at
+launch — so the tap presses and releases itself once, before a window has been
+picked, and the panel shows a spoken question going through with no key to
+press. Watch `desktop.main.voice` at `debug` for the mapping. On the build with
+no helper (a plain `pnpm dev` on Linux) the fakes stay, and PR-010's fixtures
+still reach every state without editing source:
+
+```sh
+PILOT_HOTKEY_FIXTURE=permission-missing pnpm dev      # no way to speak
+PILOT_HOTKEY_FIXTURE=permission-unattributed pnpm dev # PR-011's verdict refuses voice
+PILOT_SPEECH_DISCLOSURE=remote pnpm dev               # the audio would leave the Mac
+```
+
