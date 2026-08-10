@@ -33,6 +33,11 @@ Run from a clean checkout on macOS 13+ with Swift 5.9+:
 ```sh
 nvm use && pnpm install
 
+# The packaged helper's path depends on your Mac's architecture, so resolve it
+# once rather than hardcoding mac-arm64 (an Intel Mac produces mac-x64):
+packaged_app()    { find apps/desktop/release -maxdepth 2 -name 'Pilot.app' | head -1; }
+packaged_helper() { echo "$(packaged_app)/Contents/Resources/helper/PilotHelper"; }
+
 # 1. The Swift helper has never been compiled. This is the highest-value check.
 swift build --package-path packages/platform-mac/native
 swift test  --package-path packages/platform-mac/native
@@ -53,7 +58,7 @@ pnpm dev
 #    then from inside the packaged .app, which is the answer that matters.
 pnpm --filter @pilot/platform-mac demo:permissions
 
-PILOT_HELPER_BINARY="$(pwd)/apps/desktop/release/mac-arm64/Pilot.app/Contents/Resources/helper/PilotHelper" \
+PILOT_HELPER_BINARY="$(packaged_helper)" \
   pnpm --filter @pilot/platform-mac demo:permissions
 
 # 6. PR-013 — pointer position and Accessibility grounding. Raises NO prompt of
@@ -67,20 +72,23 @@ pnpm --filter @pilot/platform-mac demo:accessibility
 
 #    Then the same from inside the packaged .app, since that is the identity a
 #    real grant would be given to.
-PILOT_HELPER_BINARY="$(pwd)/apps/desktop/release/mac-arm64/Pilot.app/Contents/Resources/helper/PilotHelper" \
+PILOT_HELPER_BINARY="$(packaged_helper)" \
   pnpm --filter @pilot/platform-mac demo:accessibility
+
 # 7. PR-014 — speech. THIS ONE PROMPTS, OPENS THE MICROPHONE AND MAKES NOISE.
 #    Run it after step 5, so the two grants already exist. Turn the volume up:
 #    part of what is being checked is audible, not printed.
 pnpm --filter @pilot/platform-mac demo:speech
+
 # 8. PR-012 — the first real pixel Pilot has ever captured. RUN STEP 5 FIRST:
 #    without a Screen Recording grant this cannot work, and the failure would
 #    look like a capture bug rather than a missing permission.
 #    Open a window titled something recognisable before running it.
 pnpm --filter @pilot/platform-mac demo:capture
 
-PILOT_HELPER_BINARY="$(pwd)/apps/desktop/release/mac-arm64/Pilot.app/Contents/Resources/helper/PilotHelper" \
+PILOT_HELPER_BINARY="$(packaged_helper)" \
   pnpm --filter @pilot/platform-mac demo:capture
+
 # 9. PR-015 — the global push-to-talk hotkey. THIS ONE PROMPTS TOO
 #    (Accessibility, and possibly Input Monitoring — see below).
 #    Section 1 of this demo is the *only* place anything in Pilot has ever
@@ -90,7 +98,7 @@ pnpm --filter @pilot/platform-mac demo:hotkey
 #    Then the same thing from inside the packaged .app, which is the only
 #    layout where TCC can plausibly attribute the tap to Pilot rather than to
 #    a loose executable:
-PILOT_HELPER_BINARY="$(pwd)/apps/desktop/release/mac-arm64/Pilot.app/Contents/Resources/helper/PilotHelper" \
+PILOT_HELPER_BINARY="$(packaged_helper)" \
   pnpm --filter @pilot/platform-mac demo:hotkey
 
 # 10. PR-028 — the whole observation path inside the app. THIS ONE PROMPTS
@@ -107,10 +115,10 @@ PILOT_HELPER_BINARY="$(pwd)/packages/platform-mac/native/.build/debug/PilotHelpe
 
 #    …and from inside the packaged .app, which is the only layout where TCC can
 #    plausibly attribute Screen Recording to Pilot:
-open apps/desktop/release/mac-arm64/Pilot.app
+open "$(packaged_app)"
 
 # 11. PR-030 — the MODEL looking at a real window. Run it after step 10: it is
-#    step 10's path plus the agent, so a failure here that step 7 did not show is
+#    step 10's path plus the agent, so a failure here that step 10 did not show is
 #    in the tool or the model, not in capture.
 #    First the stub-driven walkthrough, which already passes on Linux:
 pnpm demo:look
