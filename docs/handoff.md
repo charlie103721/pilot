@@ -197,10 +197,15 @@ reversible; raise any that look wrong.
 | Phase | State |
 | --- | --- |
 | Phase 1 — foundations (PR-001…007) | **Complete.** All seven merged. |
-| Phase 2 — capability lanes | In progress: PR-008, PR-016, PR-017, PR-020, PR-024 merged; PR-011, PR-021, PR-025 in flight. |
+| Phase 2 — capability lanes | In progress. **Merged:** PR-008, PR-011, PR-016, PR-017, PR-020, PR-021, PR-022a, PR-024, PR-025. **In flight:** PR-009, PR-012, PR-013, PR-014, PR-018, PR-022b, PR-026. **Remaining:** PR-010, PR-015, PR-019, PR-023, PR-027. |
 | Phase 3 — integration (028…036) | Not started. Blocked on Phase 2; most steps also need the Mac (§1) and a signed-in model (§2). |
 | Phase 4 — providers (037…039) | Not started. PR-037 (Codex) is the one the user's decision selects. |
 | Phase 5 — hardening and release (040…044) | Not started. |
+
+Last full regression on `main` (after PR-017 and PR-022a): 997 tests across 66
+files, and **all twelve demos executed green** — observation, scene, policy,
+interaction, envelope, voice, `observe_screen`, visual-context, permissions,
+helper transport, helper permissions, and the real-Electron headless smoke.
 
 Verification standard on every merge: `pnpm lint`, `typecheck`, `test`, `build`
 re-run by the orchestrator — never taken on a subagent's word — plus each PR's
