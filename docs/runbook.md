@@ -146,9 +146,13 @@ include them:
 2. **PR-029…PR-036 run on a development model profile** produced by the
    PR-005 spike (an API key configured by hand). The provider settings UI and
    real auth flows arrive in Phase 4 — don't block Phase 3 on them.
-3. **PR-037**: if the PR-005 probe finds Codex subscription auth unsupported
+3. **PR-037**: ~~if the PR-005 probe finds Codex subscription auth unsupported
    in the pinned Pi release, implement the fallback recorded in
-   `docs/pi-notes.md` instead, and record the DoD gap.
+   `docs/pi-notes.md` instead~~ — **CLOSED by PR-005.** Codex subscription auth
+   is supported (`openai-codex` provider, `isSubscription: true`, browser and
+   device-code login). No fallback needed. The remaining work and the exact
+   sign-in steps are in `docs/pi-notes.md` §9.1; note the browser flow binds
+   local port 1455 and does not open a browser for you.
 4. **PR-001 contracts are provisional** for the agent facade and platform
    adapters until PR-005 (Pi API reality) and PR-011 (TCC reality) land.
    Expect and accept small contract-change follow-ups.
@@ -189,12 +193,21 @@ created during PR-043.
 
 ## 7. Known facts and open risks (verified 2026-08-10)
 
-- **Pi packages are public on npm** (verified from this machine):
-  `@earendil-works/pi-agent-core@0.84.1`, `@earendil-works/pi-ai@0.84.1`,
-  `@earendil-works/pi-storage-sqlite-node@0.83.0`. Source:
+- **Pi packages are public on npm.** Corrected by PR-005 (2026-08-10) — the
+  pinned set is `@earendil-works/pi-agent-core@0.84.1`,
+  `@earendil-works/pi-ai@0.84.1`, and
+  `@earendil-works/pi-session-backend-sqlite-node@0.84.1`. Source:
   <https://github.com/earendil-works/pi>. There is no package named
-  `@earendil-works/pi` or `pi-agent` — don't look for one. Pin exact versions
-  in PR-005 and record findings in `docs/pi-notes.md`.
+  `@earendil-works/pi` or `pi-agent` — don't look for one.
+  **`@earendil-works/pi-storage-sqlite-node@0.83.0` (named in the original
+  draft of this section) must not be used**: it was renamed for the 0.84 line,
+  it pins `pi-agent-core@^0.83.0` so it duplicates the runtime in the tree, and
+  the `Session` it returns has an incompatible method surface. Details and
+  evidence: `docs/pi-notes.md` §1.1.
+- **PR-005 findings are recorded in `docs/pi-notes.md`.** Read §6
+  (contradictions with `docs/system-design.md`) and §8 (consequences for
+  PR-020…PR-023) before starting any agent-lane PR. Amendment 3 below is
+  closed: Codex subscription auth *is* supported in the pinned release.
 - Top risks (details in `dp/m1.md` §Risks): Pi API mismatch vs doc
   assumptions; TCC permission attribution for the spawned Swift helper; Codex
   subscription support in the pinned Pi release; double-JPEG small-text

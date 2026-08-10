@@ -31,7 +31,8 @@
       "@pilot/platform": ["packages/platform/src/index.ts"],
       "@pilot/platform/fakes": ["packages/platform/src/fakes/index.ts"],
       "@pilot/observation": ["packages/observation/src/index.ts"],
-      "@pilot/interaction": ["packages/interaction/src/index.ts"]
+      "@pilot/interaction": ["packages/interaction/src/index.ts"],
+      "@pilot/agent": ["packages/agent/src/index.ts"]
     }
   }
 }

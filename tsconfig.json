@@ -6,6 +6,7 @@
     { "path": "packages/platform" },
     { "path": "packages/observation" },
     { "path": "packages/interaction" },
+    { "path": "packages/agent" },
     { "path": "apps/desktop" }
   ]
 }
