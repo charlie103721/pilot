@@ -19,12 +19,14 @@ Design and delivery documents live in `docs/` and `dp/`. Start with
 apps/desktop/          Electron shell: main process, sandboxed preload, React panel
 packages/shared/       identifiers, geometry, errors, IPC envelopes, logging, domain types
 packages/platform/     adapter interfaces, cross-block service contracts, fakes
+packages/platform-mac/ embedded Swift helper and its framed stdio transport
 packages/observation/  frame ring, pointer timeline, scene revision, deterministic clear
 packages/interaction/  the interaction state machine, its transition table and controller
+packages/agent/        Pi agent session, tools, and the Pi dependency boundary
 ```
 
-Later PRs add `packages/platform-mac/` and `packages/agent-runtime/` per
-`docs/system-design.md` §20.
+`packages/platform-mac/native/` is a SwiftPM package that **cannot be built on
+Linux**; see `packages/platform-mac/README.md` for the Mac-only steps.
 
 `pnpm install` also downloads the Electron runtime binary
 (`apps/desktop/scripts/ensure-electron.js`). That download is optional: lint,

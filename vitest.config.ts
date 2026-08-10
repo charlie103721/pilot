@@ -13,6 +13,10 @@ export default defineConfig({
         find: '@pilot/platform/fakes',
         replacement: fromRoot('./packages/platform/src/fakes/index.ts'),
       },
+      {
+        find: '@pilot/platform-mac',
+        replacement: fromRoot('./packages/platform-mac/src/index.ts'),
+      },
       { find: '@pilot/platform', replacement: fromRoot('./packages/platform/src/index.ts') },
       { find: '@pilot/shared', replacement: fromRoot('./packages/shared/src/index.ts') },
       {
