@@ -16,13 +16,17 @@ Design and delivery documents live in `docs/` and `dp/`. Start with
 ## Workspace layout
 
 ```text
-packages/shared/     identifiers, geometry, errors, IPC envelopes, logging, domain types
-packages/platform/   adapter interfaces, cross-block service contracts, fakes
+packages/shared/       identifiers, geometry, errors, IPC envelopes, logging, domain types
+packages/platform/     adapter interfaces, cross-block service contracts, fakes
+packages/platform-mac/ embedded Swift helper and its framed stdio transport
 ```
 
-Later PRs add `apps/desktop/`, `packages/platform-mac/`, `packages/observation/`,
+Later PRs add `apps/desktop/`, `packages/observation/`,
 `packages/agent-runtime/` and `packages/interaction/` per
 `docs/system-design.md` §20.
+
+`packages/platform-mac/native/` is a SwiftPM package that **cannot be built on
+Linux**; see `packages/platform-mac/README.md` for the Mac-only steps.
 
 ## Verification
 

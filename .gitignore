@@ -3,3 +3,9 @@ dist/
 coverage/
 *.tsbuildinfo
 .DS_Store
+
+# SwiftPM build output (packages/platform-mac/native). `Package.resolved` is
+# deliberately not ignored: it must be committed once the helper gains
+# dependencies.
+.build/
+.swiftpm/
