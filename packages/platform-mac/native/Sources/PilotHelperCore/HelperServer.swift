@@ -15,34 +15,39 @@ public enum HelperOutcome {
 /// PR-003 implemented transport only: `health` (the host's startup handshake
 /// and liveness probe) and `echo` (which round-trips the binary body so the
 /// length-prefixed payload path is exercised before PR-012 needs it). PR-011
-/// added the permission and window operations.
+/// added the permission and window operations; PR-013 added the accessibility
+/// ones.
 ///
-/// `handle(frame:)` remains a function of its input and its two injected
-/// services, so the XCTest target exercises every branch — including the
-/// permission and window ones — without a window server, a TCC prompt or a
-/// spawned process.
+/// `handle(frame:)` remains a function of its input and its injected services,
+/// so the XCTest target exercises every branch — including the permission,
+/// window and accessibility ones — without a window server, a TCC prompt, an
+/// accessibility grant or a spawned process.
 public final class HelperServer {
     public let helperVersion: String
     private let processIdentifier: Int
     private let startedAt: Date
     private let permissions: PermissionService
     private let windows: WindowService
+    private let accessibility: AccessibilityService
     private var eventCounter = 0
 
     /// The services default to the live ones, so `main.swift` is unchanged and
-    /// the PR-003 initialiser call still compiles.
+    /// the PR-003 initialiser call still compiles. Each one added since is a
+    /// defaulted parameter for the same reason.
     public init(
         helperVersion: String,
         processIdentifier: Int = Int(ProcessInfo.processInfo.processIdentifier),
         startedAt: Date = Date(),
         permissions: PermissionService = SystemPermissionService(),
-        windows: WindowService = SystemWindowService()
+        windows: WindowService = SystemWindowService(),
+        accessibility: AccessibilityService = SystemAccessibilityService()
     ) {
         self.helperVersion = helperVersion
         self.processIdentifier = processIdentifier
         self.startedAt = startedAt
         self.permissions = permissions
         self.windows = windows
+        self.accessibility = accessibility
     }
 
     private var uptimeMilliseconds: Int {
@@ -186,6 +191,44 @@ public final class HelperServer {
                     "screenLocked": outcome.screenLocked,
                 ]
             )
+        case .accessibilitySample:
+            let reading = accessibility.pointer()
+            let trusted = accessibility.isTrusted()
+            let includeElement = (request.payload["includeElement"] as? Bool) ?? false
+            let lookup =
+                includeElement
+                ? accessibility.element(
+                    at: reading.point,
+                    ownerPid: (request.payload["ownerPid"] as? NSNumber)?.intValue,
+                    includeValue: (request.payload["includeValue"] as? Bool) ?? false
+                )
+                : ElementLookup.notRequested
+            var payload = reading.jsonFields
+            payload["axTrusted"] = trusted
+            for (key, value) in lookup.jsonFields {
+                payload[key] = value
+            }
+            return success(request: request, payload: payload)
+        case .accessibilityElementAt:
+            guard let point = request.payload["point"] as? [String: Any],
+                let x = RectRecord.numeric(point["x"]),
+                let y = RectRecord.numeric(point["y"])
+            else {
+                return failure(
+                    request: request,
+                    code: "invalid-request",
+                    domain: "ipc",
+                    message: "accessibility.element-at requires a point"
+                )
+            }
+            let lookup = accessibility.element(
+                at: PointRecord(x: x, y: y),
+                ownerPid: (request.payload["ownerPid"] as? NSNumber)?.intValue,
+                includeValue: (request.payload["includeValue"] as? Bool) ?? false
+            )
+            var payload = lookup.jsonFields
+            payload["axTrusted"] = accessibility.isTrusted()
+            return success(request: request, payload: payload)
         }
     }
 

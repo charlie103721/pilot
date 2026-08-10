@@ -49,6 +49,20 @@ pnpm --filter @pilot/platform-mac demo:permissions
 
 PILOT_HELPER_BINARY="$(pwd)/apps/desktop/release/mac-arm64/Pilot.app/Contents/Resources/helper/PilotHelper" \
   pnpm --filter @pilot/platform-mac demo:permissions
+
+# 6. PR-013 — pointer position and Accessibility grounding. Raises NO prompt of
+#    its own (`AXIsProcessTrusted` does not prompt). Run it BOTH ways:
+#    without an Accessibility grant, to confirm the degraded mode is real …
+pnpm --filter @pilot/platform-mac demo:accessibility
+
+#    … and again after granting Accessibility to the terminal (System Settings →
+#    Privacy & Security → Accessibility), which is what makes elements appear.
+pnpm --filter @pilot/platform-mac demo:accessibility
+
+#    Then the same from inside the packaged .app, since that is the identity a
+#    real grant would be given to.
+PILOT_HELPER_BINARY="$(pwd)/apps/desktop/release/mac-arm64/Pilot.app/Contents/Resources/helper/PilotHelper" \
+  pnpm --filter @pilot/platform-mac demo:accessibility
 ```
 
 Notes:
@@ -59,10 +73,10 @@ Notes:
   Either way, send the compiler output; it gets fixed, not worked around. The
   authors could not compile any of it and deliberately avoided constructs they
   were unsure of.
-- **Steps 1–4 raise no TCC prompt. Step 5 does.** That separation is
+- **Steps 1–4 and 6 raise no TCC prompt. Step 5 does.** That separation is
   deliberate: it isolates "does the helper build and talk" from "does macOS
-  trust it". Do steps 1–4 first; if the helper does not build, step 5 cannot
-  tell you anything.
+  trust it". Do steps 1–4 first; if the helper does not build, steps 5 and 6
+  cannot tell you anything.
 - `--require-native` in step 3 is the flag that matters. Without it the build
   silently stages a placeholder, and a bundle that cannot observe the screen is
   indistinguishable from one that can until someone tries it.
@@ -113,11 +127,44 @@ Also worth capturing while you are there, since nothing else will produce it:
   two authorization enums map the way `PermissionStateMapper` assumes (they
   disagree: `1` is `restricted` for AVFoundation and `denied` for Speech).
 
+### What to look for in step 6 (PR-013)
+
+Pointer grounding is the input to every spoken question, and none of it has ever
+touched a real pointer or a real accessibility tree. Four things:
+
+1. **Does `trusted=` flip when you grant Accessibility?** It is printed at the
+   top of every section. If it stays `false` after granting, the grant is going
+   to the wrong identity — the same attribution question as step 5, from a
+   different angle.
+2. **Do the normalised coordinates match reality?** Put the pointer at the
+   top-left corner of the observed window and then at its bottom-right; expect
+   `0.000, 0.000` and `1.000, 1.000`. A **vertical mirror image** means the
+   AppKit coordinate flip is being applied when it should not be (or vice
+   versa); an offset by exactly a display's height means the wrong display's
+   height was used. Repeat it with the window on a **second display**, ideally
+   one placed to the left of or above the primary so its origin is negative,
+   and with a **Retina and a non-Retina** display if you have both.
+3. **Does a real password field report `[SECURE: value withheld]`?** This is the
+   single most valuable observation in the batch. Try both a native app's login
+   sheet and a web form in Safari — **they may not agree**, because AppKit
+   exposes `AXSecureTextField` as a role in some places and as a subrole in
+   others, and WebKit uses the subrole. Report the actual `AXRole`/`AXSubrole`
+   you see. **If it never fires, the accessibility-based redaction PR-018 is
+   built on never happens**, and §14's "best effort" becomes "no effort".
+4. **Do elements come back at all, and quickly?** All `no target (none)` while
+   `trusted=true` means `AXUIElementCopyElementAtPosition` is not behaving as
+   assumed. Slowness matters too: the helper's accessibility calls are capped at
+   200 ms and the sampler runs at 30 Hz, so a busy application should cost
+   dropped samples, never a stalled helper. If the helper is restarted by its
+   supervisor while you move the pointer around, the timeout is wrong.
+
 **Fallback in use:** Mac-gated code is written unverified and batched here
 (runbook amendment 8, user decision). Accepted risk: PR-011 through PR-015
 accumulate on top of an uncompiled helper. PR-011 additionally ships an
 attribution check whose *logic* is fully tested on Linux but whose *answer* is
-unknown until step 5 runs.
+unknown until step 5 runs. PR-013 ships pointer grounding whose *rules* are
+fully tested on Linux but which has never read a pointer or an accessibility
+element; step 6 is what produces that answer.
 
 ---
 
@@ -177,6 +224,9 @@ reversible; raise any that look wrong.
 | **The capability gate ANDs profile and probe in both directions** (PR-020) | A first draft let the Pi probe *override* a profile's `supportsVision: false`. That is backwards: setting it false on a capable model is how an operator selects the degraded accessibility-only mode of system-design §12, so overriding it would send screen images to a model the user asked not to show them to. The reverse case (profile claims vision, Pi disagrees) reports a distinct `profile-model-mismatch` so a stale profile stays diagnosable. |
 | **`QuestionEnvelope.pointer` carries a sentinel, not `null`** (PR-024) | system-design §8 types it as a required numeric pair, so "no pointer recorded" is `UNKNOWN_NORMALIZED_POINT` (`-1,-1`, outside `[0,1]`) plus `grounding: 'pointer-unknown'`, read via `envelopePointerKnown()`. Nullable is the cleaner shape but needs a coordinated change across two readers. **Say if you would rather have `null`** — it is a small, contained change now and a wider one later. |
 | **`QuestionAnchorSource` declared on the interaction side** (PR-024) | No contract exposed scene plus pointer-by-instant/interval to that lane, and editing `packages/observation` mid-flight would have collided with PR-016. It mirrors `PointerTimeline` exactly, so PR-031's adapter is the identity function. Moving it onto `ScreenContextService` later is mechanical. |
+| **`AccessibilityAdapter` gained two *optional* methods** (PR-013) | `availability()` and `ground()`, added the same way PR-011 added `PermissionAdapter.attribution?()`: optional, so every existing implementation and fake still satisfies the interface untouched, and no other lane has to change. system-design §5's two original methods are unchanged. The alternative — a second interface — would have split "the accessibility adapter" in two for no gain. |
+| **Accessibility element *values* are off by default** (PR-013) | A value is arbitrary screen content, and the secure-field flag that would keep a password out of it is best effort (§14). So `MacAccessibilityAdapter` does not read `AXValue` unless a host opts in with `includeElementValues`, and never for a secure element. Cost: a consumer that wants the text in a field must ask for it deliberately. **Say if you would rather have values on by default** — PR-018/PR-028 are the consumers this affects. |
+| **The accessibility hit test is scoped to the window's application** (PR-013) | `AXUIElementCreateApplication(ownerPid)` rather than the system-wide element, because a point inside the selected window can be covered by a notification or a floating palette from another app, and describing it would leak from a window Pilot is not observing. Cost: an element genuinely owned by a *different* process — a plugin host, an out-of-process web view — will not be found, and shows as `no target`. If real apps turn out to be full of those, the scoping is the first thing to loosen. |
 
 ---
 
@@ -212,6 +262,18 @@ demo executed against the merged tree.
     bundle inside the app (so the identity is deliberate rather than
     accidental) or moving these calls into the Electron main process. Both are
     larger than PR-011 and neither has been designed.
+- **Secure-field detection may never fire** (PR-013). The product promises
+  best-effort masking of password fields (system-design §14) and PR-018's
+  redaction is driven entirely by the `isSecure` flag this PR produces. That
+  flag is set only when macOS marks an element `AXSecureTextField` as a role, as
+  a subrole, or within four ancestors — and **whether real applications expose
+  it that way has never been checked** (§1 step 6). Deliberately no heuristic on
+  labels: guessing "Password" from a placeholder would create the appearance of
+  coverage while leaving every non-English and unlabelled field uncovered.
+  Either way the guarantee stays honest — `SECURE_FIELD_DISCLOSURE` is exported
+  as the exact sentence the UI must show, and `secureBasis: 'none'` means
+  "macOS did not mark this", never "this is safe". **The product must not
+  describe this as redaction of secrets; it is redaction of recognised fields.**
 - **`sharp` prebuilds inside packaged Electron (arm64)** — PR-018 owns image
   encoding; the packaging interaction has not been tested.
 - **Double-JPEG legibility of small text** — capture encodes once, the

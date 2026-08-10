@@ -7,9 +7,11 @@ macOS platform package.
 - **PR-011** adds the first two adapters on top of it: permissions — including
   parent-bundle attribution validation — and window enumeration with lifecycle
   events.
+- **PR-013** adds the third: pointer sampling at ~30 Hz with coalescing,
+  normalised window geometry, Accessibility hit testing, the secure-field flag
+  and the outside-window rule.
 
-Capture (PR-012), Accessibility grounding (PR-013), speech (PR-014) and
-push-to-talk (PR-015) come next.
+Capture (PR-012), speech (PR-014) and push-to-talk (PR-015) come next.
 
 > **Nothing under `native/` has ever been compiled.** There is no Swift
 > toolchain and no Mac on the development machine (`docs/runbook.md` amendment
@@ -28,6 +30,7 @@ src/protocol/operation-kit.ts      the operation type and its constructor
 src/protocol/operations.ts         the closed operation set
 src/protocol/permission-ops.ts     permission operations and their schemas
 src/protocol/window-ops.ts         window operations and their schemas
+src/protocol/accessibility-ops.ts  pointer and accessibility operations
 src/transport/channel.ts           framing bound to a pair of streams
 src/transport/helper-transport.ts  spawn, restart, correlation, deadlines
 src/permissions/attribution.ts     the attribution verdict table
@@ -35,12 +38,16 @@ src/permissions/mac-permission-adapter.ts
 src/windows/window-model.ts        stable window ids and domain mapping
 src/windows/window-diff.ts         lifecycle events, by snapshot diff
 src/windows/mac-window-adapter.ts
+src/accessibility/pointer-grounding.ts   the three grounding rules, pure
+src/accessibility/pointer-sampler.ts     ~30 Hz sampling with coalescing
+src/accessibility/mac-accessibility-adapter.ts
 src/polling.ts                     subscription-driven poller
 src/helper-binary.ts               where the helper executable lives
 native/                            SwiftPM package producing `PilotHelper`
 test/support/helper-stub.ts        Node stand-in that speaks the same protocol
 test/demo.ts                       the PR-003 demo
 test/demo-permissions.ts           the PR-011 demo
+test/demo-accessibility.ts         the PR-013 demo
 ```
 
 ## Wire format
@@ -102,11 +109,13 @@ message metadata stays printable and log-safe.
 | `permissions.attribution` | `{ expected }` | `{ evidence }` | none | 011 |
 | `windows.list` | `{ includeAllLayers? }` | `{ windows, displays, screenLocked, titlesWithheld, capturedAt }` | none | 011 |
 | `windows.get` | `{ windowNumber }` | `{ window, display, screenLocked }` | none | 011 |
+| `accessibility.sample` | `{ includeElement?, ownerPid?, includeValue? }` | `{ point, pointerSource, sampledAt, axTrusted, element, outcome }` | none | 013 |
+| `accessibility.element-at` | `{ point, ownerPid?, includeValue? }` | `{ axTrusted, element, outcome }` | none | 013 |
 
 `health` doubles as the startup handshake: `start()` does not resolve until the
 helper answers it.
 
-PR-011 did **not** bump `HELPER_PROTOCOL_VERSION`. Appending operations is
+Neither PR-011 nor PR-013 bumped `HELPER_PROTOCOL_VERSION`. Appending operations is
 backwards compatible in both directions: an unknown operation is already a
 typed `invalid-request` on the helper, and an unregistered response is already
 a typed `invalid-request` on the host.
@@ -259,6 +268,104 @@ is synchronous, needs no concurrency, and degrades observably — macOS withhold
 independent cross-check on the TCC probe. PR-012 needs `SCShareableContent` for
 capture filters regardless.
 
+## Pointer and Accessibility grounding (PR-013)
+
+### Normalised geometry, and why Retina and multi-display are not special cases
+
+Every conversion goes through `@pilot/shared`'s geometry module — the one
+geometry module of system-design §5. `src/accessibility/pointer-grounding.ts`
+contains no arithmetic of its own.
+
+| Fact | Consequence |
+| --- | --- |
+| Window bounds are display-independent **points** | A 2× display does not change the normalised pointer at all |
+| `capturedPixelPoint` derives from `captureSize`, not `scaleFactor` | A policy-downscaled capture still lines up |
+| Screen points are **global**, and displays left of or above the primary have negative origins | `(point − bounds.origin) / bounds.size` is already display-agnostic |
+
+So a 1200×800 pt window on a 2× display captures at 2400×1600 px and its centre
+is `0.5, 0.5` / `1200, 800 px`; a 1000×700 pt window at `x = −1600` on a 1×
+display whose own origin is `−1920` normalises identically. Both are fixtures in
+`test/support/harness.ts` and every geometry assertion is made against both.
+
+### Three defences against describing a window Pilot is not observing
+
+PR-024 fixed the contract: outside the selected window the grounding is
+`pointer-outside-window` and **no element is identified**. Whatever is under the
+pointer then belongs to a window Pilot has no permission to describe.
+
+1. **The hit test is not issued.** `ground()` normalises first; when the pointer
+   is outside, `accessibility.element-at` is never sent. Proved on the wire, not
+   on the shape of the answer (`test/mac-accessibility-adapter.test.ts`).
+2. **An element supplied anyway is discarded.** `groundPointer` drops it even
+   when a caller passes one, and `buildGroundedPointer` is then called without a
+   target, so `GroundedPointer` cannot carry one.
+3. **A foreign element is rejected.** The helper scopes its hit test to the
+   window's application (`AXUIElementCreateApplication`), and the host rejects an
+   element that names a different `ownerPid` or whose frame shares no area with
+   the window — so a floating palette or a notification stacked over the selected
+   window yields `foreign-application`, not a description.
+
+`groundFast()` — the one-round-trip form the sampler uses — cannot make decision
+1 for the sample it is about to take, because position and hit test are atomic.
+It instead carries the previous sample's side of the border: a pointer resting
+outside issues no hit test at all, and the single crossing sample that does is
+scoped to the selected window's own application and has its element discarded
+before any consumer sees it. Question anchoring uses `ground()`, which is strict.
+
+### The secure-field flag, and exactly what it promises
+
+`isSecure` is **best effort** (system-design §14), and the code is arranged so
+that nothing reads it as more than that:
+
+- The wire carries a `secureBasis` — `role`, `subrole`, `ancestor` or `none` —
+  so `false` reads as *"nothing macOS exposes marks this element as secure"*
+  rather than as a safety claim. What is recognised is `AXSecureTextField` as a
+  role, as a subrole (how AppKit and WebKit mark password inputs), or on an
+  ancestor within four levels.
+- **No heuristics on labels.** Guessing "Password" from a placeholder would
+  create the appearance of coverage while leaving every non-English and every
+  unlabelled field uncovered.
+- **Element values are opt-in and off by default** (`includeElementValues`).
+  Because the flag protecting a value is best effort, the default is to carry
+  what an element *is*, never what it says.
+- A secure value is dropped three times: the helper does not read `AXValue` at
+  all for a secure element, `toAccessibilityNode` drops it, and
+  `buildGroundedPointer` drops it again.
+- `SECURE_FIELD_DISCLOSURE` is the exact sentence the product must show, exported
+  so it is quoted rather than paraphrased.
+
+What it does **not** cover, and no tuning would: a token pasted into a plain text
+view, a secret drawn into a canvas or a PDF, an API key in a window title, a
+recovery phrase in a chat transcript. Screenshots can still contain secrets
+outside recognised fields.
+
+### Sampling at ~30 Hz with coalescing
+
+`PointerSampler` reads `MVP_SCREEN_POLICY.pointerSampleHz` (30 → 33⅓ ms) rather
+than restating a literal, drives the same `Poller` the other adapters use, and
+suppresses two kinds of redundancy, counted separately:
+
+- **By interval** — at most one emission per bucket, `floor(at / interval)`.
+  This is a bucket, not a gap, and it is deliberately the *same* rule
+  `PointerTimeline` (PR-004) uses to decide whether an arriving sample replaces
+  the last retained one, so the emitted rate and the retained rate agree.
+- **By equality** — a sample in a new bucket identical to the last **emitted**
+  one is not news. Comparing against the last emitted sample is what keeps a
+  move-and-move-back from being swallowed.
+
+Every timestamp comes from an injected clock and every tick from an injected
+timer, so the boundary is asserted at the exact millisecond instead of raced.
+
+### Degraded mode is real
+
+A denied Accessibility permission is a degraded mode, not a stop (system-design
+§16). The pointer comes from `CGEvent(source: nil)?.location`, which needs no
+grant, so `ground()` keeps answering with a position and reports
+`targetOutcome: 'accessibility-denied'`, `degraded: true`. Nothing throws — a
+thrown error would stop question anchoring, and the position alone is still
+grounding. `availability()` reports `pointer` and `hitTesting` separately for
+exactly this reason.
+
 ### Extending it (PR-012 onward)
 
 Append to `HELPER_OPERATIONS` in `src/protocol/operations.ts` and to
@@ -320,13 +427,18 @@ only agrees with itself cannot pass. It covers framing, oversized input,
 malformed headers, request correlation, timeouts, aborts, crash reporting,
 restart with backoff, restart-budget exhaustion and shutdown escalation, plus
 (PR-011) all four permissions in all four states, every attribution verdict,
-window enumeration, the lifecycle diff and the failure paths of both adapters.
+window enumeration, the lifecycle diff and the failure paths of both adapters,
+plus (PR-013) pointer grounding on a Retina and a negative-origin display, the
+outside-window case proved at the wire, the foreign-application case, the
+secure-field case, coalescing at its exact boundary and Accessibility-denied
+degradation.
 
 Demos (require `pnpm build` first, because they run against `dist/`):
 
 ```sh
 pnpm --filter @pilot/platform-mac demo               # PR-003 transport
 pnpm --filter @pilot/platform-mac demo:permissions   # PR-011 permissions and windows
+pnpm --filter @pilot/platform-mac demo:accessibility # PR-013 pointer and accessibility
 ```
 
 The first prints the health handshake, a typed echo, a 256 KiB binary fixture
@@ -336,9 +448,18 @@ crash report → restart cycle.
 The second prints the four permissions in each of the four states, the
 attribution verdict, the whole verdict table evaluated on synthetic evidence,
 the enumerated windows with geometry, and a scripted lifecycle sequence
-(retitle → move+resize → close → screen lock). Both print which target they
-selected on their first line; if it says "Node stub", the Swift build did not
-land where it was expected.
+(retitle → move+resize → close → screen lock).
+
+The third walks a **scripted** pointer path across a scripted 2× window and
+prints, for every position, the normalised point, the captured pixel point and
+exactly which target was selected or why none was — including the secure field
+withholding its value, the foreign element being rejected, the outside-window
+positions, and the same walk with Accessibility denied. It ends with a ~30 Hz
+coalescing run and the secure-field disclosure. **No real pointer is read**; it
+says so on its second line.
+
+All three print which target they selected on their first line; if it says
+"Node stub", the Swift build did not land where it was expected.
 
 ### What is *not* verified anywhere
 
@@ -360,12 +481,33 @@ Stated plainly, because none of it has run:
   tested; which branch a real Mac takes is exactly the open question.
 - Whether macOS withholds window titles the way `titlesWithheld` assumes.
 - Whether the `/usr/bin/open` settings URLs land on the right panes.
+- **No pointer has ever been read.** `CGEvent(source:)?.location`,
+  `NSEvent.mouseLocation` and `CGDisplayBounds(CGMainDisplayID())` are
+  unexercised, and the AppKit coordinate flip has never run against a real
+  screen — only against its own unit test.
+- **No accessibility element has ever been hit-tested.**
+  `AXUIElementCreateSystemWide`, `AXUIElementCreateApplication`,
+  `AXUIElementCopyElementAtPosition`, `AXUIElementCopyAttributeValue`,
+  `AXUIElementGetPid`, `AXValueGetValue` and `AXUIElementSetMessagingTimeout`
+  are unexercised.
+- **Whether `AXSecureTextField` actually appears where PR-013 assumes** — as a
+  role in AppKit, as a subrole in AppKit's text system and in WebKit — is
+  unconfirmed against any real application. The classifier logic is fully
+  tested; which attribute a given password field really exposes is the open
+  question, and it is the one that decides whether the redaction PR-018 builds
+  on ever fires.
+- Whether a 200 ms accessibility messaging timeout is enough for a busy
+  application, or too long for the 30 Hz path.
+- Whether the pointer sample rate is actually achievable through the stdio loop
+  on a real machine. Everything measured here is measured against a Node stub.
 
 The Swift that *is* covered by `swift test` is the pure logic: the permission
 state mappers, the settings-URL table, the bundle-path walk, the
 `CGWindowListCopyWindowInfo` dictionary parser, display assignment, JSON
-serialisation, and every PR-011 operation dispatched through `HelperServer`
-with stub services.
+serialisation, every PR-011 operation dispatched through `HelperServer` with
+stub services, and (PR-013) the secure-field classifier, the label preference
+order, the AppKit coordinate flip, the text clamps and both accessibility
+operations dispatched through `HelperServer` with a stub service.
 
 ### On the Mac (Swift, batched per runbook §2)
 
@@ -379,19 +521,21 @@ cd packages/platform-mac
 swift build --package-path native            # debug
 swift build --package-path native -c release # release
 
-# 2. Run the Swift unit tests (frame codec, server behaviour, PR-011 pure logic).
+# 2. Run the Swift unit tests (frame codec, server behaviour, PR-011 and
+#    PR-013 pure logic).
 swift test --package-path native
 
-# 3. Run both demos against the real helper instead of the Node stub.
+# 3. Run the three demos against the real helper instead of the Node stub.
 cd ../..
 pnpm build
 pnpm --filter @pilot/platform-mac demo
 pnpm --filter @pilot/platform-mac demo:permissions
+pnpm --filter @pilot/platform-mac demo:accessibility
 ```
 
 Step 3 needs no configuration: `resolveHelperBinary()` finds
 `native/.build/debug/PilotHelper` on its own. Set `PILOT_HELPER_BINARY` to
-point somewhere else, or `--configuration release` output. Both demos print
+point somewhere else, or `--configuration release` output. All three demos print
 which target they chose on their first line; if it says "Node stub", the Swift
 build did not land where it was expected.
 
@@ -400,22 +544,53 @@ Expected results: `swift build` produces `native/.build/debug/PilotHelper`;
 against the stub (section 5 is skipped — the Swift helper has no crash-on-demand
 operation).
 
-A `swift build` failure in PR-003 code is a PR-003 defect; in the files below
-it is a PR-011 defect. Either way, report the compiler output rather than
-working around it. New in PR-011, and therefore new compile risk:
+A `swift build` failure in PR-003 code is a PR-003 defect; in the PR-011 files
+it is a PR-011 defect; in the PR-013 files it is a PR-013 defect. Either way,
+report the compiler output rather than working around it. New compile risk:
 
 ```text
+PR-011
 Sources/PilotHelperCore/PermissionModel.swift    pure — Foundation only
 Sources/PilotHelperCore/Attribution.swift        pure — Foundation only
 Sources/PilotHelperCore/WindowModel.swift        pure — Foundation only
 Sources/PilotHelperCore/PermissionProbes.swift   AVFoundation, Speech, ApplicationServices, CoreGraphics, Darwin
 Sources/PilotHelperCore/WindowEnumerator.swift   CoreGraphics, AppKit
+
+PR-013
+Sources/PilotHelperCore/AccessibilityModel.swift   pure — Foundation only
+Sources/PilotHelperCore/AccessibilityProbes.swift  ApplicationServices, CoreGraphics, AppKit
 ```
 
-The three pure files are the ones the tests cover; the two framework files are
-the risk. `PermissionProbes.swift` uses `dlsym` for
+The pure files are the ones the tests cover; the framework files are the risk.
+`PermissionProbes.swift` uses `dlsym` for
 `responsibility_get_pid_responsible_for_pid`, which is SPI — if it does not
 resolve, attribution reports `inferred` rather than failing.
+`AccessibilityProbes.swift` carries two `as!` casts guarded by `CFGetTypeID`
+checks (`AXUIElement` and `AXValue` do not bridge through `as?`); those are the
+lines to look at first if it fails to compile.
+
+### What `demo:accessibility` will do on a Mac
+
+It raises **no** prompt of its own. `AXIsProcessTrusted()` does not prompt, and
+nothing here calls `AXIsProcessTrustedWithOptions`, so a machine that has not
+granted Accessibility will simply print `trusted=false` and the degraded mode —
+which is itself worth confirming.
+
+Three things to look for:
+
+1. **Does any element come back at all?** With Accessibility granted, section 1
+   should name a role and a label for a position over a real control. All
+   `no target (none)` while `trusted=true` means `AXUIElementCopyElementAtPosition`
+   is not answering the way this assumes.
+2. **Does a real password field report `isSecure`?** Point at a login form —
+   Safari and a native app both, they may not agree — and check for
+   `[SECURE: value withheld]`. **This is the finding that matters most**: PR-018
+   redacts on this flag, and if it never fires the redaction never happens.
+   Report the role and subrole that actually appear.
+3. **Do the normalised coordinates match where the pointer really is?** Put the
+   pointer at a window's top-left corner and its bottom-right; expect `0.000,
+   0.000` and `1.000, 1.000`. A vertical mirror image means the coordinate flip
+   is wrong; an offset by a display height means the wrong display was used.
 
 ### What `demo:permissions` will now raise on a Mac
 

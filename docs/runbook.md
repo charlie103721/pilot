@@ -207,17 +207,22 @@ the two in step.
 | Codex sign-in probe | `docs/pi-notes.md` §9.1 | PR-005 | no |
 | Desktop shell visual demo | `pnpm dev` — menu bar item, panel, fake states | PR-002 | no |
 | **TCC attribution + real permissions and windows** | `pnpm --filter @pilot/platform-mac demo:permissions`, then again with `PILOT_HELPER_BINARY` pointing inside the packaged `.app` | PR-011 | **yes** |
+| Pointer grounding, AX hit testing, secure fields | `pnpm --filter @pilot/platform-mac demo:accessibility`, with and without an Accessibility grant | PR-013 | no |
 
-A Swift compile failure is a **PR-003 defect** in the transport files and a
+A Swift compile failure is a **PR-003 defect** in the transport files, a
 **PR-011 defect** in `PermissionModel.swift`, `Attribution.swift`,
-`WindowModel.swift`, `PermissionProbes.swift` and `WindowEnumerator.swift`:
-either way, send the compiler output and it gets fixed, not worked around.
+`WindowModel.swift`, `PermissionProbes.swift` and `WindowEnumerator.swift`, and
+a **PR-013 defect** in `AccessibilityModel.swift` and
+`AccessibilityProbes.swift`: either way, send the compiler output and it gets
+fixed, not worked around.
 
-Every row but the last raises **no TCC prompt** — that separation is
+Every row but the TCC one raises **no TCC prompt** — that separation is
 deliberate, isolating "does the helper build and talk" from "does macOS trust
-it". The last row is the second question, and it is the one that settles the
-top structural risk in the plan (§7). What to look for is spelled out in
-`docs/handoff.md` §1.
+it". The TCC row is the second question, and it is the one that settles the
+top structural risk in the plan (§7). The PR-013 row raises no prompt either
+(`AXIsProcessTrusted` does not ask), but it is the only way to learn whether
+real password fields are recognised at all — the flag PR-018's redaction rests
+on. What to look for is spelled out in `docs/handoff.md` §1.
 
 ## 6. Verification commands
 

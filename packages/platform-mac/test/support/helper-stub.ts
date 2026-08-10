@@ -82,6 +82,34 @@ export interface StubDisplay {
   isPrimary: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// PR-013 shapes
+// ---------------------------------------------------------------------------
+
+export type StubSecureBasis = 'role' | 'subrole' | 'ancestor' | 'none';
+
+export type StubElementOutcome =
+  'reported' | 'no-element' | 'not-trusted' | 'query-failed' | 'not-requested';
+
+/**
+ * One accessibility element the stub can report, plus the screen rectangle it
+ * occupies. The stub hit-tests these rectangles the way
+ * `AXUIElementCopyElementAtPosition` hit-tests a real tree.
+ */
+export interface StubAxElement {
+  bounds: StubRect;
+  role?: string | null;
+  subrole?: string | null;
+  label?: string | null;
+  value?: string | null;
+  /**
+   * Owning application. When `accessibility.element-at` is given an `ownerPid`
+   * the stub considers only elements with that owner, mirroring
+   * `AXUIElementCreateApplication` scoping.
+   */
+  ownerPid?: number | null;
+}
+
 /** One state of the desktop, as `windows.list` would report it. */
 export interface StubDesktop {
   windows?: StubWindow[];
@@ -163,6 +191,27 @@ export interface StubConfig {
    * deterministically: no timers, no sleeping, no races.
    */
   desktopScript?: StubDesktop[];
+
+  // -------------------------------------------------------------------------
+  // PR-013
+  // -------------------------------------------------------------------------
+
+  /** Pointer position reported by `accessibility.sample`. */
+  pointer?: { x: number; y: number };
+  /**
+   * Successive pointer positions. Call *n* of `accessibility.sample` answers
+   * with entry *n*, and the last entry repeats — the same scripted-sequence
+   * device `desktopScript` uses, so pointer movement is driven without timers.
+   */
+  pointerScript?: Array<{ x: number; y: number }>;
+  /** `AXIsProcessTrusted()`. Default true; false is the degraded mode. */
+  axTrusted?: boolean;
+  /** How the pointer position was read. Default `cg-event`. */
+  pointerSource?: 'cg-event' | 'ns-event' | 'unavailable';
+  /** Elements the hit test can find. The last match wins, as the topmost would. */
+  axElements?: StubAxElement[];
+  /** Make every hit test report `query-failed`, as a broken AX tree would. */
+  axQueryFails?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -402,6 +451,97 @@ function desktopPayload(desktop: StubDesktop, includeAllLayers: boolean): unknow
   };
 }
 
+// ---------------------------------------------------------------------------
+// PR-013 operation handling
+// ---------------------------------------------------------------------------
+
+/** The role and subrole macOS uses for a password field. */
+const SECURE_TEXT_FIELD = 'AXSecureTextField';
+
+/** Successive pointer positions, advanced by each `accessibility.sample`. */
+class StubPointerScript {
+  private index = 0;
+  private readonly points: Array<{ x: number; y: number }>;
+
+  constructor(points: Array<{ x: number; y: number }>) {
+    this.points = points;
+  }
+
+  next(): { x: number; y: number } {
+    const point = this.points[Math.min(this.index, this.points.length - 1)] ?? { x: 0, y: 0 };
+    this.index += 1;
+    return point;
+  }
+}
+
+function containsPoint(rect: StubRect, x: number, y: number): boolean {
+  return x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height;
+}
+
+/**
+ * Classifies a secure field the way `SecureFieldClassifier` does in Swift.
+ * Written out again rather than shared, for the same reason the wire format is:
+ * a stub that agrees with the code under test by construction proves nothing.
+ */
+function secureBasisOf(element: StubAxElement): StubSecureBasis {
+  if (element.role === SECURE_TEXT_FIELD) {
+    return 'role';
+  }
+  if (element.subrole === SECURE_TEXT_FIELD) {
+    return 'subrole';
+  }
+  return 'none';
+}
+
+interface StubHitTest {
+  element: unknown;
+  outcome: StubElementOutcome;
+}
+
+function hitTest(
+  config: StubConfig,
+  x: number,
+  y: number,
+  ownerPid: number | null,
+  includeValue: boolean,
+): StubHitTest {
+  if (config.axTrusted === false) {
+    return { element: null, outcome: 'not-trusted' };
+  }
+  if (config.axQueryFails === true) {
+    return { element: null, outcome: 'query-failed' };
+  }
+  const candidates = (config.axElements ?? []).filter((element) => {
+    if (!containsPoint(element.bounds, x, y)) {
+      return false;
+    }
+    // `AXUIElementCreateApplication(pid)` cannot answer with another
+    // application's element, so neither can the stub.
+    return ownerPid === null || (element.ownerPid ?? null) === ownerPid;
+  });
+  const found = candidates[candidates.length - 1];
+  if (found === undefined) {
+    return { element: null, outcome: 'no-element' };
+  }
+  const basis = secureBasisOf(found);
+  const isSecure = basis !== 'none';
+  return {
+    outcome: 'reported',
+    element: {
+      role: found.role ?? null,
+      subrole: found.subrole ?? null,
+      label: found.label ?? null,
+      // A secure element's value is never read, whatever the caller asked for.
+      value: includeValue && !isSecure ? (found.value ?? null) : null,
+      bounds: found.bounds,
+      isSecure,
+      secureBasis: basis,
+      secureAncestorDepth: null,
+      ownerPid: found.ownerPid ?? null,
+    },
+  };
+}
+
 function main(): void {
   const config = readConfig();
   const exitCode = config.exitCode ?? 9;
@@ -411,6 +551,9 @@ function main(): void {
   const permissions = new StubPermissionTable(config);
   const desktops = new StubDesktopScript(
     config.desktopScript ?? (config.desktop === undefined ? [{}] : [config.desktop]),
+  );
+  const pointers = new StubPointerScript(
+    config.pointerScript ?? [config.pointer ?? { x: 0, y: 0 }],
   );
   let answered = 0;
 
@@ -561,6 +704,34 @@ function main(): void {
                 (entry) => entry.displayNumber === window.displayNumber,
               ) ?? null);
         body = ok({ window, display, screenLocked: desktop.screenLocked ?? false });
+      }
+    } else if (request.op === 'accessibility.sample') {
+      const point = pointers.next();
+      const includeElement = payloadOf?.includeElement === true;
+      const ownerPid = typeof payloadOf?.ownerPid === 'number' ? payloadOf.ownerPid : null;
+      const hit = includeElement
+        ? hitTest(config, point.x, point.y, ownerPid, payloadOf?.includeValue === true)
+        : { element: null, outcome: 'not-requested' as StubElementOutcome };
+      body = ok({
+        point,
+        pointerSource: config.pointerSource ?? 'cg-event',
+        sampledAt: Date.now(),
+        axTrusted: config.axTrusted !== false,
+        element: hit.element,
+        outcome: hit.outcome,
+      });
+    } else if (request.op === 'accessibility.element-at') {
+      const point = payloadOf?.point as { x?: unknown; y?: unknown } | undefined;
+      if (typeof point?.x !== 'number' || typeof point.y !== 'number') {
+        body = fail('accessibility.element-at requires a point');
+      } else {
+        const ownerPid = typeof payloadOf?.ownerPid === 'number' ? payloadOf.ownerPid : null;
+        const hit = hitTest(config, point.x, point.y, ownerPid, payloadOf?.includeValue === true);
+        body = ok({
+          axTrusted: config.axTrusted !== false,
+          element: hit.element,
+          outcome: hit.outcome,
+        });
       }
     } else {
       body = fail(`unknown operation "${request.op}"`);
