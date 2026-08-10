@@ -22,6 +22,12 @@ each item using the fallback stated.
 None of this can be verified on the Linux development machine. The code is
 written and merged; only the verification is outstanding.
 
+**Confirmed by the user (2026-08-10): the Swift helper will be built on the Mac
+later.** Development continues on Linux without it. Nothing in the plan waits
+for it, and the batch below accumulates until there is a Mac to run it on. The
+macOS lane (PR-012…PR-015) is therefore written blind on top of an uncompiled
+helper, by design rather than by oversight.
+
 Run from a clean checkout on macOS 13+ with Swift 5.9+:
 
 ```sh
