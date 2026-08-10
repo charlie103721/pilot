@@ -22,6 +22,12 @@ Capture (PR-012), Accessibility grounding (PR-013) and push-to-talk (PR-015)
 
 Accessibility grounding (PR-013), speech (PR-014) and push-to-talk (PR-015)
 come next.
+- **PR-015** adds the global push-to-talk hotkey: a configurable `CGEventTap`,
+  default Right Option, delivering key-down and key-up while Pilot is not
+  focused. It is the first subsystem the helper *pushes* events for.
+
+Capture (PR-012), Accessibility grounding (PR-013) and speech (PR-014) come
+next.
 
 > **Nothing under `native/` has ever been compiled.** There is no Swift
 > toolchain and no Mac on the development machine (`docs/runbook.md` amendment
@@ -45,6 +51,7 @@ src/protocol/accessibility-ops.ts  pointer and accessibility operations
 src/protocol/capture-ops.ts        capture operations and their schemas
 src/capture/capture-policy.ts      the screen policy applied to a window (pure)
 src/capture/mac-observation-adapter.ts
+src/protocol/hotkey-ops.ts         push-to-talk operations and events
 src/transport/channel.ts           framing bound to a pair of streams
 src/transport/helper-transport.ts  spawn, restart, correlation, deadlines
 src/permissions/attribution.ts     the attribution verdict table
@@ -59,6 +66,8 @@ src/windows/mac-window-adapter.ts
 src/accessibility/pointer-grounding.ts   the three grounding rules, pure
 src/accessibility/pointer-sampler.ts     ~30 Hz sampling with coalescing
 src/accessibility/mac-accessibility-adapter.ts
+src/hotkey/coalescer.ts            press/release pairing and repeat folding
+src/hotkey/mac-hotkey-adapter.ts
 src/polling.ts                     subscription-driven poller
 src/helper-binary.ts               where the helper executable lives
 native/                            SwiftPM package producing `PilotHelper`
@@ -68,6 +77,7 @@ test/demo-permissions.ts           the PR-011 demo
 test/demo-accessibility.ts         the PR-013 demo
 test/demo-speech.ts                the PR-014 demo
 test/demo-capture.ts               the PR-012 demo
+test/demo-hotkey.ts                the PR-015 demo
 ```
 
 ## Wire format
@@ -143,6 +153,9 @@ message metadata stays printable and log-safe.
 | `capture.start` | `{ windowNumber, width, height, sampleFps, includeCursor, encoding, quality, … }` | `{ session }` | none | 012 |
 | `capture.stop` | `{ streamId }` | `{ stopped, delivered, dropped, discarded }` | none | 012 |
 | `capture.pull` | `{ streamId, notBefore? }` | `{ state, frame, remaining, dropped, delivered, failure }` | **response** | 012 |
+| `hotkey.start` | `{ binding }` | `{ status }` | none | 015 |
+| `hotkey.stop` | `{}` | `{ status }` | none | 015 |
+| `hotkey.status` | `{}` | `{ status }` | none | 015 |
 
 `health` doubles as the startup handshake: `start()` does not resolve until the
 helper answers it.
@@ -159,6 +172,18 @@ Neither PR-011 nor PR-012 bumped `HELPER_PROTOCOL_VERSION`. Appending
 operations is backwards compatible in both directions: an unknown operation is
 already a typed `invalid-request` on the helper, and an unregistered response is
 already a typed `invalid-request` on the host.
+Neither PR-011 nor PR-015 bumped `HELPER_PROTOCOL_VERSION`. Appending
+operations is backwards compatible in both directions: an unknown operation is
+already a typed `invalid-request` on the helper, and an unregistered response is
+already a typed `invalid-request` on the host.
+
+### Events
+
+| Event | Payload | PR |
+| --- | --- | --- |
+| `helper.ready` | `{ helperVersion, protocolVersion, pid }` | 003 |
+| `hotkey.key` | `{ phase, keyCode, at, sequence, autorepeat }` | 015 |
+| `hotkey.tap` | `{ change, status }` | 015 |
 
 ## Permissions
 
@@ -626,6 +651,136 @@ bounded by a deadline and an abort signal, which is passed into the transport so
 an in-flight request is rejected immediately. It is not a blocking helper call:
 waiting inside the request loop would stall `health`, and the supervisor would
 eventually kill a helper that was working correctly.
+## Push-to-talk (PR-015)
+
+A hotkey that only fires while Pilot has focus is not push-to-talk. The whole
+requirement (`docs/mvp-01-point-ask-hear.md`: "push-to-talk shortcut works while
+Pilot is not focused") is that the key is heard while some *other* application
+owns the keyboard, which on macOS means a `CGEventTap`. That brings three
+problems worth stating plainly, because each one has a failure mode that looks
+like nothing at all.
+
+The default binding is **Right Option** (`kVK_RightOption`, 61). It is a
+modifier, so it never auto-repeats and never inserts a character; it is unused
+by nearly every application, unlike Left Option which types accented characters
+on a US layout; and it is reachable with the hand that is not on the pointer.
+Any key code can be bound instead, with optional required modifiers.
+
+### The tap is not a keylogger
+
+`CGEventMask` selects event *types*, not key codes: there is no way to ask macOS
+for one key, so the callback is handed every keystroke on the session. The
+guarantee therefore cannot be "it does not see them" — it has to be "nothing
+survives the comparison". Six properties, in three files, each independently
+checkable:
+
+| Property | Where |
+| --- | --- |
+| The tap is created `.listenOnly`: it cannot modify or swallow an event | `HotkeyTap.swift` |
+| The **only** value read from a non-matching event is its key code, compared and discarded in the same statement — not `flags`, not the repeat field, not any character | `HotkeyTap.swift`, `HotkeyGate.decide` |
+| No buffer: the state is a `Bool`, a sequence number and five counters. No queue, ring, array or file a keystroke could accumulate in | `HotkeyTap.swift` |
+| The wire payload is a `strictObject` with five fields — phase, the configured key code, a timestamp, a sequence number, a repeat flag. A payload carrying anything else fails host validation rather than being read | `src/protocol/hotkey-ops.ts` |
+| The callback writes nothing to stderr. Helper stderr is captured into crash reports, which would be a lovely place to accidentally keep somebody's password | `HotkeyTap.swift` |
+| The host discards any `hotkey.key` naming a key code it did not configure, and logs only phases and counts | `src/hotkey/mac-hotkey-adapter.ts` |
+
+`HotkeyGate.decide` returning `.ignore(.otherKey)` for every key but the bound
+one is unit-tested across the whole 0…127 range, and the schema's refusal of a
+`characters`, `flags` or `otherKeyCode` field is pinned in
+`test/hotkey-ops.test.ts`.
+
+### A tap the system switches off
+
+macOS disables an event tap whose callback overran its deadline
+(`kCGEventTapDisabledByTimeout`) and when user-input taps are switched off
+wholesale (`kCGEventTapDisabledByUserInput`). Both arrive as *events on the tap
+itself*, and an implementation that ignores them leaves Pilot looking perfectly
+healthy while never hearing the user again — the worst outcome this feature has.
+
+So both are detected, counted, and answered with
+`CGEvent.tapEnable(tap:enable:true)`, under a budget of five restores per
+60 seconds. Within budget the host sees `unavailable(listener-disabled)` then
+`active` again. Past it the tap is reported `disabled` permanently: if macOS is
+killing the tap every second, the user needs to be told the shortcut is broken,
+not have Pilot quietly fight the OS forever.
+
+The tap runs on **its own thread and run loop**. It must: the stdio request loop
+blocks in `FileHandle.availableData`, so a tap installed on it would never fire,
+and a callback running inside the request loop is exactly what overruns the
+deadline that gets a tap disabled.
+
+### Every press gets a release
+
+`hotkey-down` is always followed by exactly one `hotkey-up`. Four things can
+take the real release away, and all four are converted into a synthetic one
+carrying the reason:
+
+| What happened | `reason` |
+| --- | --- |
+| The system disabled or destroyed the tap while the key was down | `listener-lost` |
+| The helper process died while the key was down | `helper-lost` |
+| `stop()`, `dispose()` or a rebind while the key was down | `stopped` |
+| No release inside `maxHoldMs` (30 s). macOS can lose a modifier key-up across a Space switch | `held-too-long` |
+
+Without this the interaction machine sits in `listening` with the microphone
+open and no way out but the user noticing. The synthetic release is always
+emitted *before* the availability change that explains it, so a consumer that
+tears down on "unavailable" has already stopped recording.
+
+### Coalescing, twice
+
+Holding a normal key produces auto-repeat key-downs at the system repeat rate.
+PR-025's demo shows what that does to the state machine: one
+`illegal-transition` per repeat. Repeats are dropped in the native gate *and*
+again in `src/hotkey/coalescer.ts`, which is the layer that has tests behind it
+and the layer that survives a helper restart. The host rules are: drop anything
+flagged auto-repeat; drop a `down` while already held; drop an `up` with nothing
+held; drop a `down` within 30 ms of the previous `up` (switch chatter). All of
+them run on an **injected clock** — no `Date.now()` in library code.
+
+### The permission, and what happens without it
+
+The tap needs Accessibility (`AXIsProcessTrusted()`), which is already one of
+the four permissions PR-011 models. When it is missing, `hotkey.start`
+**succeeds** and reports `tap: 'accessibility-denied'`; the adapter turns that
+into `availability: { status: 'unavailable', reason: 'permission-missing',
+permission: 'accessibility' }`. It does not throw. system-design §16 requires
+the user keep a way to ask a question, and an exception would tempt a caller
+into treating a routine, user-fixable condition as a crash.
+
+`hotkeyUnavailableMessage()` supplies the sentence, and every one of them says
+that typing still works. PR-025's `isTextFallbackAvailable(state)` is the
+affordance test the panel must use alongside it (runbook follow-up 4).
+
+> **Unverified, and important**: on macOS 10.15+ a keyboard tap may also require
+> **Input Monitoring** (`kTCCServiceListenEvent`), a TCC service Pilot does not
+> model. If `CGEventTapCreate` returns null while Accessibility is granted, that
+> is reported as a distinct `listener-rejected` / `creation-failed` with Input
+> Monitoring named in the detail, rather than being blamed on Accessibility.
+> Which of the two macOS actually demands is one of the things the Mac batch has
+> to settle.
+
+### Why this one subsystem pushes events
+
+PR-011 chose snapshot-diffing over helper-side events for windows, and gave the
+reason: a background thread writing frames concurrently with the request loop
+means a write lock and a second failure surface, in Swift that cannot be
+compiled here. That trade is still right for windows, where polling costs a
+second of latency on a lifecycle notice.
+
+It is wrong for a key press. Key-down is what stops speech (system-design §15)
+against a 300 ms budget (§17), and a poll interval short enough to meet that
+would be tens of round trips a second, forever, whether or not anyone touches
+the key. So the hotkey — and only the hotkey — travels as an unsolicited event,
+and the Swift side pays for `FrameWriter.swift`: one lock, one whole frame at a
+time, because two interleaved writes on a length-prefixed protocol do not
+garble a message, they desynchronise the stream, and the host answers that by
+killing the helper.
+
+One consequence worth knowing: a `hotkey.start` **response** and the first
+`hotkey.tap` **events** can arrive in the same read, and the transport dispatches
+both before the awaited continuation of the request runs. The adapter therefore
+refuses to let an older response overwrite a newer event-driven state. Nothing
+in the tests asserts that interleaving, because the system does not guarantee it.
 
 ## Failure modes
 
@@ -660,6 +815,14 @@ Nothing hangs and nothing is dropped silently. Every failure is a typed
 | the stream stopped with an error, or produced no frame in time | `capture-failed` (PR-012) |
 | `captureFresh` before `start`, or after a stop | `observation-disabled` (PR-012) |
 | the helper started a stream for the wrong window | `capture-failed`, not retryable (PR-012) |
+
+Push-to-talk (PR-015) is deliberately **not** in that table. Its failures are
+*states*, not exceptions: a missing Accessibility grant, a tap macOS refuses to
+create, and a tap the system disabled all resolve as a typed `HotkeyAvailability`
+so the panel can keep offering the typed fallback. The only thing that throws is
+the transport underneath it — a helper that cannot be reached is
+`helper-unavailable` as usual, and the adapter turns that into
+`unavailable(helper-unavailable)` for anything already listening.
 
 Restarts use exponential backoff (250 ms × 2ⁿ, capped at 5 s) with a budget of
 5 restarts per 60 s window; exceeding it puts the transport in `failed` and
@@ -706,6 +869,13 @@ refused to reproduce them would make the host's defences untestable.
 plus (PR-012) the capture policy, every frame-admission rule against the real
 `FrameRing`, protected content, window loss and screen lock mid-stream, an
 aborted fresh capture and backpressure.
+plus (PR-015) a scripted event tap: key repeat, duplicate presses, a tap
+disabled and re-enabled, a tap that cannot be restored, Accessibility denied, a
+tap macOS refuses to create, a rebound hotkey, a key held when the tap dies, a
+key held when the helper dies, the stuck-key watchdog and reinstallation after a
+helper restart. **The stub deliberately does not coalesce**: it replays its
+script verbatim, so the host's rules are proven rather than inherited from Swift
+that has never been compiled.
 
 Demos (require `pnpm build` first, because they run against `dist/`):
 
@@ -715,6 +885,7 @@ pnpm --filter @pilot/platform-mac demo:permissions   # PR-011 permissions and wi
 pnpm --filter @pilot/platform-mac demo:accessibility # PR-013 pointer and accessibility
 pnpm --filter @pilot/platform-mac demo:speech        # PR-014 speech
 pnpm --filter @pilot/platform-mac demo:capture       # PR-012 selected-window capture
+pnpm --filter @pilot/platform-mac demo:hotkey        # PR-015 push-to-talk
 ```
 
 The first prints the health handshake, a typed echo, a 256 KiB binary fixture
@@ -749,6 +920,16 @@ was refused and why, a fresh capture and an aborted one, protected content,
 and window loss and screen lock stopping capture. All three print which target
 they selected on their first line; if it says "Node stub", the Swift build did
 not land where it was expected.
+The third walks nine push-to-talk scenarios: a normal press, a 24-event repeat
+storm folded into one press, a tap disabled and re-enabled, a key held when the
+tap dies, a tap that cannot be restored, Accessibility denied (with the typed
+fallback shown live via PR-025's `isTextFallbackAvailable`), a tap macOS refuses
+to create, a rebound hotkey with the old key ignored, and the stuck-key
+watchdog. It ends by listing what it did *not* demonstrate, which on Linux is
+everything native.
+
+All three print which target they selected on their first line; if it says
+"Node stub", the Swift build did not land where it was expected.
 
 ### What is *not* verified anywhere
 
@@ -829,6 +1010,19 @@ New with PR-014, and none of it exercised either:
 - Whether ScreenCaptureKit's completion handlers arrive off the calling thread.
   The semaphore bridges assume so; every wait is bounded at 5 s so the failure
   would be a typed capture error rather than a hung helper.
+- **No `CGEventTap` has ever been created** (PR-015). `CGEvent.tapCreate`,
+  `CGEvent.tapEnable`, `CFMachPortCreateRunLoopSource` and the tap thread's
+  `CFRunLoopRun` are all unexercised.
+- **No key has ever been pressed.** No key-down, key-up or `flagsChanged` event
+  has been observed, so the device-flag table in `HotkeyModel.swift` — which is
+  what makes Right Option distinguishable from Left Option — has been checked
+  against Apple's headers and against nothing else.
+- Whether the shortcut fires **while Pilot is not focused**, which is the entire
+  requirement, is unverified.
+- Whether Accessibility alone is enough, or macOS also demands **Input
+  Monitoring** for a keyboard tap.
+- Whether `kCGEventTapDisabledByTimeout` recovery actually works: the detection
+  and the budget are tested, the `tapEnable` call that follows is not.
 
 The Swift that *is* covered by `swift test` is the pure logic: the permission
 state mappers, the settings-URL table, the bundle-path walk, the
@@ -843,6 +1037,11 @@ through `HelperServer` with stub services.
 serialisation, the capture request parser and its clamps, the bounded capture
 queue and its drop accounting, the timestamp conversion, and every PR-011 and
 PR-012 operation dispatched through `HelperServer` with stub services.
+stub services, and (PR-015) the hotkey key table, the gate's decisions
+including the foreign-key guard over the whole 0…127 range, the tap recovery
+budget, binding decoding, the status/report JSON shapes, and the three hotkey
+operations plus both event frames dispatched through `HelperServer` with a stub
+service.
 
 ### On the Mac (Swift, batched per runbook §2)
 
@@ -865,6 +1064,7 @@ swift test --package-path native
 swift test --package-path native
 
 # 3. Run all three demos against the real helper instead of the Node stub.
+# 3. Run the demos against the real helper instead of the Node stub.
 cd ../..
 pnpm build
 pnpm --filter @pilot/platform-mac demo
@@ -872,6 +1072,7 @@ pnpm --filter @pilot/platform-mac demo:permissions
 pnpm --filter @pilot/platform-mac demo:accessibility
 pnpm --filter @pilot/platform-mac demo:speech
 pnpm --filter @pilot/platform-mac demo:capture
+pnpm --filter @pilot/platform-mac demo:hotkey
 ```
 
 Step 3 needs no configuration: `resolveHelperBinary()` finds
@@ -893,6 +1094,9 @@ it is a PR-011 defect; in the PR-013 files it is a PR-013 defect. Either way,
 report the compiler output rather than working around it. New compile risk:
 below it is a PR-011 defect, and in the PR-012 files a PR-012 defect. Either
 way, report the compiler output rather than working around it.
+A `swift build` failure in PR-003 code is a PR-003 defect; in the files below
+it is a PR-011 or PR-015 defect. Either way, report the compiler output rather
+than working around it. New in PR-011, and therefore new compile risk:
 
 ```text
 PR-011
@@ -981,6 +1185,39 @@ order:
 `SCStreamFrameInfo` attachment cast, the `CIImageRepresentationOption` spelling
 for JPEG quality, and the `SCStreamOutput`/`SCStreamDelegate` conformances are
 the three places to expect a first-compile error.
+
+New in PR-015:
+
+```text
+Sources/PilotHelperCore/HotkeyModel.swift   pure — Foundation only
+Sources/PilotHelperCore/FrameWriter.swift   Foundation only (NSLock, FileHandle)
+Sources/PilotHelperCore/HotkeyTap.swift     CoreGraphics, ApplicationServices, CoreFoundation run loops
+```
+
+`HotkeyTap.swift` is the risk: `CGEvent.tapCreate` with a C callback,
+`Unmanaged` round trips, `CFMachPortCreateRunLoopSource` and a `Thread` running
+its own `CFRunLoopRun`. It uses no async/await, no actors and no generics, on
+purpose. `HelperServer` and `HelperRuntime` also changed — see the contract note
+below.
+
+### Contract change in PR-015 (additive, source-compatible)
+
+Stated loudly because it touches files three sibling PRs are also editing:
+
+- `HelperServer.init` gained a **defaulted** `hotkey:` parameter. Existing
+  call sites, including `main.swift` and the PR-011 tests, compile unchanged.
+- `HelperServer` gained `var onEvent: ((Frame) -> Void)?` and
+  `func shutdown()`. `HelperRuntime.run` sets and calls them.
+- `HelperRuntime.run` now writes every frame through `FrameWriter`. Its
+  signature is unchanged.
+- `HelperProtocol.Operation` gained three cases; `HelperProtocol` gained two
+  event-name constants. Appended, nothing renamed or reordered.
+- `HELPER_OPERATIONS` (TypeScript) gained three entries, appended.
+- `@pilot/platform` gained `src/hotkey.ts` and `src/fakes/hotkey.ts`, each
+  exported by one added line in the corresponding index. **`PlatformAdapter`
+  was not extended** — growing the composite would have forced a change on
+  every implementer, which is not additive. PR-032 injects the `HotkeyAdapter`
+  alongside it.
 
 ### What `demo:permissions` will now raise on a Mac
 

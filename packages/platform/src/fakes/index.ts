@@ -11,6 +11,7 @@
 export * from './support.js';
 export * from './fixtures.js';
 export * from './platform.js';
+export * from './hotkey.js';
 export * from './observation.js';
 export * from './speech.js';
 export * from './screen-context.js';

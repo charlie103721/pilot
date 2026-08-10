@@ -34,6 +34,7 @@ import {
   speechOutputStopOperation,
 } from './speech-ops.js';
 import { windowGetOperation, windowListOperation } from './window-ops.js';
+import { hotkeyStartOperation, hotkeyStatusOperation, hotkeyStopOperation } from './hotkey-ops.js';
 
 /**
  * The closed set of operations the helper exposes (system-design §4:
@@ -47,6 +48,12 @@ import { windowGetOperation, windowListOperation } from './window-ops.js';
  * because an unknown operation is already a typed `invalid-request` on the
  * helper and an unregistered response is already a typed `invalid-request` on
  * the host.
+ * permission and window operations; PR-015 appends the push-to-talk hotkey
+ * operations. The transport itself never grows a generic
+ * "run anything" call, and `HELPER_PROTOCOL_VERSION` is unchanged — adding
+ * operations is backwards compatible in both directions, because an unknown
+ * operation is already a typed `invalid-request` on the helper and an
+ * unregistered response is already a typed `invalid-request` on the host.
  */
 
 export {
@@ -135,6 +142,10 @@ export const HELPER_OPERATIONS = {
   captureStart: captureStartOperation,
   captureStop: captureStopOperation,
   capturePull: capturePullOperation,
+  // PR-015
+  hotkeyStart: hotkeyStartOperation,
+  hotkeyStop: hotkeyStopOperation,
+  hotkeyStatus: hotkeyStatusOperation,
 } as const;
 
 export const HELPER_OPERATION_NAMES: readonly string[] = Object.values(HELPER_OPERATIONS).map(

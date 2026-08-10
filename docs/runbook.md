@@ -210,6 +210,7 @@ the two in step.
 | Pointer grounding, AX hit testing, secure fields | `pnpm --filter @pilot/platform-mac demo:accessibility`, with and without an Accessibility grant | PR-013 | no |
 | **Real speech: transcription, on-device recognition and audible playback** | `pnpm --filter @pilot/platform-mac demo:speech` — opens the microphone and makes noise; run after the permissions row | PR-014 | **yes** |
 | **Selected-window capture** — the first real pixel | `pnpm --filter @pilot/platform-mac demo:capture` (run the row above first; without a Screen Recording grant this cannot work) | PR-012 | **yes** |
+| **Global push-to-talk against a real `CGEventTap`** | `pnpm --filter @pilot/platform-mac demo:hotkey`, then again from inside the packaged `.app`; hold Right Option **with another app in front** | PR-015 | **yes** |
 
 A Swift compile failure is a **PR-003 defect** in the transport files, a
 **PR-011 defect** in `PermissionModel.swift`, `Attribution.swift`,
@@ -242,6 +243,17 @@ Every row but the last two raises **no TCC prompt** — that separation is
 deliberate, isolating "does the helper build and talk" from "does macOS trust
 it". The last two are the second question, and the permissions one settles the
 top structural risk in the plan (§7). What to look for in both is spelled out
+a **PR-015 defect** in `HotkeyModel.swift`, `HotkeyTap.swift` and
+`FrameWriter.swift` (PR-015 also edited `HelperServer.swift` and
+`HelperProtocol.swift` additively): either way, send the compiler output and it
+gets fixed, not worked around.
+
+Every row but the last two raises **no TCC prompt** — that separation is
+deliberate, isolating "does the helper build and talk" from "does macOS trust
+it". The last two rows are the second question. The permissions row settles the
+top structural risk in the plan (§7); the push-to-talk row settles whether
+Accessibility alone is enough for a keyboard tap or macOS also demands Input
+Monitoring, which Pilot does not model. What to look for in each is spelled out
 in `docs/handoff.md` §1.
 
 ## 6. Verification commands
@@ -462,6 +474,9 @@ Open items a later PR must close. Each was raised by the lane that found it.
 | 15 | **The native TTS adapter must tolerate a `stop()` for a stream it never started.** PR-027 stops speech the instant an interruption lands, which can be before the first chunk of that stream reached the synthesiser. `SpeechOutputBinding` remembers the identifier and discards the chunk when it arrives, so the adapter sees a `stop()` for something it has never heard of. That must be a no-op, not an error. | PR-014 / PR-033 |
 | 16 | **`PilotImageProcessor.clear()` must be wired into the retention guard** (PR-018). The processor keeps at most one decoded frame in memory so `view: 'both'` decodes its source once instead of twice. It is memory-only and never written anywhere, but it is a decoded screenshot and must be dropped on pause, screen lock, window loss and shutdown alongside the frame ring. `RetentionGuard` takes `core`, `policy` and `rateLimiter` today; add the processor there, or call `clear()` from whatever owns both. | PR-019 |
 | 17 | **Capture should hand over `bgra` or `png`, not `jpeg`** (PR-018). No contract change: `FrameEncoding` already admits all three and `CaptureOptions` says nothing about encoding. Delivering an encoded JPEG costs ~165 ms of pure-JS decode per observation that needs a pointer crop (the only path over §17's 150 ms budget) and adds a second generation of compression loss to exactly the small text grounding depends on. `png` fits the 16 MiB ring ceiling where `bgra` does not; `bgra` is the right choice for the fresh `captureFresh` path, which does not enter the ring. Measured in `pnpm --filter @pilot/observation demo:image` §5. | PR-012, confirmed in PR-028 |
+| 4 | **The panel must offer text input in the `error` state.** PR-025 changed the transition table so `error + submit-text` is accepted (system-design §16: "STT fails → … then offer text input"); a failed recogniser is exactly what puts the machine in `error`. `isTextFallbackAvailable(state)` (exported from `@pilot/interaction`, derived from the table) is the affordance test the renderer should use — if the panel disables its text box whenever `state === 'error'`, the documented fallback is unreachable in the app even though the machine allows it. **PR-015 adds a second trigger for the same affordance**: when `HotkeyAdapter` reports `availability.status !== 'active'` there is no way to speak at all, so the text box is the only way to ask. Pair `isHotkeyUsable()` with `isTextFallbackAvailable()` and show `hotkeyUnavailableMessage()`. | PR-010 or PR-032 |
+| 6 | **PR-032 must wire the hotkey adapter to the controller.** `MacHotkeyAdapter` emits `hotkey-down`/`hotkey-up`; the controller takes `push-to-talk-down`/`push-to-talk-up`. The mapping is one `subscribe` and a `switch`, but two details are not optional: a `hotkey-up` with `synthetic: true` must still dispatch `push-to-talk-up` (it is how a dead tap releases the microphone), and `hotkey-availability-changed` must reach the UI or an unavailable shortcut looks like a broken one. | PR-032 |
+| 5 | **The app must wire the observation notebook** (PR-022a). `createObservationNotebook()` from `@pilot/agent` has to be passed *twice* — as `createObserveScreenTool({ onObservation: notebook.note })` and as `new PiAgentSession({ visualContext: { summaryFor: notebook.summaryFor } })`. Wire neither and pruning still holds the image limits, but every replacement record degrades to "No description of that frame was recorded." — truthful, and useless. `packages/agent/demo/visual-context-demo.mjs` shows the wiring. | PR-029 |
 
 ## 9. Quick start for a new session
 
