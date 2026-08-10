@@ -9,6 +9,12 @@ export * from './local-endpoint.js';
 export * from './local-model-source.js';
 export * from './stub-openai-endpoint.js';
 export * from './auth-facade.js';
+// PR-037 — Codex subscription profile. Additive: four new modules, no existing
+// export changed.
+export * from './codex-auth.js';
+export * from './codex-credentials.js';
+export * from './codex-profile.js';
+export * from './codex-fake.js';
 export * from './visual-context.js';
 export * from './compaction.js';
 export * from './tool-result.js';

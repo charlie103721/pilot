@@ -27,9 +27,12 @@ import {
   windowsChangedEvent,
   windowsGetChannel,
 } from '../ipc/channels.js';
+import { codexActChannel, codexChangedEvent, codexGetChannel } from '../ipc/codex-channels.js';
+import { DISABLED_CODEX_GATE_STATE, type CodexGateState } from '../ipc/codex-schemas.js';
 import { IpcRouter } from './ipc-router.js';
 import { PanelController, type PanelWindowHost } from './panel-window.js';
 import { TrayController, type TrayAvailability, type TrayHost } from './tray.js';
+import type { CodexGate } from './codex-gate.js';
 import type { ConversationGate } from './conversation-gate.js';
 import type { LiveConversationDriver } from './conversation-driver.js';
 import type { PermissionGate } from './permission-gate.js';
@@ -68,6 +71,16 @@ export interface DesktopShellOptions {
   readonly windows: WindowGate;
   /** Owns the developer telemetry and the voice affordances (PR-010). */
   readonly conversation: ConversationGate;
+  /**
+   * Owns the Codex subscription profile's status and its two actions (PR-037).
+   *
+   * Optional, which is the additive shape `docs/runbook.md` cross-lane issue 8
+   * blesses: every existing caller — and every existing test — still satisfies
+   * these options untouched. Without it the two `pilot:codex/*` channels have
+   * no handler and the panel's Codex section renders nothing, which is exactly
+   * right for a build that never selected the profile.
+   */
+  readonly codex?: CodexGate;
   readonly appInfo: DesktopShellAppInfo;
   readonly quit: () => void;
   /** Present only while the shell runs on the fake window adapter (PR-009). */
@@ -94,6 +107,8 @@ export class DesktopShell {
   readonly permissions: PermissionGate;
   readonly windows: WindowGate;
   readonly conversation: ConversationGate;
+  /** PR-037. Null on every build that has not selected the Codex profile. */
+  readonly codex: CodexGate | null;
 
   readonly #controller: InteractionController;
   readonly #options: DesktopShellOptions;
@@ -102,6 +117,7 @@ export class DesktopShell {
   #unsubscribePermissions: (() => void) | null = null;
   #unsubscribeWindows: (() => void) | null = null;
   #unsubscribeConversation: (() => void) | null = null;
+  #unsubscribeCodex: (() => void) | null = null;
 
   constructor(options: DesktopShellOptions) {
     this.#options = options;
@@ -109,6 +125,7 @@ export class DesktopShell {
     this.permissions = options.permissions;
     this.windows = options.windows;
     this.conversation = options.conversation;
+    this.codex = options.codex ?? null;
     this.#logger = options.logger ?? nullLogger;
     const ids = options.ids ?? createIdFactory();
 
@@ -163,6 +180,12 @@ export class DesktopShell {
     this.#unsubscribeConversation = this.conversation.subscribe((state) => {
       this.panel.broadcast(conversationChangedEvent, state);
     });
+    // PR-037. A device code arrives while nothing is being asked for, and a
+    // token expires while the panel is open, so this has to be an event.
+    this.#unsubscribeCodex =
+      this.codex?.subscribe((state) => {
+        this.panel.broadcast(codexChangedEvent, state);
+      }) ?? null;
     this.#publish(this.#controller.snapshot());
 
     // The first permission read starts immediately, so the panel has something
@@ -205,6 +228,13 @@ export class DesktopShell {
     this.panel.broadcast(permissionsChangedEvent, this.permissions.snapshot());
     this.panel.broadcast(windowsChangedEvent, this.windows.snapshot());
     this.panel.broadcast(conversationChangedEvent, this.conversation.snapshot());
+    const codex = this.codex;
+    if (codex !== null) {
+      this.panel.broadcast(codexChangedEvent, codex.state());
+      // A token can expire while the panel is hidden, so the status the user
+      // comes back to must be re-read rather than remembered.
+      void codex.act({ type: 'refresh' });
+    }
     void this.permissions.refresh();
     // Windows open and close while the panel is hidden; a stale list would
     // offer the user a window that is no longer there.
@@ -221,6 +251,9 @@ export class DesktopShell {
     this.#unsubscribeWindows = null;
     this.#unsubscribeConversation?.();
     this.#unsubscribeConversation = null;
+    this.#unsubscribeCodex?.();
+    this.#unsubscribeCodex = null;
+    this.codex?.dispose();
     // Before the window gate, so an answer still in flight is recorded as a
     // `shutdown` abort rather than as a window that went away.
     this.conversation.dispose();
@@ -229,6 +262,10 @@ export class DesktopShell {
     this.tray.dispose();
     this.panel.dispose();
     await this.#controller.dispose();
+  }
+
+  #codexState(): CodexGateState {
+    return this.codex?.state() ?? DISABLED_CODEX_GATE_STATE;
   }
 
   #publish(view: PilotViewState): void {
@@ -302,6 +339,21 @@ export class DesktopShell {
       // Re-listed before answering: the response must not be older than the
       // event the panel has already been sent, or it would overwrite it.
       return this.windows.refresh();
+    });
+
+    // PR-037. Registered unconditionally so the renderer always gets a typed
+    // answer: a build without the profile answers `enabled: false` rather than
+    // `unknown-channel`, which the panel would have to special-case.
+    this.router.register(codexGetChannel, () => this.#codexState());
+    this.router.register(codexActChannel, async (action) => {
+      const codex = this.codex;
+      if (codex === null) {
+        throw new PilotError('unsupported-capability', 'This build has no Codex profile', {
+          userMessage: 'Signing in to ChatGPT is not available in this build.',
+          details: { action: action.type },
+        });
+      }
+      return codex.act(action);
     });
 
     this.router.register(quitChannel, () => {

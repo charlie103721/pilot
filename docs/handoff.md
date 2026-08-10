@@ -1172,6 +1172,12 @@ Five things, in decreasing order of what they would cost if wrong:
    deliberately and `PILOT_CONTEXT_WINDOW` raises it. **Nothing in Pilot
    measures what an endpoint really handles** — if your local model copes with
    more, say so and the ceiling moves.
+   **PR-037 answers half of this without a sign-in.** `PILOT_MODEL_PROFILE=codex`
+   makes the startup line read
+   `272000 tokens (model; remote endpoint advertised 272000)` — the hosted
+   "believe it" branch, taken for the first time. The number comes from the
+   pinned catalogue rather than from a live call, so what is still unknown is
+   whether the endpoint really honours it.
 
 ### What to look for in step 18 (PR-040)
 
@@ -1234,6 +1240,126 @@ Steps are in `docs/pi-notes.md` §9.1. Two findings to carry into it:
 unaffected. Phase 3 integration (PR-029 onward) can be *built* but cannot be
 *demonstrated against a real model* until sign-in happens.
 
+---
+
+### Step 19 — sign in to ChatGPT, and run the flow for real (PR-037)
+
+**This is the only item in this file that needs a ChatGPT Plus/Pro account, and
+it is the last fake boundary left in the product.** Everything below is written
+and merged; nothing about it has ever touched the network.
+
+Run from the same clean checkout as §1, on the Mac. Steps 1–16 do not have to
+have been run first — this one needs no Swift helper, because the sign-in and
+the status live in the main process and the panel. It *does* need the helper for
+part (d), which is the flow itself.
+
+```sh
+nvm use && pnpm install && pnpm build
+
+# The §1 resolvers again — do not hardcode mac-arm64, an Intel Mac is mac-x64:
+packaged_app()    { find apps/desktop/release -maxdepth 2 -name 'Pilot.app' | head -1; }
+packaged_helper() { echo "$(packaged_app)/Contents/Resources/helper/PilotHelper"; }
+
+# 19a. THE SIGN-IN. This is the one that matters, and nothing else here can be
+#      done until it works. Open the panel, find the "Model" section at the top,
+#      press "Sign in to ChatGPT".
+PILOT_MODEL_PROFILE=codex pnpm dev
+#
+#   Expect, in order:
+#     - the startup line to say
+#       `ChatGPT subscription (openai-codex/gpt-5.5, vision+tools ok) — NOT
+#        SIGNED IN — no question can be answered until you sign in`
+#       and the panel to show that sentence with an error banner beside a live
+#       text box;
+#     - pressing Sign in to show "Asking OpenAI for a sign-in code…", then a
+#       code and the URL https://auth.openai.com/codex/device;
+#     - you open that URL in any browser, type the code, approve;
+#     - within a few seconds the panel to read "Signed in to ChatGPT".
+#
+#   WHILE IT IS WAITING, in another terminal, check the thing this whole design
+#   turns on — that Pilot never binds the browser flow's port:
+lsof -nP -iTCP:1455 -sTCP:LISTEN     # expect NO output, during and after
+#
+#   If it hangs on "Asking OpenAI for a sign-in code…" the device-code endpoint
+#   rejected Pi's client id, which is exactly the thing nothing here could test.
+#   Say so and paste the panel's error sentence.
+
+# 19b. WHERE THE TOKEN WENT, and whether macOS encrypted it. Only you can
+#      answer the second half: Electron safeStorage has never run here.
+ls -l ~/Library/Application\ Support/Pilot/credentials/model-credentials.json
+#   Expect mode -rw------- (0600) in a drwx------ (0700) directory.
+python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["protected"])' \
+  ~/Library/Application\ Support/Pilot/credentials/model-credentials.json
+#   Expect: True   ← safeStorage (Keychain) is doing its job.
+#   If it prints False, the panel will also say "On this Mac, NOT encrypted".
+#   That is a real finding, not a bug in the check — report it.
+grep -c 'eyJ' ~/Library/Application\ Support/Pilot/credentials/model-credentials.json
+#   Expect 0. A JWT prefix in that file means the token is in plaintext.
+#
+#   And confirm it is nowhere else. This is the Phase 4 gate line:
+grep -rl 'eyJ' ~/Library/Application\ Support/Pilot/ | grep -v credentials
+#   Expect NO output — in particular nothing under conversations/.
+
+# 19c. THE CAPABILITY GATE, against a real catalogue entry.
+PILOT_MODEL_PROFILE=codex PILOT_CODEX_MODEL=gpt-5.3-codex-spark pnpm dev
+#   Expect the panel to refuse before you can ask anything: "This model cannot
+#   see images…". Ask a question anyway and confirm NOTHING is captured — the
+#   observation indicator must not flicker.
+
+# 19d. THE FLOW, FOR REAL. Needs the helper (§1 steps 1–3) and the grants from
+#      §1 step 5. `pnpm dev` finds the helper only through PILOT_HELPER_BINARY
+#      or a packaged bundle:
+PILOT_MODEL_PROFILE=codex \
+  PILOT_HELPER_BINARY="$PWD/packages/platform-mac/native/.build/debug/PilotHelper" \
+  pnpm dev
+#   …and then from inside the packaged .app, which is the identity TCC trusts:
+pnpm package
+PILOT_MODEL_PROFILE=codex open -a "$(packaged_app)"
+#   Pick a window, PUT THE POINTER ON A SPECIFIC CONTROL, hold the key, ask
+#   "what is this?" out loud, and listen.
+
+# 19e. SIGN OUT, and confirm the token is gone rather than merely forgotten.
+#   Press "Sign out" in the panel, then:
+ls ~/Library/Application\ Support/Pilot/credentials/
+#   Expect: No such file or directory. Signing out deletes the file; it must
+#   NOT delete anything under conversations/.
+```
+
+**What only you can report, in decreasing order of what it would cost if
+wrong.** Everything in this list is currently a guess, an assertion, or a
+recorded fact from a package rather than from a server:
+
+1. **Does the Codex Responses API accept Pilot's images and its tool
+   definition?** This is the largest unknown in the repository. `supportsTools`
+   for this profile is **Pilot's own assertion** — Pi carries no tool metadata
+   at all — so if `observe_screen` is rejected or ignored, the profile is wrong
+   and `supportsTools: false` is the honest setting. Watch for an answer that is
+   confidently about a screen the model never looked at.
+2. **Does the model decide to look?** `pnpm demo:codex` scripts the tool call,
+   as every demo here does. The first real session is the first time anything
+   has chosen.
+3. **Is a 1440-px window's PNG legible enough** for the model to read small UI
+   text? `docs/mvp-01-point-ask-hear.md` §18 and PR-043's checklist measure it;
+   this is the first chance to see it at all.
+4. **How long does a real access token live?** Pilot reports the stored expiry
+   and reproduces Pi's five-minute refresh boundary; nothing here knows what
+   OpenAI actually issues. If it is short, leave Pilot open for an hour and
+   confirm the panel goes from "Signed in" to "Signed in (renewing)" and back
+   without ever asking you to do anything.
+5. **What happens when a refresh really fails?** Revoke Pilot's access in your
+   ChatGPT account settings while it is open, then ask a question. The panel
+   must say "Pilot's ChatGPT sign-in could not be renewed. Sign in again to keep
+   asking questions." beside a live text box — not a provider error string.
+6. **Does `safeStorage` work in a *packaged* build?** 19b run from `pnpm dev`
+   and 19b run from the `.app` are different questions: the Keychain entry is
+   keyed to the application identity, and this build is not notarized
+   (§3, "No notarization").
+7. **The account you signed in with is never recorded anywhere.** Pi decodes a
+   `chatgpt_account_id` from the token and Pilot deliberately never reads it, so
+   the panel cannot tell you *which* ChatGPT account is in use. Say if you would
+   rather it did — it is one field, and it is a privacy decision, not an
+   oversight (§4).
+
 **PR-029 has now built it.** The desktop app holds real multi-turn text
 conversations through a real `PiAgentSession`; the only thing standing in for a
 model is Pi's own faux provider, reached through
@@ -1245,9 +1371,14 @@ model is Pi's own faux provider, reached through
   mistake the demo for a model.
 - Everything above the provider is the shipping path: the capability gate,
   `Agent.prompt`, streamed deltas, tool calls, `waitForIdle`, abort.
-- **When you sign in, PR-037 changes one call site.** Everything downstream
+- ~~**When you sign in, PR-037 changes one call site.**~~ **PR-037 has now
+  changed it, and it really was one.** `main/index.ts` reads
+  `codex.source ?? createDevelopmentModelSource(…)`; everything downstream still
   consumes the `ModelSource` interface (profile, `Models`, `Model`,
   `toolSupport`, a request counter, one line of description) and nothing else.
+  The default is unchanged, because nobody has signed in;
+  `PILOT_MODEL_PROFILE=codex` selects the real provider. Step 19 above is the
+  sign-in.
 
 **What the mock cannot prove**, and therefore what the first real session must
 be watched for: provider-side image encoding, real streaming timing, and
@@ -1315,6 +1446,21 @@ decisions, named UI elements, unresolved questions"; Pilot's summary quotes the
 transcript rather than asking a model to write one, and whether those quotes let
 a real model carry on a twenty-turn conversation is a judgement nobody has made.
 The first long real session is the test.
+
+**PR-037 removes the fallback and leaves the account.** The Codex profile is now
+in the shipping composition — real `openai-codex` provider, real catalogue, real
+`Models.login`, a real credential file, and `pnpm smoke` on the *built* app
+prints `ChatGPT subscription (openai-codex/gpt-5.5, vision+tools ok) — NOT
+SIGNED IN` and `272000 tokens (model; remote endpoint advertised 272000)`. What
+that means for this section is narrow and worth stating exactly: **the only thing
+still missing is the account.** Every mechanical part of subscription auth —
+choosing the device-code flow, storing and rotating the token, refusing before a
+screen is read, translating a failed refresh into a sentence — is exercised by
+`pnpm demo:codex` against a recorded reproduction of Pi's own OAuth surface, and
+none of it has spoken to a server. The list of what only a real sign-in can
+answer is step 19's, above, and its first item is the biggest one in the
+repository: whether the Codex Responses API accepts Pilot's images and its tool
+definition at all.
 
 **PR-039 opens a route around this whole section, and it needs no sign-in.**
 The local OpenAI-compatible profile talks to a model server the user runs
@@ -1465,6 +1611,12 @@ reversible; raise any that look wrong.
 | **A conversation that cannot be persisted does not stop Pilot** (PR-036) | A store that will not open — a held writer lease, a full disk, a read-only volume — leaves `store: null` and Pilot runs in memory exactly as it did through PR-035, with the typed refusal shown in the panel beside a live text box. The alternative, refusing to start, would trade a working assistant for a file it does not need in order to answer a question, and it mirrors what `PiAgentSession` already does with a failed durable *write* (it swallows it and catches up on the next turn). The one case the user can act on — the SQLite writer lease — surfaces its own sentence, which is the only place in the product that says to wait 30 seconds. |
 | **The composition root became an async `boot()`** (PR-036) | Opening a SQLite session is asynchronous and `PiAgentSession` takes the store *and* the restored conversation at construction, so everything from the agent onwards had to move behind an `await`. `before-quit`, `window-all-closed` and `activate` are still registered synchronously, before it, over a mutable reference — a quit that arrived while the store was opening would otherwise find no teardown handler at all and leave the writer lease behind, which is precisely the failure that makes the *next* launch fail. |
 | **`clear-conversation` now reaches the session** (PR-036, runbook follow-up 21) | The command, the schema, the machine cell and the panel button all existed; the controller's effect for it was a comment reading "text persistence and session recycling belong to PR-023/PR-036". So the panel forgot and the model did not. It now calls `AgentSession.clearConversation?.()`, which is optional on the facade — a session with nothing durable behind it has nothing to delete — and which `PiAgentSession` implements by aborting anything in flight, dropping the transcript and the summary together, and reclaiming the SQLite pages so the text is gone from the file rather than merely unreachable. |
+| **The Codex profile is opt-in, behind `PILOT_MODEL_PROFILE=codex`** (PR-037) | Nobody has signed in, so a build that switched to the real provider by default would answer nothing at all — and would do it after a slow failed request rather than at startup. The default stays `createDevelopmentModelSource()`. The moment the profile *is* selected, the app stops pretending: the startup line and the panel read `NOT SIGNED IN — no question can be answered until you sign in`, and every question is refused with a remedy rather than with a provider error. **Say if you would rather it be selected automatically once a credential exists** — it is one condition in `main/codex-runtime.ts`, and the reason it is not is that "Pilot silently changed which model it uses" is a surprising thing for an app to do. |
+| **Pilot answers Pi's login-method prompt with `device_code` and refuses every other prompt** (PR-037, runbook amendment 7) | Pi offers both flows through a `select` prompt. The browser flow binds `127.0.0.1:1455` **before** it announces itself and does not open a browser, so a refusal that arrives at the `auth_url` event is already too late — the `select` prompt is the last moment it can be declined at all. `createCodexDeviceCodeInteraction` therefore answers that prompt and throws on every other one, including the browser flow's `manual_code`. **Consequence worth knowing:** if a future Pi release stops offering `device_code`, sign-in fails loudly instead of falling back to a flow that would take a port. |
+| **The ChatGPT account id is never read, so the panel cannot say *which* account is signed in** (PR-037) | Pi decodes `chatgpt_account_id` from the access token's JWT claim and login fails without it, so it is derived from secret material. It identifies the user's account, it buys the status UI nothing that "Signed in to ChatGPT" does not, and reading it would put an account identifier into renderer state and into every diagnostic that serialises the status. **Say if you would rather see it** — it is one field on `CodexAuthStatus` and one line in the schema, and it is a privacy decision rather than an oversight. |
+| **The refresh token lives in its own file, in its own directory** (PR-037) | `~/Library/Application Support/Pilot/credentials/model-credentials.json`, `0600` in a `0700` directory, written through a temporary file and renamed, encrypted through Electron `safeStorage` where the platform provides it. Not beside `conversations/`, because §1 step 16 (3) promises the user can delete their conversation history without losing anything else — and the mirror of that promise is that signing out must not delete a conversation. Signing out **removes the file** rather than emptying it. **Where the platform has no `safeStorage` the file is plaintext and the panel says so** ("On this Mac, NOT encrypted") rather than staying silent. |
+| **A Codex profile asserts `supportsTools: true`; nothing verified it** (PR-037) | Pi carries no tool metadata for any model (`docs/pi-notes.md` §6.3), so this is Pilot's own claim, recorded as `'verified'` because it was set deliberately rather than defaulted. The reasoning is that every model in this catalogue is a Codex *Responses* model and the Responses API is a tool-calling API. **If the first real session shows `observe_screen` being rejected or ignored, the honest setting is `false`** and the profile falls back to the degraded, labelled mode of system-design §12 — §2 step 19 asks for exactly that observation. |
+| **The model is picked for Pilot, not chosen by the user** (PR-037) | `gpt-5.5` first, then the rest of the vision-capable catalogue in a recorded preference order; `gpt-5.3-codex-spark` is never picked because it is text-only and the capability gate would refuse it. There is no model picker in the panel — PR-038 and PR-039 own configuration UI, and adding a third one here while both are in flight would have collided in the same files three ways. `PILOT_CODEX_MODEL=gpt-5.4 pnpm dev` overrides it. **Say if you would rather choose per conversation.** |
 | **The demo is `pnpm demo:flow`, and it derives its own claims** (PR-034) | Named for what it is (the whole flow) rather than for the PR, beside `demo:observe` / `demo:look` / `demo:ask` / `demo:talk` / `demo:speak`. Two things it deliberately does not do: it does not narrate which state transitions it took — it reads them back out of the recorded `PilotViewState` path, because a demo that describes itself proves nothing — and it does not assert wall-clock numbers, which runbook cross-lane issue 7 is about. |
 
 ---
@@ -1493,7 +1645,7 @@ reversible; raise any that look wrong.
 | Phase 3 — integration (028…036) | In progress. **PR-034 is merged: the MVP scenario runs as one trace.** `pnpm demo:flow` walks `docs/mvp-01-point-ask-hear.md` §2 through the shipping composition — window selected, pointer anchored at the question, spoken question transcribed, model calls `observe_screen`, policy-checked image returned, answer streamed into the panel and spoken sentence by sentence, then interrupted mid-answer by a second press and a follow-up answered on the same conversation. The §7 rows it walked are read back out of the recorded view-state path, and six invariants are checked on that same trace (selected-window-only, the capability gate, no image bytes to a log line or to disk, no accessibility target outside the selected window, the unknown-pointer sentinel, the §16 text fallback). **No boundary was replaced and no defect was found** — the pieces compose. What it does *not* establish is unchanged and is printed in the demo's own section 4: against the Node helper stub and a scripted faux provider it evidences A-01, A-03, A-08, A-11 and A-14 only in part, and the other ten not at all (§1 step 14, §2). |
 | Phase 3 — integration (028…036) | In progress. **PR-035 is merged: interruption works in the states where it is hard, and Phase 3 has no open design question left.** `pnpm demo:interrupt-flow` interrupts a screen observation with a capture genuinely in flight, twice in quick succession, and in the window between an answer and its first spoken word — reading the result off the panel's own view stream, the `speech.output.speak` operations that crossed the framed wire, and the rejection stream. It closes runbook follow-up 14 by **aborting rather than steering**, which is a decision the user can reverse in one line (§4). No boundary was replaced and no defect was found; what it did find is that the identity guard is what keeps a `run-failed` from an interrupted tool call out of the user's face (runbook cross-lane issue 17). Its own limit is one sentence long: **no sound has ever been stopped, because no sound has ever been made** — the §17 number here is Pilot's half of the budget and is measured as a JSON round trip over a pipe (§1 step 15, §5). Persistence and the model itself are still fake. |
 | Phase 3 — integration (028…036) | **COMPLETE. PR-036 is merged: the conversation now outlives the process, and stays bounded while it does.** The durable `ConversationStore` is opened, restored and closed by the app (`main/conversation-store.ts`), so a relaunch resumes the conversation the model was having; `compaction.contextWindow` comes from the profile rather than from the model's own claim (`main/context-window.ts`); the compaction counters reach PR-010's diagnostics surface; and `clear-conversation` finally reaches the session, which drops the transcript, the summary and the SQLite pages together. `pnpm demo:memory` asks nine screen questions across two scene changes and reads the result off the requests the provider received: **at most two image blocks in any request, ever**, every replacement record past-tense and scene-stamped, three compactions visible as `context-tokens-before`/`-after`, and the conversation gone from the file after a clear. It closed runbook follow-ups 7, 9, 20, 21 and 31 and found one defect nothing else could — the SQLite backend's schema file is not bundled, so **a built app started with persistence silently disabled** (cross-lane issue 19). **Nothing has ever been persisted on macOS** (§1 step 16) and **no model has ever read a replacement record** (§2): a scripted provider cannot make a stale-screen claim, so what is proved is Pilot's input to the model, not the model's output. |
-| Phase 4 — providers (037…039) | Not started. PR-037 (Codex) is the one the user's decision selects. |
+| Phase 4 — providers (037…039) | **In progress. PR-037 is merged: the Codex subscription profile is in the shipping composition.** `PILOT_MODEL_PROFILE=codex` builds the real `openai-codex` provider — the real catalogue, Pi's real OAuth machinery, a real `0600` credential file encrypted through `safeStorage` where the platform has it — and `pnpm smoke` on the **built** app reports `ChatGPT subscription (openai-codex/gpt-5.5, vision+tools ok) — NOT SIGNED IN` beside `272000 tokens (model; remote endpoint advertised 272000)`, which is the first time PR-036's hosted "believe it" branch has been taken. Sign-in is device-code only and never binds port 1455; an unsupported model, a signed-out profile and an expired one are all refused **before** a run starts, so zero provider requests and zero screen observations; a failed token refresh reaches the user as a sentence they can act on rather than as `OAuth refresh failed for openai-codex`; and the panel gained a Model section with status, sign-in and sign-out. `pnpm demo:codex` walks all of it and then runs the MVP point-ask-hear flow on the profile. **Nobody has ever signed in, no token has ever existed and no request has ever left this machine** (§2 step 19): every OAuth endpoint is a recorded reproduction of Pi's own implementation. PR-038 and PR-039 remain. |
 | Phase 5 — hardening and release (040…044) | Not started. |
 
 Last full regression on `main` (after PR-017 and PR-022a): 997 tests across 66

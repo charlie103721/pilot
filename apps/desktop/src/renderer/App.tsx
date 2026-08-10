@@ -7,9 +7,11 @@ import {
 } from '../conversation/view-model.js';
 import { buildObservationView } from '../observation/view-model.js';
 import { permissionsAllowObservation } from '../permissions/view-model.js';
+import { CodexStatus } from './CodexStatus.js';
 import { ConversationPanel } from './ConversationPanel.js';
 import { ObservationControls } from './ObservationControls.js';
 import { PermissionOnboarding } from './PermissionOnboarding.js';
+import { useCodex } from './use-codex.js';
 import { useConversation } from './use-conversation.js';
 import { usePermissions } from './use-permissions.js';
 import { usePilotShell } from './use-pilot-shell.js';
@@ -99,6 +101,9 @@ export function App() {
   const permissions = usePermissions();
   const windows = useWindows();
   const conversation = useConversation();
+  // PR-037. Renders nothing unless the Codex profile is the one this build
+  // selected, so a development build is unchanged.
+  const codex = useCodex();
   const [dismissedCommandError, setDismissedCommandError] = useState(false);
   const observation = useMemo(
     () =>
@@ -168,6 +173,11 @@ export function App() {
       )}
 
       <PermissionOnboarding permissions={permissions} />
+
+      {/* PR-037: which model answers, and whether it can. Above the
+          observation controls because "no model is signed in" outranks
+          "which window is being watched". */}
+      <CodexStatus codex={codex} />
 
       {/* Always rendered, including while blocked: the indicator has to say
           that Pilot is capturing nothing, and why, rather than disappear. */}
