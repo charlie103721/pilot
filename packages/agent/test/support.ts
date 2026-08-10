@@ -204,9 +204,25 @@ export function fakeScreenContext(
   result: ScreenObservation | Error,
   options: FakeScreenContextOptions = {},
 ): FakeScreenContext {
+  return scriptedScreenContext([result], options);
+}
+
+/**
+ * `ScreenContextService` that walks a script, one outcome per `observe` call.
+ *
+ * PR-022a needs a *sequence* of observations — several in a row, a comparison,
+ * a scene change — to show active-context limits holding across turns. The last
+ * entry repeats once the script runs out, so a test never fails because it
+ * mis-counted turns.
+ */
+export function scriptedScreenContext(
+  results: readonly (ScreenObservation | Error)[],
+  options: FakeScreenContextOptions = {},
+): FakeScreenContext {
   const requests: ObserveScreenRequest[] = [];
   const signals: (AbortSignal | undefined)[] = [];
   const status = options.status ?? screenStatus();
+  let index = 0;
   return {
     requests,
     signals,
@@ -215,6 +231,11 @@ export function fakeScreenContext(
       requests.push(request);
       signals.push(signal);
       await options.onObserve?.(signal);
+      const result = results[Math.min(index, results.length - 1)];
+      index += 1;
+      if (result === undefined) {
+        throw new Error('scriptedScreenContext was given no results');
+      }
       if (result instanceof Error) {
         throw result;
       }
@@ -222,4 +243,15 @@ export function fakeScreenContext(
     },
     clear: () => undefined,
   };
+}
+
+/**
+ * Distinct, real base64 for a fixture image.
+ *
+ * Distinct matters: the transcript-is-unmutated proof asserts that *every*
+ * payload the tool ever produced is still in `session.messages`, which a shared
+ * fixture string could not tell apart.
+ */
+export function fixtureImageBase64(tag: string, repeats = 8): string {
+  return Buffer.from(`${tag}-`.repeat(repeats)).toString('base64');
 }
