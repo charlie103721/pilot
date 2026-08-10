@@ -145,6 +145,12 @@ include them:
 4. **PR-001 contracts are provisional** for the agent facade and platform
    adapters until PR-005 (Pi API reality) and PR-011 (TCC reality) land.
    Expect and accept small contract-change follow-ups.
+5. **No CI** (user decision, 2026-08-10): PR-001 does not add a CI workflow.
+   Verification is the §6 local command set, run before every commit.
+6. **PR-007 runs after PR-002**, not in parallel with it — both own root
+   config (electron-vite, builder config, root scripts); parallel worktrees
+   would conflict. Foundations fan-out is therefore 003/004/005/006 parallel,
+   with 002 → 007 as a sequential pair alongside them.
 
 ## 6. Verification commands
 
@@ -198,8 +204,13 @@ created during PR-043.
 
 - Nothing implemented yet. Repo contains docs, `dp/m1.md`, `.nvmrc`, and this
   runbook.
+- 2026-08-10: execution started on branch
+  `claude/implementation-md-approach-21bepa` (Linux session). Node 24.19.0
+  installed via `/opt/nvm` and set as default; pnpm 10.33 confirmed; Pi
+  packages re-verified on npm. PR-001 dispatched.
 - Next action: **PR-001** (solo, on `main`), then fan out PR-002…PR-007 in
-  parallel worktrees.
+  parallel worktrees (per amendment 6: 003/004/005/006 parallel, 002 → 007
+  sequential pair).
 - After PR-001, keep a running status section here (or in commit history) so
   any session can resume: which PRs are merged, which are in flight, and any
   contract-change follow-ups pending.
