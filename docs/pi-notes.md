@@ -613,6 +613,48 @@ unverifiable (§6.3).
   replacement (nearly complete), **PR-022b** compaction trigger + summary
   generation + truthful scene summaries.
 
+#### PR-022b — compaction orchestration — **LANDED**
+
+Delivered in `packages/agent/src/compaction.ts`, wired into `PiAgentSession`,
+covered by `packages/agent/test/compaction.test.ts` and demonstrated by
+`packages/agent/demo/compaction-demo.mjs`. Four things found while building it
+that are not in §2.7 and that PR-023/PR-036 must not rediscover:
+
+1. **`Agent` silently drops `compactionSummary` messages.** `pi-agent-core`
+   exports `createCompactionSummaryMessage` and a `convertToLlm` that renders it
+   — but that converter lives in `dist/harness/messages.js` and is **not
+   exported from the package index**. `Agent`'s own default is
+   `defaultConvertToLlm` (`dist/agent.js` line 3), which is literally
+   `messages.filter(m => m.role === "user" || "assistant" || "toolResult")`. A
+   compaction summary inserted through `transformContext` as Pi's own message
+   type is therefore discarded with no error and the model simply loses the
+   history. Pilot's summary is a plain `user` message whose first line says
+   whose voice it is. Asserted by test.
+2. **`estimateContextTokens` is the wrong function for a §11 trigger.** It
+   prefers the provider `usage` on the last assistant message, which describes
+   the request that already happened; the faux provider reports a fixed handful
+   of tokens for any context, so a trigger built on it never fires under test
+   and reports last turn's number in production. `estimateTokens` (per message,
+   pure) is the part worth using.
+3. **Pi charges a flat 4800 characters — 1200 tokens — per image block**
+   (`ESTIMATED_IMAGE_CHARS`), whatever its size. A 640px pointer crop and a
+   1440px full frame cost the same. Pilot charges `64 + bytes/128` instead,
+   computed from the `kept.images` / `kept.bytes` that PR-022a's
+   `planVisualContext` already publishes.
+4. **`shouldCompact` degenerates below a 16384-token window.** Its rule is
+   `tokens > contextWindow - reserveTokens` with `reserveTokens: 16384` fixed,
+   so for any window at or below that the right-hand side is ≤ 0 and the answer
+   is always `true`. That is every 8k and 16k local model (§9.3). Pilot consults
+   it only above the reserve, and reports it as `provider-headroom`, separate
+   from §11's three.
+
+One design tension worth recording rather than resolving silently: §11 asks for
+compaction "when any condition is met" *and* for "last 6–10 text turns" in
+active context. Early in a conversation those disagree — four observations can
+land inside six turns. The retained tail wins, and the outcome is reported as
+`nothing-to-compact` rather than as an error. It is why PR-022a's five-turn
+tests still pass unchanged with compaction enabled by default.
+
 ### PR-023 — Safe session persistence
 
 - ✅ The core question is answered and the mechanism is built and tested.
@@ -851,9 +893,19 @@ Recorded honestly rather than guessed:
 2. **`AgentHarness` timeline.** It may land in 0.85.x, which would make a chunk
    of PR-022/PR-023 redundant. Worth re-checking upstream before starting
    PR-022. Do not design *toward* it.
-3. **Compaction quality.** `compact()` needs a live provider, so the summary
+3. **Compaction quality.** ~~`compact()` needs a live provider, so the summary
    quality requirement from §11 ("must not claim that an old screen description
-   remains current") is untested. Needs §9.2 credentials.
+   remains current") is untested.~~ **Closed by PR-022b, by not using
+   `compact()`.** Pilot's summariser is *extractive*: every line is quoted or
+   derived from the transcript, so there is no provider call, no cost, and
+   nothing that can invent a screen it never saw. The §11 truthfulness
+   requirement is therefore a property of Pilot's own rendering and is asserted
+   by test rather than hoped for. The residual question is a different, smaller
+   one: whether an extractive summary is *rich* enough for a long conversation
+   compared with a generative one. A model-backed summariser can be swapped in
+   later — `buildCompactionSummary` is a pure function of a typed input — but it
+   would have to clear the same truthfulness bar, and a generative summariser
+   can silently fail it.
 4. **Real provider image handling.** The faux provider does not exercise
    provider-side image encoding. Anthropic, OpenAI Responses and
    OpenAI-compatible servers each transform `ImageContent` differently; only a
