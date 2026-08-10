@@ -1,6 +1,10 @@
 import { app, ipcMain, type IpcMainInvokeEvent } from 'electron';
 import { createIdFactory, createJsonSink, createLogger } from '@pilot/shared';
-import { FakeInteractionController, FakePermissionAdapter } from '@pilot/platform/fakes';
+import {
+  FakeInteractionController,
+  FakePermissionAdapter,
+  FakeWindowAdapter,
+} from '@pilot/platform/fakes';
 import { IPC_TRANSPORT } from '../ipc/channels.js';
 import {
   createElectronPanelHost,
@@ -15,6 +19,8 @@ import { createSettingsShortcut } from './settings-shortcut.js';
 import { DesktopShell } from './shell.js';
 import { enforceSingleInstance } from './single-instance.js';
 import type { TrayMenuItem } from './tray.js';
+import { WindowGate } from './window-gate.js';
+import { createFakeObservationInteraction, createFakeWindowDemoDriver } from './window-feed.js';
 
 /**
  * Electron entry point.
@@ -69,6 +75,22 @@ if (!singleInstance.isPrimary) {
     logger,
   });
 
+  // Window picker and observation controls (PR-009). Still the PR-001 fake
+  // adapter: PR-011's real enumeration cannot run here, and PR-012 owns the
+  // capture that a selection will eventually start.
+  const windowAdapter = new FakeWindowAdapter();
+  const windows = new WindowGate({
+    windows: windowAdapter,
+    interaction: createFakeObservationInteraction(controller),
+    permissions,
+    demoEvents: true,
+    logger,
+  });
+  const windowDemoDriver = createFakeWindowDemoDriver({
+    adapter: windowAdapter,
+    selected: () => controller.snapshot().selectedWindow,
+  });
+
   // Set by `electron-vite dev`, absent in every built app. When it is present
   // the panel loads from the dev server so edits hot-reload; otherwise it loads
   // the file emitted next to this one.
@@ -91,7 +113,9 @@ if (!singleInstance.isPrimary) {
       trayHost,
       controller,
       permissions,
+      windows,
       scenarioDriver: createFakeScenarioDriver(controller),
+      windowDemoDriver,
       appInfo: { version: app.getVersion(), platform: process.platform },
       quit: () => app.quit(),
       ids: createIdFactory(),

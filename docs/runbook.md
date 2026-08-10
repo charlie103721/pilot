@@ -352,6 +352,16 @@ written blind per amendment 8).
    change the list — and that broke a PR-016 test asserting an exact ignored-
    event count. Update the count and say why in a comment; do not weaken the
    assertion to a range, and do not revert the more faithful behaviour.
+7. **Timing-sensitive tests fail under concurrent agent load, not from a
+   defect.** With seven lanes building at once, two suites have failed once
+   each and passed on every rerun and in isolation:
+   `packages/observation/test/bounds.stress.test.ts` (20k frames at 60 FPS) and
+   `packages/platform-mac/test/helper-transport.test.ts` ("rejects in-flight
+   work and reports the crash", which races a helper crash against a request
+   deadline). **Before treating either as a regression, re-run it alone.** If
+   one starts failing in isolation, that is real. Do not "fix" them by widening
+   their tolerances — the bounds and the deadline are the properties under
+   test, and a stress test that cannot fail proves nothing.
 
 ### Pending cross-lane follow-ups
 
@@ -368,6 +378,8 @@ Open items a later PR must close. Each was raised by the lane that found it.
 | 7 | **A stalled-but-open run does not speak its tail until it ends.** The phrase timeout is evaluated against the injected clock whenever a run event arrives, and unconditionally at `run-completed`, so nothing is ever lost — but a model that emits a clause and then goes quiet without ending the run stays silent until it does. A real-time wake-up needs either a new machine input or a scheduler in library code; neither belonged in PR-026's scope. | PR-027, if wanted |
 | 8 | **PR-023 must persist the compaction summary alongside the transcript** (PR-022b). Compaction is provider-facing only: it never touches `agent.state.messages`, so the durable transcript is complete but a restored session would start with no summary and re-send the whole history. `PiAgentSession.compaction` exposes `{ generation, boundaryIndex, summary }`, where `boundaryIndex` indexes the *unmodified* transcript — restore both and the context is exactly what it was. | PR-023 |
 | 9 | **PR-036 should set `compaction.contextWindow` from the real profile, and the panel should surface `context-compacted`** (PR-022b). The default is `model.contextWindow`, which is right for a hosted model and too generous for a local one that advertises more than it handles well. `PiAgentSession.lastCompaction` carries the triggers and the before/after token estimate for the diagnostics panel; the `context-compacted` event itself carries only the summary text. | PR-036, PR-010 |
+| 10 | **`apps/desktop/src/main/window-feed.ts` must be deleted** (PR-009). It is the `ObservationInteraction` port over the *fake* interaction controller, which has no event input, so `windows-changed` and `window-closed` are applied to its view state by hand — reproducing `@pilot/interaction`'s transition-table rows for those two events. The port's `report(event)` is deliberately shaped as those two `InteractionEvent` members, so the real wiring is `report: (event) => controller.send(event)` and nothing else changes. Leave the fake bridge in and the §16 behaviour is asserted twice, in two places that can drift. | PR-029 |
+| 11 | **Nothing acts on `screen-locked` / `screen-unlocked` in the desktop shell** (PR-009). `WindowGate` subscribes to the window adapter and logs those two events rather than handling them; system-design §6 and §14 require capture to stop and buffers to clear on lock. The interaction table already has the rows (`screen-locked` → stop-capture + clear-buffers), so the fix is the same one-line change as follow-up 6 — forward them through the port instead of logging them. Until then a locked screen is a gap on the fake shell only, because no capture exists yet. | PR-029 (with 6) |
 
 ## 9. Quick start for a new session
 

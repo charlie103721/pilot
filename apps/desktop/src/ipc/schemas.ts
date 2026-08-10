@@ -212,3 +212,135 @@ export const permissionGateStateSchema = z.strictObject({
 });
 
 export type PermissionGateState = z.infer<typeof permissionGateStateSchema>;
+
+// ---------------------------------------------------------------------------
+// Window picker and observation controls (PR-009)
+// ---------------------------------------------------------------------------
+
+/**
+ * Something that happened *to* observation, which the user has to be told about
+ * and which needs an answer from them.
+ *
+ * Both reasons are conditions from the capture lifecycle (system-design §6):
+ * observation may only run while a valid window is selected and Screen
+ * Recording is granted. When either stops being true, Pilot stops watching —
+ * and system-design §16 requires that it says so and asks for a new selection
+ * rather than going quiet.
+ */
+export const OBSERVATION_NOTICE_REASONS = [
+  /** §16 "Selected window closed": stop observation, clear, prompt for selection. */
+  'selected-window-closed',
+  /** Screen Recording was withdrawn while Pilot was allowed to observe. */
+  'observation-permission-lost',
+] as const;
+
+export type ObservationNoticeReason = (typeof OBSERVATION_NOTICE_REASONS)[number];
+
+export const observationNoticeSchema = z.strictObject({
+  reason: z.enum(OBSERVATION_NOTICE_REASONS),
+  /** The window this is about. Null when the notice is not about one window. */
+  window: observedWindowSchema.nullable(),
+  /**
+   * Whether Pilot was actually capturing when this happened. "The window you
+   * were being watched through closed" and "the window you had lined up closed"
+   * are different messages, and only the first is about privacy.
+   */
+  wasObserving: z.boolean(),
+  at: z.number().int().nonnegative(),
+});
+
+export type ObservationNotice = z.infer<typeof observationNoticeSchema>;
+
+/**
+ * Everything the panel needs to draw the window picker, and nothing more.
+ *
+ * The *selection* is deliberately not here: `PilotViewState.selectedWindow` is
+ * the single source of truth for what Pilot is watching, and duplicating it
+ * would create two answers to the only question that matters. This carries the
+ * list, when it was read, and the one thing the view state cannot express — the
+ * §16 prompt for a new selection.
+ */
+export const windowGateStateSchema = z.strictObject({
+  windows: z.array(observedWindowSchema).readonly(),
+  /** Null until the first list completes — never conflated with "no windows". */
+  listedAt: z.number().int().nonnegative().nullable(),
+  /** True while a list is in flight, so "loading" never renders as "empty". */
+  listing: z.boolean(),
+  notice: observationNoticeSchema.nullable(),
+  /** The last refused window action; cleared by `dismiss-notice`. */
+  lastError: serializedPilotErrorSchema.nullable(),
+  /**
+   * True when this build can be driven through window-lifecycle events from the
+   * panel. False in a build on the real macOS adapter, where the panel must not
+   * offer a control the main process would refuse.
+   */
+  demoEvents: z.boolean(),
+});
+
+export type WindowGateState = z.infer<typeof windowGateStateSchema>;
+
+export const WINDOW_ACTIONS = [
+  'refresh',
+  'select',
+  'start',
+  'stop',
+  'pause',
+  'resume',
+  'dismiss-notice',
+] as const;
+
+export type WindowActionType = (typeof WINDOW_ACTIONS)[number];
+
+/**
+ * Every observation control the panel can operate, as one validated
+ * discriminated union — the same shape permission actions use, for the same
+ * reason: a new affordance cannot arrive without a validator.
+ *
+ * There is no separate "change window" member. Changing the observed window
+ * *is* `select` with a different id, which is what the interaction contract
+ * models (`select-window` stops the previous capture and clears its buffers).
+ */
+export type WindowAction =
+  /** Re-read the window list from the platform. */
+  | { readonly type: 'refresh' }
+  /** Watch this window. Also the "change window" action. */
+  | { readonly type: 'select'; readonly windowId: z.infer<typeof windowIdSchema> }
+  /** Turn observation on for the selected window. */
+  | { readonly type: 'start' }
+  /** Turn observation off. Nothing is captured until it is started again. */
+  | { readonly type: 'stop' }
+  /** Suspend all of Pilot, observation included. */
+  | { readonly type: 'pause' }
+  | { readonly type: 'resume' }
+  | { readonly type: 'dismiss-notice' };
+
+export const windowActionSchema: z.ZodType<WindowAction> = z.discriminatedUnion('type', [
+  z.strictObject({ type: z.literal('refresh') }),
+  z.strictObject({ type: z.literal('select'), windowId: windowIdSchema }),
+  z.strictObject({ type: z.literal('start') }),
+  z.strictObject({ type: z.literal('stop') }),
+  z.strictObject({ type: z.literal('pause') }),
+  z.strictObject({ type: z.literal('resume') }),
+  z.strictObject({ type: z.literal('dismiss-notice') }),
+]);
+
+/**
+ * Window-lifecycle events a reviewer can cause at runtime.
+ *
+ * PR-011's real window enumeration cannot be verified here (runbook §5
+ * amendment 8), so the states that only a *changing* window list can produce —
+ * the selected window closing mid-observation, a window being retitled while
+ * selected — need a way to be reached without editing source. Validated like
+ * any other renderer input, and refused outright by a build with no fake
+ * window adapter behind it.
+ */
+export const WINDOW_DEMO_EVENTS = [
+  'close-selected',
+  'retitle-selected',
+  'hide-selected',
+  'restore-windows',
+] as const;
+
+export type WindowDemoEvent = (typeof WINDOW_DEMO_EVENTS)[number];
+
+export const windowDemoEventSchema = z.enum(WINDOW_DEMO_EVENTS);

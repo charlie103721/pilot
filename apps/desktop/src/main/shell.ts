@@ -13,18 +13,24 @@ import {
   demoScenarioChannel,
   interactionDispatchChannel,
   panelSetVisibleChannel,
+  demoWindowEventChannel,
   permissionsActChannel,
   permissionsChangedEvent,
   permissionsGetChannel,
   quitChannel,
   viewStateChangedEvent,
   viewStateGetChannel,
+  windowsActChannel,
+  windowsChangedEvent,
+  windowsGetChannel,
 } from '../ipc/channels.js';
 import { IpcRouter } from './ipc-router.js';
 import { PanelController, type PanelWindowHost } from './panel-window.js';
 import { TrayController, type TrayAvailability, type TrayHost } from './tray.js';
 import type { ScenarioDriver } from './scenarios.js';
 import type { PermissionGate } from './permission-gate.js';
+import type { WindowGate } from './window-gate.js';
+import type { WindowDemoDriver } from './window-feed.js';
 
 /**
  * Composition root for the desktop shell.
@@ -47,10 +53,14 @@ export interface DesktopShellOptions {
   readonly controller: InteractionController;
   /** Owns permission state and the System Settings shortcut (PR-008). */
   readonly permissions: PermissionGate;
+  /** Owns the window list and the observation controls (PR-009). */
+  readonly windows: WindowGate;
   readonly appInfo: DesktopShellAppInfo;
   readonly quit: () => void;
   /** Present only while the shell runs on fakes. Omit once PR-010 lands. */
   readonly scenarioDriver?: ScenarioDriver;
+  /** Present only while the shell runs on the fake window adapter (PR-009). */
+  readonly windowDemoDriver?: WindowDemoDriver;
   readonly ids?: IdFactory;
   readonly now?: () => number;
   readonly logger?: Logger;
@@ -66,17 +76,20 @@ export class DesktopShell {
   readonly tray: TrayController;
 
   readonly permissions: PermissionGate;
+  readonly windows: WindowGate;
 
   readonly #controller: InteractionController;
   readonly #options: DesktopShellOptions;
   readonly #logger: Logger;
   #unsubscribe: (() => void) | null = null;
   #unsubscribePermissions: (() => void) | null = null;
+  #unsubscribeWindows: (() => void) | null = null;
 
   constructor(options: DesktopShellOptions) {
     this.#options = options;
     this.#controller = options.controller;
     this.permissions = options.permissions;
+    this.windows = options.windows;
     this.#logger = options.logger ?? nullLogger;
     const ids = options.ids ?? createIdFactory();
 
@@ -125,11 +138,17 @@ export class DesktopShell {
     this.#unsubscribePermissions = this.permissions.subscribe((state) => {
       this.panel.broadcast(permissionsChangedEvent, state);
     });
+    this.#unsubscribeWindows = this.windows.subscribe((state) => {
+      this.panel.broadcast(windowsChangedEvent, state);
+    });
     this.#publish(this.#controller.snapshot());
 
     // The first permission read starts immediately, so the panel has something
     // real to show as soon as it opens instead of an empty onboarding list.
     void this.permissions.refresh();
+    // Same for the window list: an empty picker must mean "no windows", never
+    // "Pilot has not looked yet".
+    void this.windows.refresh();
     return { trayAvailability };
   }
 
@@ -147,7 +166,11 @@ export class DesktopShell {
     this.tray.setPanelVisible(true);
     this.panel.broadcast(viewStateChangedEvent, this.#controller.snapshot());
     this.panel.broadcast(permissionsChangedEvent, this.permissions.snapshot());
+    this.panel.broadcast(windowsChangedEvent, this.windows.snapshot());
     void this.permissions.refresh();
+    // Windows open and close while the panel is hidden; a stale list would
+    // offer the user a window that is no longer there.
+    void this.windows.refresh();
   }
 
   async dispose(): Promise<void> {
@@ -155,6 +178,9 @@ export class DesktopShell {
     this.#unsubscribe = null;
     this.#unsubscribePermissions?.();
     this.#unsubscribePermissions = null;
+    this.#unsubscribeWindows?.();
+    this.#unsubscribeWindows = null;
+    this.windows.dispose();
     this.permissions.dispose();
     this.tray.dispose();
     this.panel.dispose();
@@ -197,6 +223,24 @@ export class DesktopShell {
     this.router.register(demoPermissionFixtureChannel, (fixture) =>
       this.permissions.applyFixture(fixture),
     );
+
+    this.router.register(windowsGetChannel, () => this.windows.snapshot());
+
+    this.router.register(windowsActChannel, (action) => this.windows.act(action));
+
+    this.router.register(demoWindowEventChannel, async (event) => {
+      const driver = this.#options.windowDemoDriver;
+      if (driver === undefined) {
+        throw new PilotError('unsupported-capability', 'This build has no fake window driver', {
+          userMessage: 'Window demo events are only available in development builds.',
+          details: { event },
+        });
+      }
+      await driver(event);
+      // Re-listed before answering: the response must not be older than the
+      // event the panel has already been sent, or it would overwrite it.
+      return this.windows.refresh();
+    });
 
     this.router.register(demoScenarioChannel, (scenario) => {
       const driver = this.#options.scenarioDriver;
