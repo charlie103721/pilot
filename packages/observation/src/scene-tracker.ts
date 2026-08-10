@@ -6,6 +6,7 @@ import {
   type WindowGeometry,
 } from '@pilot/shared';
 import { toTimestamp, type Clock } from './clock.js';
+import { fnv1a32 } from './hashing.js';
 
 /**
  * Scene identity and revision tracking (system-design §6).
@@ -102,16 +103,6 @@ interface SceneComponents {
   readonly geometry: string;
   readonly 'accessibility-root': string;
   readonly content: string;
-}
-
-/** FNV-1a, 32-bit. Not cryptographic — this only needs to be stable and cheap. */
-function fnv1a32(input: string): string {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < input.length; index += 1) {
-    hash ^= input.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return hash.toString(16).padStart(8, '0');
 }
 
 function componentsOf(signals: SceneSignals): SceneComponents {

@@ -3,9 +3,11 @@ import {
   MVP_SCREEN_POLICY,
   PilotError,
   type GroundedPointer,
+  type SceneId,
   type WindowId,
 } from '@pilot/shared';
 import type { Clock } from './clock.js';
+import { matchesSceneScope, type SceneScope, type SceneScopeQuery } from './scene-lineage.js';
 
 /**
  * Pointer timeline (system-design §6, §17).
@@ -37,6 +39,8 @@ export interface PointerSampleInput {
   readonly pointer: GroundedPointer;
   /** Scene revision in force at sample time, stamped by the owner. */
   readonly sceneRevision?: number;
+  /** Scene in force at sample time, stamped by the owner. */
+  readonly sceneId?: SceneId;
 }
 
 export interface PointerSample {
@@ -50,6 +54,12 @@ export interface PointerSample {
    */
   readonly insideWindow: boolean;
   readonly sceneRevision: number | null;
+  /**
+   * Scene the sample was recorded for. Selection filters on it so a pointer
+   * position from a previous window selection can never ground a question
+   * (system-design §10 step 3).
+   */
+  readonly sceneId: SceneId | null;
 }
 
 export type PointerRejectionReason =
@@ -79,9 +89,16 @@ export interface PointerSelectionQuery {
   readonly direction?: PointerSelectionDirection;
   /** Defaults to the timeline's retention window. */
   readonly maxSkewMs?: number;
+  /**
+   * Restricts candidates to one scene. `ObservationCore` defaults it to the
+   * current scene; `'any'` opts out.
+   */
+  readonly scene?: SceneScope;
+  readonly minSceneRevision?: number;
 }
 
-export type PointerSelectionFailure = 'empty' | 'out-of-range' | 'no-sample-in-direction';
+export type PointerSelectionFailure =
+  'empty' | 'out-of-range' | 'no-sample-in-direction' | 'scene-mismatch';
 
 export type PointerSelection =
   | {
@@ -215,6 +232,7 @@ export class PointerTimeline {
       pointer: input.pointer,
       insideWindow: isPointerInsideWindow(input.pointer),
       sceneRevision: input.sceneRevision ?? null,
+      sceneId: input.sceneId ?? null,
     };
 
     const coalesced =
@@ -245,8 +263,13 @@ export class PointerTimeline {
 
     let best: PointerSample | undefined;
     let bestDistance = Number.POSITIVE_INFINITY;
+    let inScene = 0;
 
     for (const sample of this.#samples) {
+      if (!matchesSceneScope(sample, query)) {
+        continue;
+      }
+      inScene += 1;
       if (direction === 'at-or-before' && sample.at > requestedAt) {
         continue;
       }
@@ -263,7 +286,12 @@ export class PointerTimeline {
     if (best === undefined) {
       return {
         found: false,
-        reason: this.#samples.length === 0 ? 'empty' : 'no-sample-in-direction',
+        reason:
+          this.#samples.length === 0
+            ? 'empty'
+            : inScene === 0
+              ? 'scene-mismatch'
+              : 'no-sample-in-direction',
         nearestDistanceMs: null,
         sampleCount: this.#samples.length,
       };
@@ -289,11 +317,13 @@ export class PointerTimeline {
    * question anchoring. Returns an empty array (never `undefined`) when the
    * timeline holds nothing in range.
    */
-  between(from: number, to: number): readonly PointerSample[] {
+  between(from: number, to: number, scope: SceneScopeQuery = {}): readonly PointerSample[] {
     this.#pruneByAge(this.#clock.now());
     const start = Math.min(from, to);
     const end = Math.max(from, to);
-    return this.#samples.filter((sample) => sample.at >= start && sample.at <= end);
+    return this.#samples.filter(
+      (sample) => sample.at >= start && sample.at <= end && matchesSceneScope(sample, scope),
+    );
   }
 
   newest(): PointerSample | null {
