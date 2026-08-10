@@ -29,7 +29,8 @@
     "paths": {
       "@pilot/shared": ["packages/shared/src/index.ts"],
       "@pilot/platform": ["packages/platform/src/index.ts"],
-      "@pilot/platform/fakes": ["packages/platform/src/fakes/index.ts"]
+      "@pilot/platform/fakes": ["packages/platform/src/fakes/index.ts"],
+      "@pilot/agent": ["packages/agent/src/index.ts"]
     }
   }
 }

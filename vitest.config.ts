@@ -15,6 +15,7 @@ export default defineConfig({
       },
       { find: '@pilot/platform', replacement: fromRoot('./packages/platform/src/index.ts') },
       { find: '@pilot/shared', replacement: fromRoot('./packages/shared/src/index.ts') },
+      { find: '@pilot/agent', replacement: fromRoot('./packages/agent/src/index.ts') },
     ],
   },
   test: {
