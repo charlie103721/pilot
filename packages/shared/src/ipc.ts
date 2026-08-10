@@ -22,6 +22,15 @@ export const IPC_PROTOCOL_VERSION = CONTRACT_VERSION;
 /** Hard ceiling on one encoded envelope. Enforced before parsing. */
 export const MAX_IPC_MESSAGE_BYTES = 1_048_576;
 
+/**
+ * `TextEncoder` rather than `Buffer.byteLength`: the sandboxed preload and the
+ * renderer are Chromium processes without Node built-ins, and this module runs
+ * in both. The UTF-8 byte count is identical.
+ */
+const utf8 = new TextEncoder();
+
+const utf8ByteLength = (text: string): number => utf8.encode(text).length;
+
 const timestamp = z.number().int().nonnegative();
 
 export const requestEnvelopeSchema = z.strictObject({
@@ -293,7 +302,7 @@ function deserializeEnvelopeError(error: SerializedPilotError): PilotError {
 
 export function encodeEnvelope(envelope: IpcEnvelope): string {
   const text = JSON.stringify(envelope);
-  const byteLength = Buffer.byteLength(text, 'utf8');
+  const byteLength = utf8ByteLength(text);
   if (byteLength > MAX_IPC_MESSAGE_BYTES) {
     throw new PilotError('payload-too-large', 'IPC envelope exceeds the size limit', {
       userMessage: 'Pilot tried to send a message that was too large.',
@@ -304,7 +313,7 @@ export function encodeEnvelope(envelope: IpcEnvelope): string {
 }
 
 export function decodeEnvelope(text: string): IpcEnvelope {
-  const byteLength = Buffer.byteLength(text, 'utf8');
+  const byteLength = utf8ByteLength(text);
   if (byteLength > MAX_IPC_MESSAGE_BYTES) {
     throw new PilotError('payload-too-large', 'IPC envelope exceeds the size limit', {
       userMessage: 'Pilot received a message that was too large.',

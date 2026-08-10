@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 
 /**
@@ -83,10 +82,18 @@ export interface IdSource {
   next(prefix: string): string;
 }
 
+/**
+ * `globalThis.crypto` rather than `node:crypto`: this module is loaded by the
+ * Electron main process, by the sandboxed preload and by the renderer, and the
+ * latter two are Chromium processes with no Node built-ins at all. The Web
+ * Crypto global is present and identical in all three (Node ≥ 19, and every
+ * Chromium context Pilot uses is a secure context), so one entry point serves
+ * every process and no bundler shim is needed.
+ */
 export function createRandomIdSource(): IdSource {
   return {
     next(prefix: string): string {
-      return `${prefix}-${randomUUID()}`;
+      return `${prefix}-${globalThis.crypto.randomUUID()}`;
     },
   };
 }

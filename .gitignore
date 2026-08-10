@@ -4,5 +4,9 @@ coverage/
 *.tsbuildinfo
 .DS_Store
 
+# electron-builder output and the native helper staged into the app bundle.
+release/
+apps/*/resources/
+
 # Transient git worktrees used by parallel agent sessions.
 .claude/worktrees/

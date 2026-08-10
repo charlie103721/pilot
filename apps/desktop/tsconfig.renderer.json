@@ -15,10 +15,5 @@
     "types": ["node"],
     "jsx": "react-jsx"
   },
-  "include": [
-    "src/renderer/**/*.ts",
-    "src/renderer/**/*.tsx",
-    "src/shims/**/*.ts",
-    "test/renderer/**/*.tsx"
-  ]
+  "include": ["src/renderer/**/*.ts", "src/renderer/**/*.tsx", "test/renderer/**/*.tsx"]
 }

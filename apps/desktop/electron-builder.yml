@@ -1,0 +1,74 @@
+# electron-builder — development configuration.
+#
+# Scope: this produces a *development* bundle. It is deliberately not a release
+# configuration; PR-042 owns the packaged macOS application.
+#
+#   Signing:      development only. `mac.identity: null` means electron-builder
+#                 does not look for a Developer ID certificate. On Apple silicon
+#                 the resulting bundle still needs an ad-hoc signature to launch
+#                 — see README "Packaging".
+#   Notarization: NOT DONE, and recorded as a known gap against the MVP-01
+#                 definition of done (runbook §7; user decision: no Developer ID
+#                 account). Nothing here silently pretends otherwise.
+#
+# Everything the app needs at runtime is bundled into `dist/` by electron-vite,
+# so no node_modules are copied into the asar. That keeps the bundle honest
+# under pnpm, whose symlinked store electron-builder cannot faithfully flatten.
+
+appId: works.pilot.desktop
+productName: Pilot
+copyright: Pilot
+
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - dist/**/*
+  - package.json
+  # electron-vite already inlined every dependency; anything left here would be
+  # a pnpm symlink farm.
+  - '!node_modules/**/*'
+
+# The native helper lives beside the asar, not inside it: it has to be a real
+# executable file on disk that the main process can spawn.
+extraResources:
+  - from: resources/helper
+    to: helper
+
+asar: true
+npmRebuild: false
+buildDependenciesFromSource: false
+
+# Use the Electron runtime this workspace already downloaded
+# (apps/desktop/scripts/ensure-electron.js) instead of fetching another copy.
+# Host architecture only, which is exactly what a development build wants.
+electronDist: node_modules/electron/dist
+
+mac:
+  category: public.app-category.productivity
+  target:
+    - target: dir
+  # Development signing only; see the header.
+  identity: null
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  extendInfo:
+    # macOS refuses to show a TCC prompt without these strings, and a missing
+    # prompt looks exactly like a denied permission.
+    NSMicrophoneUsageDescription: Pilot listens while you hold the push-to-talk key.
+    NSSpeechRecognitionUsageDescription: Pilot turns what you say into text so it can answer.
+    NSAppleEventsUsageDescription: Pilot inspects the window you selected.
+    # Menu bar app: no Dock icon, no window on launch.
+    LSUIElement: true
+
+linux:
+  # Linux is a development host, not a supported target. `dir` is enough to
+  # exercise the packaging path (and the packaged-resource check) here.
+  target:
+    - target: dir
+  category: Utility
+  # Without this the executable is named after the scoped package (`@pilotdesktop`).
+  executableName: pilot

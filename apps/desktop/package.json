@@ -3,14 +3,20 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "author": "Pilot",
   "description": "Electron desktop shell: lifecycle, single-instance lock, menu bar item, floating panel, and the validated renderer IPC surface.",
   "main": "./dist/main/index.js",
   "scripts": {
     "postinstall": "node scripts/ensure-electron.js",
     "typecheck": "tsc -p tsconfig.check.json && tsc -p tsconfig.renderer.json",
-    "build:bundle": "node scripts/bundle.js",
+    "build:helper": "node scripts/build-helper.js",
+    "build:app": "node scripts/build-helper.js && electron-vite build",
+    "dev": "electron-vite dev",
+    "package": "node scripts/ensure-electron.js --require && pnpm run build:app && electron-builder --dir --config electron-builder.yml && node scripts/verify-bundle.js",
+    "verify:bundle": "node scripts/verify-bundle.js",
     "start": "electron .",
-    "smoke": "xvfb-run -a node scripts/smoke.js"
+    "smoke": "xvfb-run -a node scripts/smoke.js",
+    "smoke:packaged": "xvfb-run -a node scripts/smoke.js --packaged"
   },
   "engines": {
     "node": ">=24"
@@ -23,11 +29,14 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@electron/asar": "^4.2.1",
     "@testing-library/react": "^16.3.2",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.4",
     "electron": "^43.3.0",
-    "esbuild": "^0.28.2",
-    "jsdom": "^30.0.1"
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
+    "jsdom": "^30.0.1",
+    "vite": "^7.3.6"
   }
 }
