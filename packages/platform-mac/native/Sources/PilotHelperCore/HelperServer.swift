@@ -15,34 +15,38 @@ public enum HelperOutcome {
 /// PR-003 implemented transport only: `health` (the host's startup handshake
 /// and liveness probe) and `echo` (which round-trips the binary body so the
 /// length-prefixed payload path is exercised before PR-012 needs it). PR-011
-/// added the permission and window operations.
+/// added the permission and window operations; PR-012 adds capture, and is the
+/// first real user of that binary body.
 ///
-/// `handle(frame:)` remains a function of its input and its two injected
+/// `handle(frame:)` remains a function of its input and its three injected
 /// services, so the XCTest target exercises every branch — including the
-/// permission and window ones — without a window server, a TCC prompt or a
-/// spawned process.
+/// permission, window and capture ones — without a window server, a TCC prompt,
+/// a compositor or a spawned process.
 public final class HelperServer {
     public let helperVersion: String
     private let processIdentifier: Int
     private let startedAt: Date
     private let permissions: PermissionService
     private let windows: WindowService
+    private let capture: CaptureService
     private var eventCounter = 0
 
     /// The services default to the live ones, so `main.swift` is unchanged and
-    /// the PR-003 initialiser call still compiles.
+    /// the PR-003 and PR-011 initialiser calls still compile.
     public init(
         helperVersion: String,
         processIdentifier: Int = Int(ProcessInfo.processInfo.processIdentifier),
         startedAt: Date = Date(),
         permissions: PermissionService = SystemPermissionService(),
-        windows: WindowService = SystemWindowService()
+        windows: WindowService = SystemWindowService(),
+        capture: CaptureService = SystemCaptureService()
     ) {
         self.helperVersion = helperVersion
         self.processIdentifier = processIdentifier
         self.startedAt = startedAt
         self.permissions = permissions
         self.windows = windows
+        self.capture = capture
     }
 
     private var uptimeMilliseconds: Int {
@@ -185,6 +189,46 @@ public final class HelperServer {
                     "display": JSONValue.orNull(outcome.display?.jsonObject),
                     "screenLocked": outcome.screenLocked,
                 ]
+            )
+        case .captureStart:
+            guard let settings = CaptureConfiguration.parse(request.payload) else {
+                return failure(
+                    request: request,
+                    code: "invalid-request",
+                    domain: "ipc",
+                    message: "capture.start requires windowNumber, width, height and sampleFps"
+                )
+            }
+            let outcome = capture.start(settings)
+            guard let session = outcome.session else {
+                return failure(
+                    request: request,
+                    code: outcome.failureCode,
+                    domain: "observation",
+                    message: outcome.failure ?? "capture could not start"
+                )
+            }
+            return success(request: request, payload: ["session": session.jsonObject])
+        case .captureStop:
+            let requested = request.payload["streamId"] as? String
+            return success(request: request, payload: capture.stop(streamId: requested).jsonObject)
+        case .capturePull:
+            guard let streamId = request.payload["streamId"] as? String, !streamId.isEmpty else {
+                return failure(
+                    request: request,
+                    code: "invalid-request",
+                    domain: "ipc",
+                    message: "capture.pull requires a streamId"
+                )
+            }
+            let notBefore = (request.payload["notBefore"] as? NSNumber)?.intValue
+            let outcome = capture.pull(streamId: streamId, notBefore: notBefore)
+            // The pixels ride in the frame's binary body, never in the JSON:
+            // message metadata stays printable and log-safe (PR-003).
+            return success(
+                request: request,
+                payload: outcome.jsonObject,
+                binary: outcome.frame?.bytes ?? []
             )
         }
     }

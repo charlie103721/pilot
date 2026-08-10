@@ -207,17 +207,19 @@ the two in step.
 | Codex sign-in probe | `docs/pi-notes.md` §9.1 | PR-005 | no |
 | Desktop shell visual demo | `pnpm dev` — menu bar item, panel, fake states | PR-002 | no |
 | **TCC attribution + real permissions and windows** | `pnpm --filter @pilot/platform-mac demo:permissions`, then again with `PILOT_HELPER_BINARY` pointing inside the packaged `.app` | PR-011 | **yes** |
+| **Selected-window capture** — the first real pixel | `pnpm --filter @pilot/platform-mac demo:capture` (run the row above first; without a Screen Recording grant this cannot work) | PR-012 | **yes** |
 
-A Swift compile failure is a **PR-003 defect** in the transport files and a
+A Swift compile failure is a **PR-003 defect** in the transport files, a
 **PR-011 defect** in `PermissionModel.swift`, `Attribution.swift`,
-`WindowModel.swift`, `PermissionProbes.swift` and `WindowEnumerator.swift`:
-either way, send the compiler output and it gets fixed, not worked around.
+`WindowModel.swift`, `PermissionProbes.swift` and `WindowEnumerator.swift`, and
+a **PR-012 defect** in `CaptureModel.swift` and `CaptureEngine.swift`: either
+way, send the compiler output and it gets fixed, not worked around.
 
-Every row but the last raises **no TCC prompt** — that separation is
+Every row but the last two raises **no TCC prompt** — that separation is
 deliberate, isolating "does the helper build and talk" from "does macOS trust
-it". The last row is the second question, and it is the one that settles the
-top structural risk in the plan (§7). What to look for is spelled out in
-`docs/handoff.md` §1.
+it". The last two are the second question, and the permissions one settles the
+top structural risk in the plan (§7). What to look for in both is spelled out
+in `docs/handoff.md` §1.
 
 ## 6. Verification commands
 
@@ -347,6 +349,20 @@ written blind per amendment 8).
    change the list — and that broke a PR-016 test asserting an exact ignored-
    event count. Update the count and say why in a comment; do not weaken the
    assertion to a range, and do not revert the more faithful behaviour.
+7. **A test that anticipates a later PR must be updated, not deleted.** PR-011
+   asserted "binary is attached to nothing but `echo`" and said in a comment
+   that capture frames arrive in PR-012. They did: `capture.pull` answers with
+   a binary body. PR-012 narrowed that assertion to "nothing but `echo` and
+   `capture.pull`, and only on the response" and said why in the comment,
+   rather than removing it — the invariant it was protecting (a permission or
+   window response must never carry bytes) is still worth having.
+8. **Optional interface members are the additive shape that works.** PR-011
+   added `PermissionAdapter.attribution?()`; PR-012 added
+   `ObservationAdapter.subscribeEvents?`. Both are source-compatible — existing
+   implementations, including the shared fakes, still satisfy the interface
+   untouched — which matters because `packages/platform/src/adapters.ts`
+   collides on nearly every merge. Keep such additions in one contiguous block
+   marked with the PR id so the collision resolves as a union.
 
 ### Pending cross-lane follow-ups
 

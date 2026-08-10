@@ -144,6 +144,10 @@ importers:
       zod:
         specifier: ^4.4.3
         version: 4.4.3
+    devDependencies:
+      '@pilot/observation':
+        specifier: workspace:*
+        version: link:../observation
 
   packages/shared:
     dependencies:

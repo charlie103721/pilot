@@ -89,6 +89,45 @@ export interface StubDesktop {
   screenLocked?: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// PR-012 shapes
+// ---------------------------------------------------------------------------
+
+export type StubCaptureState =
+  'starting' | 'streaming' | 'protected' | 'window-lost' | 'screen-locked' | 'stopped' | 'failed';
+
+/** One frame the scripted stream produces. */
+export interface StubCaptureFrame {
+  /** Defaults to a per-stream counter starting at 1. */
+  sequence?: number;
+  /** Defaults to the window `capture.start` named. Set it to forge a foreign frame. */
+  windowNumber?: number;
+  /** Absolute epoch ms. Overrides `ageMs`. */
+  capturedAt?: number;
+  /** Epoch ms offset backwards from now. Default 0. */
+  ageMs?: number;
+  timestampFallback?: boolean;
+  width?: number;
+  height?: number;
+  scaleFactor?: number;
+  encoding?: 'jpeg' | 'png';
+  /** Bytes actually written into the frame's binary body. Default 2048. */
+  bytes?: number;
+  /** Header `byteLength`, when it must disagree with the body. */
+  declaredByteLength?: number;
+  contentChanged?: boolean;
+}
+
+/** What one `capture.pull` answers with. The last entry repeats forever. */
+export interface StubCapturePull {
+  state?: StubCaptureState;
+  frame?: StubCaptureFrame | null;
+  remaining?: number;
+  /** Cumulative helper-side drops, as the real helper reports them. */
+  dropped?: number;
+  failure?: string | null;
+}
+
 export interface StubConfig {
   /** Reported by `health`. */
   helperVersion?: string;
@@ -163,6 +202,29 @@ export interface StubConfig {
    * deterministically: no timers, no sleeping, no races.
    */
   desktopScript?: StubDesktop[];
+
+  // -------------------------------------------------------------------------
+  // PR-012
+  // -------------------------------------------------------------------------
+
+  /** Make `capture.start` fail with this message. */
+  captureStartFails?: string;
+  /** Answer `capture.start` with a different window than the one requested. */
+  captureSessionWindowNumber?: number;
+  /** Bytes in every generated frame when no script is supplied. Default 2048. */
+  captureFrameBytes?: number;
+  /**
+   * Captured pixels per window point, as the helper computes it from the real
+   * window's frame. The stub has no window to measure, so it is stated.
+   */
+  captureScaleFactor?: number;
+  /**
+   * Successive `capture.pull` answers. The last entry repeats. Without one the
+   * stub streams an endless sequence of freshly stamped frames.
+   */
+  captureScript?: StubCapturePull[];
+  /** Delay before answering `capture.pull`, to drive the abort path. */
+  capturePullDelayMs?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -390,6 +452,173 @@ class StubDesktopScript {
   }
 }
 
+/**
+ * The scripted capture stream (PR-012).
+ *
+ * Stands in for the ScreenCaptureKit engine in
+ * `native/Sources/PilotHelperCore/CaptureEngine.swift`. It reproduces the parts
+ * of that engine the host can actually observe — the bounded queue's `dropped`
+ * and `remaining` counters, the `notBefore` discard rule that makes a fresh
+ * capture fresh, the terminal states, and a binary body whose length matches
+ * the header — and nothing else. It knows nothing about `src/`.
+ */
+class StubCaptureStream {
+  private readonly config: StubConfig;
+  private readonly script: StubCapturePull[];
+  private index = 0;
+  private sequence = 0;
+  private delivered = 0;
+  private dropped = 0;
+
+  streamId: string | null = null;
+  windowNumber = 0;
+  width = 0;
+  height = 0;
+  scaleFactor = 1;
+  encoding: 'jpeg' | 'png' = 'jpeg';
+
+  constructor(config: StubConfig) {
+    this.config = config;
+    this.script = config.captureScript ?? [];
+  }
+
+  start(request: Record<string, unknown>): Record<string, unknown> {
+    this.streamId = `stream-${String(Date.now())}-${String(process.pid)}`;
+    this.windowNumber =
+      this.config.captureSessionWindowNumber ?? (request.windowNumber as number) ?? 0;
+    this.width = (request.width as number) ?? 1;
+    this.height = (request.height as number) ?? 1;
+    this.encoding = ((request.encoding as string) ?? 'jpeg') === 'png' ? 'png' : 'jpeg';
+    this.scaleFactor = this.config.captureScaleFactor ?? 1;
+    this.index = 0;
+    this.sequence = 0;
+    this.delivered = 0;
+    this.dropped = 0;
+    return {
+      streamId: this.streamId,
+      windowNumber: this.windowNumber,
+      width: this.width,
+      height: this.height,
+      scaleFactor: this.scaleFactor,
+      sampleFps: (request.sampleFps as number) ?? 3,
+      encoding: this.encoding,
+      startedAt: Date.now(),
+    };
+  }
+
+  stop(): Record<string, unknown> {
+    const wasRunning = this.streamId !== null;
+    this.streamId = null;
+    return {
+      stopped: wasRunning,
+      delivered: this.delivered,
+      dropped: this.dropped,
+      discarded: 0,
+    };
+  }
+
+  /** Advances the script, honouring `notBefore` the way the helper's queue does. */
+  pull(notBefore: number | undefined): { payload: Record<string, unknown>; binary: Buffer } {
+    if (this.streamId === null) {
+      return {
+        payload: {
+          state: 'stopped',
+          frame: null,
+          remaining: 0,
+          dropped: this.dropped,
+          delivered: this.delivered,
+          failure: null,
+        },
+        binary: Buffer.alloc(0),
+      };
+    }
+
+    let entry = this.next();
+    if (notBefore !== undefined) {
+      // Discard queued frames older than the moment the host asked, exactly as
+      // the helper does; the state of the last discarded entry is what remains.
+      let guard = 0;
+      while (entry.frame != null && this.capturedAt(entry.frame) < notBefore && guard < 64) {
+        this.dropped += 1;
+        guard += 1;
+        entry = this.next();
+      }
+      if (entry.frame != null && this.capturedAt(entry.frame) < notBefore) {
+        entry = { ...entry, frame: null };
+      }
+    }
+
+    const state = entry.state ?? 'streaming';
+    if (entry.dropped !== undefined) {
+      this.dropped = entry.dropped;
+    }
+    if (entry.frame == null) {
+      return {
+        payload: {
+          state,
+          frame: null,
+          remaining: entry.remaining ?? 0,
+          dropped: this.dropped,
+          delivered: this.delivered,
+          failure: entry.failure ?? null,
+        },
+        binary: Buffer.alloc(0),
+      };
+    }
+
+    const frame = entry.frame;
+    this.sequence = frame.sequence ?? this.sequence + 1;
+    const byteCount = frame.bytes ?? this.config.captureFrameBytes ?? 2048;
+    const binary = deterministicPixels(byteCount, this.sequence);
+    this.delivered += 1;
+    return {
+      payload: {
+        state,
+        frame: {
+          streamId: this.streamId,
+          sequence: this.sequence,
+          windowNumber: frame.windowNumber ?? this.windowNumber,
+          capturedAt: this.capturedAt(frame),
+          timestampFallback: frame.timestampFallback ?? false,
+          width: frame.width ?? this.width,
+          height: frame.height ?? this.height,
+          scaleFactor: frame.scaleFactor ?? this.scaleFactor,
+          encoding: frame.encoding ?? this.encoding,
+          byteLength: frame.declaredByteLength ?? binary.length,
+          contentChanged: frame.contentChanged ?? true,
+        },
+        remaining: entry.remaining ?? 0,
+        dropped: this.dropped,
+        delivered: this.delivered,
+        failure: entry.failure ?? null,
+      },
+      binary,
+    };
+  }
+
+  private capturedAt(frame: StubCaptureFrame): number {
+    return frame.capturedAt ?? Date.now() - (frame.ageMs ?? 0);
+  }
+
+  private next(): StubCapturePull {
+    if (this.script.length === 0) {
+      return { state: 'streaming', frame: {} };
+    }
+    const entry = this.script[Math.min(this.index, this.script.length - 1)] ?? {};
+    this.index += 1;
+    return entry;
+  }
+}
+
+/** Deterministic stand-in for encoded pixels; never zero-filled. */
+function deterministicPixels(length: number, seed: number): Buffer {
+  const bytes = Buffer.alloc(length);
+  for (let index = 0; index < length; index += 1) {
+    bytes[index] = (index * 31 + seed * 7 + 1) & 0xff;
+  }
+  return bytes;
+}
+
 function desktopPayload(desktop: StubDesktop, includeAllLayers: boolean): unknown {
   const all = desktop.windows ?? [];
   const windows = includeAllLayers ? all : all.filter((window) => window.layer === 0);
@@ -412,6 +641,7 @@ function main(): void {
   const desktops = new StubDesktopScript(
     config.desktopScript ?? (config.desktop === undefined ? [{}] : [config.desktop]),
   );
+  const capture = new StubCaptureStream(config);
   let answered = 0;
 
   if (config.stderrLine !== undefined) {
@@ -562,6 +792,21 @@ function main(): void {
               ) ?? null);
         body = ok({ window, display, screenLocked: desktop.screenLocked ?? false });
       }
+    } else if (request.op === 'capture.start') {
+      if (config.captureStartFails !== undefined) {
+        body = fail(config.captureStartFails);
+      } else if (typeof payloadOf?.windowNumber !== 'number') {
+        body = fail('capture.start requires a windowNumber');
+      } else {
+        body = ok({ session: capture.start(payloadOf) });
+      }
+    } else if (request.op === 'capture.stop') {
+      body = ok(capture.stop());
+    } else if (request.op === 'capture.pull') {
+      const notBefore = payloadOf?.notBefore;
+      const result = capture.pull(typeof notBefore === 'number' ? notBefore : undefined);
+      attachment = result.binary;
+      body = ok(result.payload);
     } else {
       body = fail(`unknown operation "${request.op}"`);
     }
@@ -600,10 +845,14 @@ function main(): void {
         if (config.dropRequests === true || (config.dropOps ?? []).includes(request.op)) {
           continue;
         }
-        if (config.responseDelayMs !== undefined && config.responseDelayMs > 0) {
+        const delayMs =
+          request.op === 'capture.pull' && config.capturePullDelayMs !== undefined
+            ? config.capturePullDelayMs
+            : (config.responseDelayMs ?? 0);
+        if (delayMs > 0) {
           setTimeout(() => {
             respond(request, frame.binary);
-          }, config.responseDelayMs);
+          }, delayMs);
         } else {
           respond(request, frame.binary);
         }

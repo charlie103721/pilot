@@ -7,9 +7,11 @@ macOS platform package.
 - **PR-011** adds the first two adapters on top of it: permissions — including
   parent-bundle attribution validation — and window enumeration with lifecycle
   events.
+- **PR-012** adds the third: selected-window capture over ScreenCaptureKit, and
+  with it the first real use of the frame format's binary body.
 
-Capture (PR-012), Accessibility grounding (PR-013), speech (PR-014) and
-push-to-talk (PR-015) come next.
+Accessibility grounding (PR-013), speech (PR-014) and push-to-talk (PR-015)
+come next.
 
 > **Nothing under `native/` has ever been compiled.** There is no Swift
 > toolchain and no Mac on the development machine (`docs/runbook.md` amendment
@@ -28,6 +30,9 @@ src/protocol/operation-kit.ts      the operation type and its constructor
 src/protocol/operations.ts         the closed operation set
 src/protocol/permission-ops.ts     permission operations and their schemas
 src/protocol/window-ops.ts         window operations and their schemas
+src/protocol/capture-ops.ts        capture operations and their schemas
+src/capture/capture-policy.ts      the screen policy applied to a window (pure)
+src/capture/mac-observation-adapter.ts
 src/transport/channel.ts           framing bound to a pair of streams
 src/transport/helper-transport.ts  spawn, restart, correlation, deadlines
 src/permissions/attribution.ts     the attribution verdict table
@@ -41,6 +46,7 @@ native/                            SwiftPM package producing `PilotHelper`
 test/support/helper-stub.ts        Node stand-in that speaks the same protocol
 test/demo.ts                       the PR-003 demo
 test/demo-permissions.ts           the PR-011 demo
+test/demo-capture.ts               the PR-012 demo
 ```
 
 ## Wire format
@@ -102,14 +108,17 @@ message metadata stays printable and log-safe.
 | `permissions.attribution` | `{ expected }` | `{ evidence }` | none | 011 |
 | `windows.list` | `{ includeAllLayers? }` | `{ windows, displays, screenLocked, titlesWithheld, capturedAt }` | none | 011 |
 | `windows.get` | `{ windowNumber }` | `{ window, display, screenLocked }` | none | 011 |
+| `capture.start` | `{ windowNumber, width, height, sampleFps, includeCursor, encoding, quality, … }` | `{ session }` | none | 012 |
+| `capture.stop` | `{ streamId }` | `{ stopped, delivered, dropped, discarded }` | none | 012 |
+| `capture.pull` | `{ streamId, notBefore? }` | `{ state, frame, remaining, dropped, delivered, failure }` | **response** | 012 |
 
 `health` doubles as the startup handshake: `start()` does not resolve until the
 helper answers it.
 
-PR-011 did **not** bump `HELPER_PROTOCOL_VERSION`. Appending operations is
-backwards compatible in both directions: an unknown operation is already a
-typed `invalid-request` on the helper, and an unregistered response is already
-a typed `invalid-request` on the host.
+Neither PR-011 nor PR-012 bumped `HELPER_PROTOCOL_VERSION`. Appending
+operations is backwards compatible in both directions: an unknown operation is
+already a typed `invalid-request` on the helper, and an unregistered response is
+already a typed `invalid-request` on the host.
 
 ## Permissions
 
@@ -259,13 +268,119 @@ is synchronous, needs no concurrency, and degrades observably — macOS withhold
 independent cross-check on the TCC probe. PR-012 needs `SCShareableContent` for
 capture filters regardless.
 
-### Extending it (PR-012 onward)
+### Extending it (PR-013 onward)
 
 Append to `HELPER_OPERATIONS` in `src/protocol/operations.ts` and to
 `HelperProtocol.Operation` in `native/Sources/PilotHelperCore/HelperProtocol.swift`.
 Bump `HELPER_PROTOCOL_VERSION` (and `FrameConstants.protocolVersion`) only for
 a change that is not backwards compatible; both sides reject a version they do
 not know with `protocol-version-mismatch`.
+
+## Capture
+
+### One window, never a display
+
+```swift
+let filter = SCContentFilter(desktopIndependentWindow: window)
+```
+
+That line, once, is the only `SCContentFilter` this package constructs. There
+is no display initialiser, no "capture the display and crop", and no fallback
+for a window the compositor no longer lists — a request for a missing window
+fails as `window-closed`. The window is found by exact `windowID` equality,
+never `content.windows.first`.
+
+system-design §14 requires selected-window filters and forbids silently
+widening; PR-021's tool description tells the model that "Pilot never captures
+the whole display as a substitute". A fallback would make that a lie, and it
+would be a privacy breach rather than a bug. Because the filter itself cannot
+run here, the guarantee is checked by reading the sources:
+`test/selected-window-only.test.ts` fails if a second filter appears, if a
+display- or application-scoped initialiser is used, if the exact-id lookup
+becomes a first-match, if a display ever enters the capture protocol, or if the
+host grows a second `capture.start` call site.
+
+Two further defences run on every frame: the frame header carries the
+`CGWindowID` it came from and a mismatch is dropped, and the delivered
+`windowId` is `macWindowId(windowNumber)` — the same pure function PR-011 uses.
+
+### The host pulls; the helper never pushes
+
+The helper's stdio loop is a single blocking read/answer cycle, and a
+ScreenCaptureKit stream delivers on its own dispatch queue. A helper that
+*pushed* frames would need a second writer racing the request loop for stdout —
+a write lock and an interleaving hazard on a binary body, in Swift that cannot
+be compiled here. PR-011 made the same call for window lifecycle events.
+
+So the stream callback only enqueues into a bounded in-helper queue, and
+`capture.pull` — an ordinary request answered by the same thread that answers
+`health` — drains it. One writer to stdout, explicit backpressure (the queue
+drops its oldest entry and reports `dropped`), and the host controls the
+cadence it ingests at.
+
+### Where the policy lives
+
+`capture.start` is told a `width` and `height` in pixels, not a policy to
+apply. The rule — longest edge capped at 1440 px, never upscaled
+(system-design §10) — is in `src/capture/capture-policy.ts`, in TypeScript,
+where tests execute it on this machine. Swift owns mechanism only.
+
+A 1200×800 pt window on a 2× display is 2400×1600 backing pixels, capped to
+1440×960, so the *effective* scale is 1.2 rather than 2.
+`WindowGeometry.captureSize` is overridden with the stream size
+(`withCaptureSize`), which is why it is carried separately from `scaleFactor` —
+every conversion touching captured pixels reads `captureSize`, so nothing in the
+geometry module changes.
+
+### A motionless window still fills the ring
+
+ScreenCaptureKit produces pixels only when something moves. Left alone, a user
+reading a static page would fill the ring once and let it age out, so a question
+asked thirty seconds later would find no frame at all. On an `idle` frame the
+helper re-sends its retained encoding with a new instant and a new sequence
+number (`contentChanged: false`). No new encoding, and the frame is honest —
+that really is what the window looked like at that moment.
+
+### Encoding
+
+JPEG at quality 0.9 by default. Raw BGRA is not offered: a 1440×900 frame is
+5.2 MB, so a three-second ring at 3 FPS would need ~47 MB and blow the 16 MiB
+bound before any policy ran. PR-018 re-encodes for the model, which is the
+double-encode recorded as a risk in `docs/handoff.md` §5 — `encoding: 'png'` is
+the one-line lever that removes the first lossy pass if PR-043 finds small text
+illegible.
+
+### What the ring requires of this package
+
+`packages/observation`'s `FrameRing` turns each of these mistakes into
+*silence*, not an error, so each is enforced at the boundary and counted:
+
+| Requirement | How it is met | Ring rejection if it were not |
+| --- | --- | --- |
+| `capturedAt` on the system clock base | The helper converts the sample buffer's mach-based presentation timestamp to epoch ms before queueing; the host re-checks it against its own clock and substitutes when the skew is implausible | `stale` |
+| `byteLength` is the real retained cost | Frame bytes are detached from the decoder's read buffer unless they already own their `ArrayBuffer` | byte bound becomes meaningless |
+| `frameId` unique per capture | `frame-mac-<streamId>-<sequence>`; the stream id is re-minted per `capture.start` and the sequence only increases within one | `duplicate` |
+| `windowId` matches the selection | `macWindowId(header.windowNumber)`, after a header-level equality check | `foreign-window` |
+| Never a zero-length frame | Refused by the helper's queue and again by the host | `empty-bytes` |
+| Frames retained by reference, never recycled | Encoding copies pixels out of the recycled `IOSurface`; each frame gets its own buffer and nothing mutates it afterwards | already-buffered frames corrupt |
+
+### Stopping
+
+Capture stops and buffers clear on window loss and screen lock (system-design
+§6, §16), from either direction: the `WindowAdapter`'s `window-closed` and
+`screen-locked` events, and the helper's own `window-lost` / `screen-locked`
+pull state. A lock sets capture to resume on `screen-unlocked`; a closed window
+does not resume. Every stop is announced through `subscribeEvents` with a
+reason and a typed error.
+
+### Fresh capture
+
+`captureFresh` stamps the instant it asked, tells the helper to discard queued
+frames older than that, and pulls until a frame at or after it arrives —
+bounded by a deadline and an abort signal, which is passed into the transport so
+an in-flight request is rejected immediately. It is not a blocking helper call:
+waiting inside the request loop would stall `health`, and the supervisor would
+eventually kill a helper that was working correctly.
 
 ## Failure modes
 
@@ -288,6 +403,12 @@ Nothing hangs and nothing is dropped silently. Every failure is a typed
 | macOS credits permissions to the helper or another bundle | `permission-attribution-mismatch` (PR-011) |
 | System Settings could not be opened | `platform-unavailable` (PR-011) |
 | helper omits a permission from its snapshot | `invalid-request` (PR-011) |
+| the window blocks capture (blank frames) | `protected-content` (PR-012) |
+| the selected window is gone | `window-closed` (PR-012) |
+| the session is locked | `screen-locked` (PR-012) |
+| the stream stopped with an error, or produced no frame in time | `capture-failed` (PR-012) |
+| `captureFresh` before `start`, or after a stop | `observation-disabled` (PR-012) |
+| the helper started a stream for the wrong window | `capture-failed`, not retryable (PR-012) |
 
 Restarts use exponential backoff (250 ms × 2ⁿ, capped at 5 s) with a budget of
 5 restarts per 60 s window; exceeding it puts the transport in `failed` and
@@ -320,13 +441,17 @@ only agrees with itself cannot pass. It covers framing, oversized input,
 malformed headers, request correlation, timeouts, aborts, crash reporting,
 restart with backoff, restart-budget exhaustion and shutdown escalation, plus
 (PR-011) all four permissions in all four states, every attribution verdict,
-window enumeration, the lifecycle diff and the failure paths of both adapters.
+window enumeration, the lifecycle diff and the failure paths of both adapters,
+plus (PR-012) the capture policy, every frame-admission rule against the real
+`FrameRing`, protected content, window loss and screen lock mid-stream, an
+aborted fresh capture and backpressure.
 
 Demos (require `pnpm build` first, because they run against `dist/`):
 
 ```sh
 pnpm --filter @pilot/platform-mac demo               # PR-003 transport
 pnpm --filter @pilot/platform-mac demo:permissions   # PR-011 permissions and windows
+pnpm --filter @pilot/platform-mac demo:capture       # PR-012 selected-window capture
 ```
 
 The first prints the health handshake, a typed echo, a 256 KiB binary fixture
@@ -336,9 +461,14 @@ crash report → restart cycle.
 The second prints the four permissions in each of the four states, the
 attribution verdict, the whole verdict table evaluated on synthetic evidence,
 the enumerated windows with geometry, and a scripted lifecycle sequence
-(retitle → move+resize → close → screen lock). Both print which target they
-selected on their first line; if it says "Node stub", the Swift build did not
-land where it was expected.
+(retitle → move+resize → close → screen lock).
+
+The third prints the screen policy applied to one window, the frames it
+streamed with their ids and byte counts, each of the six ring guarantees, what
+was refused and why, a fresh capture and an aborted one, protected content,
+and window loss and screen lock stopping capture. All three print which target
+they selected on their first line; if it says "Node stub", the Swift build did
+not land where it was expected.
 
 ### What is *not* verified anywhere
 
@@ -360,12 +490,26 @@ Stated plainly, because none of it has run:
   tested; which branch a real Mac takes is exactly the open question.
 - Whether macOS withholds window titles the way `titlesWithheld` assumes.
 - Whether the `/usr/bin/open` settings URLs land on the right panes.
+- **No pixel has been captured** (PR-012). `SCShareableContent`, `SCContentFilter`,
+  `SCStream`, `SCStreamConfiguration`, the `SCStreamOutput` callback,
+  `SCFrameStatus` and `CIContext.jpegRepresentation` are all unexercised.
+- Whether an `idle` frame really arrives at the configured interval for a
+  motionless window — the re-send that keeps the ring populated assumes it does.
+- Whether a protected window reports `SCFrameStatus.blank` rather than handing
+  over black pixels. If it hands over black pixels, they are delivered as a
+  frame and `protected-content` never fires.
+- Whether the mach → epoch timestamp conversion produces sane values against a
+  real sample buffer. The arithmetic is unit-tested; the inputs are not.
+- Whether ScreenCaptureKit's completion handlers arrive off the calling thread.
+  The semaphore bridges assume so; every wait is bounded at 5 s so the failure
+  would be a typed capture error rather than a hung helper.
 
 The Swift that *is* covered by `swift test` is the pure logic: the permission
 state mappers, the settings-URL table, the bundle-path walk, the
 `CGWindowListCopyWindowInfo` dictionary parser, display assignment, JSON
-serialisation, and every PR-011 operation dispatched through `HelperServer`
-with stub services.
+serialisation, the capture request parser and its clamps, the bounded capture
+queue and its drop accounting, the timestamp conversion, and every PR-011 and
+PR-012 operation dispatched through `HelperServer` with stub services.
 
 ### On the Mac (Swift, batched per runbook §2)
 
@@ -382,11 +526,12 @@ swift build --package-path native -c release # release
 # 2. Run the Swift unit tests (frame codec, server behaviour, PR-011 pure logic).
 swift test --package-path native
 
-# 3. Run both demos against the real helper instead of the Node stub.
+# 3. Run all three demos against the real helper instead of the Node stub.
 cd ../..
 pnpm build
 pnpm --filter @pilot/platform-mac demo
 pnpm --filter @pilot/platform-mac demo:permissions
+pnpm --filter @pilot/platform-mac demo:capture
 ```
 
 Step 3 needs no configuration: `resolveHelperBinary()` finds
@@ -400,22 +545,31 @@ Expected results: `swift build` produces `native/.build/debug/PilotHelper`;
 against the stub (section 5 is skipped — the Swift helper has no crash-on-demand
 operation).
 
-A `swift build` failure in PR-003 code is a PR-003 defect; in the files below
-it is a PR-011 defect. Either way, report the compiler output rather than
-working around it. New in PR-011, and therefore new compile risk:
+A `swift build` failure in PR-003 code is a PR-003 defect; in the PR-011 files
+below it is a PR-011 defect, and in the PR-012 files a PR-012 defect. Either
+way, report the compiler output rather than working around it.
 
 ```text
+PR-011
 Sources/PilotHelperCore/PermissionModel.swift    pure — Foundation only
 Sources/PilotHelperCore/Attribution.swift        pure — Foundation only
 Sources/PilotHelperCore/WindowModel.swift        pure — Foundation only
 Sources/PilotHelperCore/PermissionProbes.swift   AVFoundation, Speech, ApplicationServices, CoreGraphics, Darwin
 Sources/PilotHelperCore/WindowEnumerator.swift   CoreGraphics, AppKit
+
+PR-012
+Sources/PilotHelperCore/CaptureModel.swift       pure — Foundation only
+Sources/PilotHelperCore/CaptureEngine.swift      ScreenCaptureKit, CoreMedia, CoreImage, CoreVideo, ImageIO
 ```
 
-The three pure files are the ones the tests cover; the two framework files are
-the risk. `PermissionProbes.swift` uses `dlsym` for
+The pure files are the ones the tests cover; the framework files are the risk.
+`PermissionProbes.swift` uses `dlsym` for
 `responsibility_get_pid_responsible_for_pid`, which is SPI — if it does not
 resolve, attribution reports `inferred` rather than failing.
+`CaptureEngine.swift` is the largest new compile risk in the package: the
+`SCStreamFrameInfo` attachment cast, the `CIImageRepresentationOption` spelling
+for JPEG quality, and the `SCStreamOutput`/`SCStreamDelegate` conformances are
+the three places to expect a first-compile error.
 
 ### What `demo:permissions` will now raise on a Mac
 

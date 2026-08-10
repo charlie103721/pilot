@@ -5,15 +5,19 @@
  * embedded Swift helper, and the supervision that keeps that helper alive.
  * PR-011 adds the first two adapters built on it — permissions (with parent
  * bundle attribution validation) and window enumeration with lifecycle events.
- * Capture, Accessibility grounding, speech and push-to-talk arrive in
- * PR-012…PR-015.
+ * PR-012 adds the third: selected-window capture over ScreenCaptureKit, and
+ * with it the first use of the frame format's binary body. Accessibility
+ * grounding, speech and push-to-talk arrive in PR-013…PR-015.
  *
  * **Nothing under `native/` has ever been compiled** (runbook amendment 8).
  * The TypeScript here is exercised end to end against `test/support/
  * helper-stub.ts`; the Swift is not.
  */
+export * from './capture/capture-policy.js';
+export * from './capture/mac-observation-adapter.js';
 export * from './helper-binary.js';
 export * from './polling.js';
+export * from './protocol/capture-ops.js';
 export * from './protocol/frame.js';
 export * from './protocol/messages.js';
 export * from './protocol/operation-kit.js';
