@@ -10,3 +10,4 @@ export * from './observation.js';
 export * from './permissions.js';
 export * from './policy.js';
 export * from './scene.js';
+export * from './speech.js';

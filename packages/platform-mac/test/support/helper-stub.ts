@@ -212,6 +212,100 @@ export interface StubConfig {
   axElements?: StubAxElement[];
   /** Make every hit test report `query-failed`, as a broken AX tree would. */
   axQueryFails?: boolean;
+  // PR-014
+  // -------------------------------------------------------------------------
+
+  /** Recogniser facts and the scripted behaviour of `speech.input.*`. */
+  speechInput?: StubSpeechInputConfig;
+  /** Voices and the scripted behaviour of `speech.output.*`. */
+  speechOutput?: StubSpeechOutputConfig;
+}
+
+// ---------------------------------------------------------------------------
+// PR-014 shapes
+//
+// The stub is a **driver, not a model**: it emits exactly what a script says,
+// including things a well-behaved recogniser would never do. That is the
+// point. Apple Speech finalises before the key is released, finalises twice,
+// and calls back after `cancel()`; a stub that quietly refused to reproduce
+// those would make the host's defences untestable, and the host would look
+// correct right up until it met a real recogniser.
+//
+// The equivalent guarantees on the *helper* side (one ending per utterance,
+// microphone released on an early final) live in `SpeechTerminalLedger` and
+// are covered by `SpeechModelTests.swift`.
+// ---------------------------------------------------------------------------
+
+export interface StubSpeechEvent {
+  type: 'partial' | 'final' | 'error';
+  transcript?: string;
+  code?: string;
+  message?: string;
+  /** Attribute the event to another utterance. Drives the stale-result paths. */
+  utteranceId?: string;
+}
+
+/** Events emitted when the host makes a particular call. */
+export interface StubSpeechStep {
+  on: 'start' | 'stop' | 'cancel';
+  emit: StubSpeechEvent[];
+}
+
+/** One utterance's worth of scripted recogniser behaviour. */
+export interface StubSpeechScript {
+  steps: StubSpeechStep[];
+}
+
+export interface StubSpeechFailure {
+  /** `PilotError` code carried in the failure envelope. */
+  code: string;
+  /**
+   * Failure code prefixed onto the message, the way the Swift helper writes it
+   * (`"<failure-code>: <message>"`). Present so the host's remapping of a
+   * helper failure into Pilot's own wording is exercised against the stub too.
+   */
+  failureCode?: string;
+  message?: string;
+}
+
+export interface StubSpeechInputConfig {
+  recognizerAvailable?: boolean;
+  supportsOnDevice?: boolean;
+  locale?: string | null;
+  supportedLocales?: string[];
+  recognizerOffline?: boolean;
+  /** Make `speech.input.start` answer with a typed failure. */
+  startFailsWith?: StubSpeechFailure;
+  /** One script per `start`; the last entry repeats. */
+  scripts?: StubSpeechScript[];
+  /** Ring capacity, so the overflow/`dropped` path can be exercised. */
+  queueCapacity?: number;
+}
+
+export interface StubSpeechVoice {
+  identifier: string;
+  name: string;
+  language: string;
+  quality: string;
+}
+
+export interface StubSpeechOutputEvent {
+  type: 'started' | 'finished' | 'stopped' | 'error';
+  code?: string;
+  message?: string;
+}
+
+export interface StubSpeechOutputConfig {
+  available?: boolean;
+  voices?: StubSpeechVoice[];
+  startFailsWith?: StubSpeechFailure;
+  /**
+   * Events enqueued by each `speak` call; the last entry repeats. Defaults to
+   * `started` alone, which leaves the utterance playing until something stops
+   * it — the state an interruption test needs.
+   */
+  scripts?: StubSpeechOutputEvent[][];
+  queueCapacity?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -439,6 +533,238 @@ class StubDesktopScript {
   }
 }
 
+// ---------------------------------------------------------------------------
+// PR-014 speech
+// ---------------------------------------------------------------------------
+
+interface StubQueuedEvent {
+  sequence: number;
+  body: Record<string, unknown>;
+}
+
+/**
+ * Sequence-numbered, bounded event ring.
+ *
+ * Mirrors `SpeechEventQueue` in `native/Sources/PilotHelperCore/SpeechModel.swift`
+ * — reimplemented rather than shared, for the same reason the wire format is:
+ * a queue that only agrees with itself proves nothing about the two sides
+ * agreeing with each other.
+ */
+class StubSpeechQueue {
+  private readonly capacity: number;
+  private events: StubQueuedEvent[] = [];
+  private lastSequence = 0;
+  private droppedCount = 0;
+
+  constructor(capacity: number) {
+    this.capacity = Math.max(1, capacity);
+  }
+
+  append(body: Record<string, unknown>): number {
+    this.lastSequence += 1;
+    this.events.push({ sequence: this.lastSequence, body });
+    while (this.events.length > this.capacity) {
+      this.events.shift();
+      this.droppedCount += 1;
+    }
+    return this.lastSequence;
+  }
+
+  drain(since: number): {
+    events: Record<string, unknown>[];
+    sequence: number;
+    dropped: number;
+  } {
+    this.events = this.events.filter((entry) => entry.sequence > since);
+    return {
+      events: this.events.map((entry) => ({ ...entry.body, sequence: entry.sequence })),
+      sequence: this.lastSequence,
+      dropped: this.droppedCount,
+    };
+  }
+}
+
+/** Scripted `speech.input.*`. */
+class StubSpeechInput {
+  private readonly config: StubSpeechInputConfig;
+  private readonly queue: StubSpeechQueue;
+  private cursor = 0;
+  private script: StubSpeechScript | null = null;
+  private active: string | null = null;
+  private recording = false;
+
+  constructor(config: StubSpeechInputConfig) {
+    this.config = config;
+    this.queue = new StubSpeechQueue(config.queueCapacity ?? 256);
+  }
+
+  facts(): Record<string, unknown> {
+    return {
+      recognizerAvailable: this.config.recognizerAvailable ?? true,
+      supportsOnDevice: this.config.supportsOnDevice ?? true,
+      locale: this.config.locale === undefined ? 'en-US' : this.config.locale,
+      supportedLocales: this.config.supportedLocales ?? ['en-US', 'en-GB'],
+      recognizerOffline: this.config.recognizerOffline ?? false,
+    };
+  }
+
+  get startFailure(): StubSpeechFailure | undefined {
+    return this.config.startFailsWith;
+  }
+
+  start(utteranceId: string): void {
+    const scripts = this.config.scripts ?? [];
+    this.script =
+      scripts.length === 0 ? null : (scripts[Math.min(this.cursor, scripts.length - 1)] ?? null);
+    this.cursor += 1;
+    this.active = utteranceId;
+    this.recording = true;
+    this.run('start', utteranceId);
+  }
+
+  stop(utteranceId: string): boolean {
+    if (this.active !== utteranceId || !this.recording) {
+      return false;
+    }
+    this.recording = false;
+    this.run('stop', utteranceId);
+    return true;
+  }
+
+  cancel(utteranceId: string): boolean {
+    if (this.active !== utteranceId) {
+      return false;
+    }
+    this.recording = false;
+    this.run('cancel', utteranceId);
+    this.active = null;
+    return true;
+  }
+
+  poll(since: number): Record<string, unknown> {
+    const drained = this.queue.drain(since);
+    return {
+      events: drained.events,
+      sequence: drained.sequence,
+      dropped: drained.dropped,
+      recording: this.recording,
+      activeUtteranceId: this.active,
+    };
+  }
+
+  private run(trigger: StubSpeechStep['on'], utteranceId: string): void {
+    for (const step of this.script?.steps ?? []) {
+      if (step.on !== trigger) {
+        continue;
+      }
+      for (const event of step.emit) {
+        const target = event.utteranceId ?? utteranceId;
+        if (event.type === 'error') {
+          this.queue.append({
+            type: 'error',
+            utteranceId: target,
+            code: event.code ?? 'recognizer-failed',
+            message: event.message ?? 'scripted failure',
+          });
+        } else {
+          this.queue.append({
+            type: event.type,
+            utteranceId: target,
+            transcript: event.transcript ?? '',
+          });
+        }
+        // A real recogniser that has produced a terminal result has let go of
+        // the microphone, whether or not the key is still held.
+        if (event.type !== 'partial' && target === this.active) {
+          this.recording = false;
+        }
+      }
+    }
+  }
+}
+
+/** Scripted `speech.output.*`. */
+class StubSpeechOutput {
+  private readonly config: StubSpeechOutputConfig;
+  private readonly queue: StubSpeechQueue;
+  private cursor = 0;
+  private pending: string[] = [];
+
+  constructor(config: StubSpeechOutputConfig) {
+    this.config = config;
+    this.queue = new StubSpeechQueue(config.queueCapacity ?? 256);
+  }
+
+  availability(): Record<string, unknown> {
+    const voices = this.config.voices ?? [
+      {
+        identifier: 'com.apple.voice.compact.en-US.Samantha',
+        name: 'Samantha',
+        language: 'en-US',
+        quality: 'default',
+      },
+    ];
+    return {
+      available: this.config.available ?? voices.length > 0,
+      voices: this.config.available === false ? [] : voices,
+    };
+  }
+
+  get speakFailure(): StubSpeechFailure | undefined {
+    return this.config.startFailsWith;
+  }
+
+  speak(speechId: string): boolean {
+    const queued = this.pending.length > 0;
+    this.pending.push(speechId);
+    const scripts = this.config.scripts ?? [[{ type: 'started' }]];
+    const script = scripts[Math.min(this.cursor, scripts.length - 1)] ?? [{ type: 'started' }];
+    this.cursor += 1;
+    for (const event of script) {
+      if (event.type === 'error') {
+        this.queue.append({
+          type: 'error',
+          speechId,
+          code: event.code ?? 'synthesis-failed',
+          message: event.message ?? 'scripted failure',
+        });
+      } else {
+        this.queue.append({ type: event.type, speechId });
+      }
+      if (event.type !== 'started') {
+        this.pending = this.pending.filter((entry) => entry !== speechId);
+      }
+    }
+    return queued;
+  }
+
+  stop(speechId: string | null): string[] {
+    if (speechId !== null && !this.pending.includes(speechId)) {
+      return [];
+    }
+    const stopped = [...this.pending];
+    this.pending = [];
+    return stopped;
+  }
+
+  poll(since: number): Record<string, unknown> {
+    const drained = this.queue.drain(since);
+    return {
+      events: drained.events,
+      sequence: drained.sequence,
+      dropped: drained.dropped,
+      speaking: this.pending.length > 0,
+      activeSpeechId: this.pending[0] ?? null,
+    };
+  }
+}
+
+/** `"<failure-code>: <message>"`, exactly as `HelperServer.speechFailure` writes it. */
+function speechFailureMessage(failure: StubSpeechFailure, fallback: string): string {
+  const message = failure.message ?? fallback;
+  return failure.failureCode === undefined ? message : `${failure.failureCode}: ${message}`;
+}
+
 function desktopPayload(desktop: StubDesktop, includeAllLayers: boolean): unknown {
   const all = desktop.windows ?? [];
   const windows = includeAllLayers ? all : all.filter((window) => window.layer === 0);
@@ -555,6 +881,8 @@ function main(): void {
   const pointers = new StubPointerScript(
     config.pointerScript ?? [config.pointer ?? { x: 0, y: 0 }],
   );
+  const speechInput = new StubSpeechInput(config.speechInput ?? {});
+  const speechOutput = new StubSpeechOutput(config.speechOutput ?? {});
   let answered = 0;
 
   if (config.stderrLine !== undefined) {
@@ -733,6 +1061,85 @@ function main(): void {
           outcome: hit.outcome,
         });
       }
+    } else if (request.op === 'speech.input.availability') {
+      body = ok({
+        facts: speechInput.facts(),
+        microphone: permissions.probe('microphone').state,
+        speechRecognition: permissions.probe('speech-recognition').state,
+      });
+    } else if (request.op === 'speech.input.start') {
+      const utteranceId = payloadOf?.utteranceId;
+      const onDevice = payloadOf?.onDevice;
+      if (typeof utteranceId !== 'string' || typeof onDevice !== 'boolean') {
+        body = fail('speech.input.start requires utteranceId and onDevice');
+      } else if (speechInput.startFailure !== undefined) {
+        const failure = speechInput.startFailure;
+        body = envelope({
+          ok: false,
+          error: serializedError(
+            failure.code,
+            failure.code === 'permission-denied' ? 'permission' : 'speech',
+            speechFailureMessage(failure, 'scripted start failure'),
+          ),
+        });
+      } else {
+        speechInput.start(utteranceId);
+        const locale = payloadOf?.locale;
+        body = ok({
+          started: true,
+          onDevice,
+          locale: typeof locale === 'string' ? locale : (speechInput.facts().locale ?? null),
+        });
+      }
+    } else if (request.op === 'speech.input.stop') {
+      const utteranceId = payloadOf?.utteranceId;
+      body =
+        typeof utteranceId === 'string'
+          ? ok({ accepted: speechInput.stop(utteranceId) })
+          : fail('speech.input.stop requires an utteranceId');
+    } else if (request.op === 'speech.input.cancel') {
+      const utteranceId = payloadOf?.utteranceId;
+      body =
+        typeof utteranceId === 'string'
+          ? ok({ accepted: speechInput.cancel(utteranceId) })
+          : fail('speech.input.cancel requires an utteranceId');
+    } else if (request.op === 'speech.input.poll') {
+      const since = payloadOf?.sinceSequence;
+      body =
+        typeof since === 'number'
+          ? ok(speechInput.poll(since))
+          : fail('speech.input.poll requires a sinceSequence');
+    } else if (request.op === 'speech.output.availability') {
+      body = ok(speechOutput.availability());
+    } else if (request.op === 'speech.output.speak') {
+      const speechId = payloadOf?.speechId;
+      const text = payloadOf?.text;
+      if (typeof speechId !== 'string' || typeof text !== 'string' || text.length === 0) {
+        body = fail('speech.output.speak requires speechId and text');
+      } else if (speechOutput.speakFailure !== undefined) {
+        const failure = speechOutput.speakFailure;
+        body = envelope({
+          ok: false,
+          error: serializedError(
+            failure.code,
+            'speech',
+            speechFailureMessage(failure, 'scripted speak failure'),
+          ),
+        });
+      } else {
+        body = ok({ accepted: true, queued: speechOutput.speak(speechId) });
+      }
+    } else if (request.op === 'speech.output.stop') {
+      const speechId = payloadOf?.speechId;
+      body = ok({
+        stopped: speechOutput.stop(typeof speechId === 'string' ? speechId : null),
+      });
+    } else if (request.op === 'speech.output.poll') {
+      const since = payloadOf?.sinceSequence;
+      body =
+        typeof since === 'number'
+          ? ok(speechOutput.poll(since))
+          : fail('speech.output.poll requires a sinceSequence');
     } else {
       body = fail(`unknown operation "${request.op}"`);
     }

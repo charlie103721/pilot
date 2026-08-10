@@ -5,8 +5,10 @@
  * embedded Swift helper, and the supervision that keeps that helper alive.
  * PR-011 adds the first two adapters built on it — permissions (with parent
  * bundle attribution validation) and window enumeration with lifecycle events.
- * PR-013 adds the third: pointer sampling and Accessibility grounding. Capture,
- * speech and push-to-talk arrive in PR-012, PR-014 and PR-015.
+ * PR-013 adds pointer sampling and Accessibility grounding. PR-014 adds
+ * speech: Apple Speech transcription with an on-device preference and a
+ * renderable privacy disclosure, plus `AVSpeechSynthesizer` playback with
+ * prompt interruption. Capture arrives in PR-012 and push-to-talk in PR-015.
  *
  * **Nothing under `native/` has ever been compiled** (runbook amendment 8).
  * The TypeScript here is exercised end to end against `test/support/
@@ -20,12 +22,17 @@ export * from './protocol/messages.js';
 export * from './protocol/operation-kit.js';
 export * from './protocol/operations.js';
 export * from './protocol/permission-ops.js';
+export * from './protocol/speech-ops.js';
 export * from './protocol/window-ops.js';
 export * from './accessibility/mac-accessibility-adapter.js';
 export * from './accessibility/pointer-grounding.js';
 export * from './accessibility/pointer-sampler.js';
 export * from './permissions/attribution.js';
 export * from './permissions/mac-permission-adapter.js';
+export * from './speech/disclosure.js';
+export * from './speech/errors.js';
+export * from './speech/mac-speech-input-adapter.js';
+export * from './speech/mac-speech-output-adapter.js';
 export * from './transport/channel.js';
 export * from './transport/emitter.js';
 export * from './transport/helper-transport.js';

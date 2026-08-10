@@ -29,6 +29,16 @@ public enum HelperProtocol {
         // PR-013
         case accessibilitySample = "accessibility.sample"
         case accessibilityElementAt = "accessibility.element-at"
+        // PR-014
+        case speechInputAvailability = "speech.input.availability"
+        case speechInputStart = "speech.input.start"
+        case speechInputStop = "speech.input.stop"
+        case speechInputCancel = "speech.input.cancel"
+        case speechInputPoll = "speech.input.poll"
+        case speechOutputAvailability = "speech.output.availability"
+        case speechOutputSpeak = "speech.output.speak"
+        case speechOutputStop = "speech.output.stop"
+        case speechOutputPoll = "speech.output.poll"
     }
 
     public static let readyEventName = "helper.ready"

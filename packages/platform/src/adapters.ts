@@ -12,6 +12,8 @@ import type {
   QuestionGrounding,
   ScreenPoint,
   SpeechId,
+  SpeechRecognitionDestination,
+  SpeechRecognitionDisclosure,
   UtteranceId,
   WindowGeometry,
   WindowId,
@@ -259,6 +261,15 @@ export interface SpeechInputAvailability {
   readonly onDevice: boolean;
   /** Locale identifier the recogniser will use, when known. */
   readonly locale?: string;
+  /**
+   * Where the audio would be turned into text (PR-014). Optional and additive:
+   * an adapter written before this field existed still satisfies the
+   * interface, and a caller that needs the answer must treat `undefined` as
+   * "this platform does not report it" — which is not the same as `on-device`.
+   */
+  readonly destination?: SpeechRecognitionDestination;
+  /** The renderable form of the same answer. See `@pilot/shared`'s `speech.ts`. */
+  readonly disclosure?: SpeechRecognitionDisclosure;
 }
 
 export type SpeechInputEvent =
@@ -277,11 +288,29 @@ export interface SpeechInputAdapter {
   availability(): Promise<SpeechInputAvailability>;
   /** Begins capture and recognition for one utterance. */
   start(request: SpeechInputRequest): Promise<void>;
-  /** Ends capture; a `final` event follows unless recognition failed. */
+  /**
+   * Ends capture; a `final` event follows unless recognition failed.
+   *
+   * Must be a no-op for an utterance that is not recording. A recogniser is
+   * allowed to finalise on its own before push-to-talk is released, so this
+   * call routinely arrives for an utterance the adapter has already closed —
+   * throwing then would turn a successfully submitted question into a failure
+   * (PR-025 found exactly that defect one layer up).
+   */
   stop(utteranceId: UtteranceId): Promise<void>;
-  /** Ends capture and discards the utterance; no `final` event follows. */
+  /** Ends capture and discards the utterance; no `final` event follows. Also idempotent. */
   cancel(utteranceId: UtteranceId): Promise<void>;
   subscribe: Subscribe<SpeechInputEvent>;
+  /**
+   * Where recognition would send the audio if it started now, in a form the
+   * UI can render (PR-014, system-design §14).
+   *
+   * Optional so adapters written before this method existed still satisfy the
+   * interface — the same shape as `PermissionAdapter.attribution?()`. A caller
+   * that needs the answer must handle `undefined` as "this platform does not
+   * disclose it", and must not read that as "recognition is local".
+   */
+  disclosure?(): Promise<SpeechRecognitionDisclosure>;
 }
 
 // ---------------------------------------------------------------------------
@@ -304,7 +333,17 @@ export interface SpeechOutputRequest {
 export interface SpeechOutputAdapter {
   availability(): Promise<{ readonly available: boolean; readonly voices: readonly string[] }>;
   speak(request: SpeechOutputRequest): Promise<void>;
-  /** Stops one utterance, or everything when no id is given. Must be immediate. */
+  /**
+   * Stops one utterance, or everything when no id is given. Must be immediate
+   * (system-design §17 targets interruption below 300 ms).
+   *
+   * Platform note, documented rather than contracted (PR-014): a platform with
+   * a single synthesis queue — macOS `AVSpeechSynthesizer` is one — cannot
+   * remove a middle utterance without flushing the queue, so stopping any
+   * utterance stops all of them. Such an adapter must emit a `stopped` event
+   * for **every** utterance it discarded, so a caller tracking several ids
+   * never waits on one that will now never speak.
+   */
   stop(speechId?: SpeechId): Promise<void>;
   subscribe: Subscribe<SpeechOutputEvent>;
 }
