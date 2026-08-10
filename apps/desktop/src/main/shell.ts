@@ -9,9 +9,13 @@ import {
 import type { InteractionController, PilotViewState } from '@pilot/platform';
 import {
   appInfoChannel,
+  demoPermissionFixtureChannel,
   demoScenarioChannel,
   interactionDispatchChannel,
   panelSetVisibleChannel,
+  permissionsActChannel,
+  permissionsChangedEvent,
+  permissionsGetChannel,
   quitChannel,
   viewStateChangedEvent,
   viewStateGetChannel,
@@ -20,6 +24,7 @@ import { IpcRouter } from './ipc-router.js';
 import { PanelController, type PanelWindowHost } from './panel-window.js';
 import { TrayController, type TrayAvailability, type TrayHost } from './tray.js';
 import type { ScenarioDriver } from './scenarios.js';
+import type { PermissionGate } from './permission-gate.js';
 
 /**
  * Composition root for the desktop shell.
@@ -40,6 +45,8 @@ export interface DesktopShellOptions {
   readonly panelHost: PanelWindowHost;
   readonly trayHost: TrayHost;
   readonly controller: InteractionController;
+  /** Owns permission state and the System Settings shortcut (PR-008). */
+  readonly permissions: PermissionGate;
   readonly appInfo: DesktopShellAppInfo;
   readonly quit: () => void;
   /** Present only while the shell runs on fakes. Omit once PR-010 lands. */
@@ -58,14 +65,18 @@ export class DesktopShell {
   readonly panel: PanelController;
   readonly tray: TrayController;
 
+  readonly permissions: PermissionGate;
+
   readonly #controller: InteractionController;
   readonly #options: DesktopShellOptions;
   readonly #logger: Logger;
   #unsubscribe: (() => void) | null = null;
+  #unsubscribePermissions: (() => void) | null = null;
 
   constructor(options: DesktopShellOptions) {
     this.#options = options;
     this.#controller = options.controller;
+    this.permissions = options.permissions;
     this.#logger = options.logger ?? nullLogger;
     const ids = options.ids ?? createIdFactory();
 
@@ -111,20 +122,40 @@ export class DesktopShell {
     }
 
     this.#unsubscribe = this.#controller.subscribe((view) => this.#publish(view));
+    this.#unsubscribePermissions = this.permissions.subscribe((state) => {
+      this.panel.broadcast(permissionsChangedEvent, state);
+    });
     this.#publish(this.#controller.snapshot());
+
+    // The first permission read starts immediately, so the panel has something
+    // real to show as soon as it opens instead of an empty onboarding list.
+    void this.permissions.refresh();
     return { trayAvailability };
   }
 
-  /** Reveals the panel. Used on activate and on a second launch attempt. */
+  /**
+   * Reveals the panel. Used on activate and on a second launch attempt.
+   *
+   * Also re-reads permissions: macOS does not notify an app when the user
+   * changes a TCC setting, and returning to Pilot after visiting System
+   * Settings is exactly when a previously refused permission has become
+   * available. Without this the user would have to restart Pilot to be
+   * believed, which system-design §16 does not permit.
+   */
   reveal(): void {
     this.panel.show();
     this.tray.setPanelVisible(true);
     this.panel.broadcast(viewStateChangedEvent, this.#controller.snapshot());
+    this.panel.broadcast(permissionsChangedEvent, this.permissions.snapshot());
+    void this.permissions.refresh();
   }
 
   async dispose(): Promise<void> {
     this.#unsubscribe?.();
     this.#unsubscribe = null;
+    this.#unsubscribePermissions?.();
+    this.#unsubscribePermissions = null;
+    this.permissions.dispose();
     this.tray.dispose();
     this.panel.dispose();
     await this.#controller.dispose();
@@ -158,6 +189,14 @@ export class DesktopShell {
       this.tray.setPanelVisible(visible);
       return { visible };
     });
+
+    this.router.register(permissionsGetChannel, () => this.permissions.snapshot());
+
+    this.router.register(permissionsActChannel, (action) => this.permissions.act(action));
+
+    this.router.register(demoPermissionFixtureChannel, (fixture) =>
+      this.permissions.applyFixture(fixture),
+    );
 
     this.router.register(demoScenarioChannel, (scenario) => {
       const driver = this.#options.scenarioDriver;

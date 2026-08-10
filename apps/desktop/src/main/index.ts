@@ -1,6 +1,6 @@
 import { app, ipcMain, type IpcMainInvokeEvent } from 'electron';
 import { createIdFactory, createJsonSink, createLogger } from '@pilot/shared';
-import { FakeInteractionController } from '@pilot/platform/fakes';
+import { FakeInteractionController, FakePermissionAdapter } from '@pilot/platform/fakes';
 import { IPC_TRANSPORT } from '../ipc/channels.js';
 import {
   createElectronPanelHost,
@@ -8,7 +8,10 @@ import {
   createElectronTrayHost,
   resolveFromMain,
 } from './electron-hosts.js';
+import { PermissionGate } from './permission-gate.js';
+import { createPermissionFixtureSource, resolvePermissionFixture } from './permission-fixtures.js';
 import { createFakeScenarioDriver } from './scenarios.js';
+import { createSettingsShortcut } from './settings-shortcut.js';
 import { DesktopShell } from './shell.js';
 import { enforceSingleInstance } from './single-instance.js';
 import type { TrayMenuItem } from './tray.js';
@@ -41,9 +44,30 @@ if (!singleInstance.isPrimary) {
   // in flight and continuing would briefly create a second tray icon.
   logger.info('exiting as secondary instance');
 } else {
-  // PR-002 runs entirely on the PR-001 fakes: no platform, agent or voice code
-  // is wired up yet. PR-008…PR-010 replace this controller.
+  // Still entirely on the PR-001 fakes: no platform, agent or voice code is
+  // wired up yet. PR-009 and PR-010 replace this controller; PR-011 replaces
+  // the permission adapter below with the real TCC-backed one.
   const controller = new FakeInteractionController();
+
+  // Permission onboarding (PR-008). The fixture the app boots into is chosen by
+  // the environment so every state is reachable without editing source:
+  //   PILOT_PERMISSION_FIXTURE=denied pnpm dev
+  const permissionAdapter = new FakePermissionAdapter();
+  const fixtures = createPermissionFixtureSource(
+    permissionAdapter,
+    resolvePermissionFixture(process.env['PILOT_PERMISSION_FIXTURE']),
+  );
+  const permissions = new PermissionGate({
+    adapter: permissionAdapter,
+    // On anything but macOS this seam reports itself unavailable, and the panel
+    // renders an explained, disabled control rather than a dead button.
+    settings: createSettingsShortcut({
+      platform: process.platform,
+      adapter: permissionAdapter,
+    }),
+    fixtures,
+    logger,
+  });
 
   // Set by `electron-vite dev`, absent in every built app. When it is present
   // the panel loads from the dev server so edits hot-reload; otherwise it loads
@@ -66,6 +90,7 @@ if (!singleInstance.isPrimary) {
       }),
       trayHost,
       controller,
+      permissions,
       scenarioDriver: createFakeScenarioDriver(controller),
       appInfo: { version: app.getVersion(), platform: process.platform },
       quit: () => app.quit(),

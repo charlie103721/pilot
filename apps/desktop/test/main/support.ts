@@ -1,7 +1,12 @@
 import type { EventEnvelope } from '@pilot/shared';
+import { FakePermissionAdapter } from '@pilot/platform/fakes';
 import type { PanelWindowHandle, PanelWindowHost } from '../../src/main/panel-window.js';
 import type { TrayHandle, TrayHost, TrayMenuItem } from '../../src/main/tray.js';
 import type { SingleInstanceHost } from '../../src/main/single-instance.js';
+import { PermissionGate } from '../../src/main/permission-gate.js';
+import { createPermissionFixtureSource } from '../../src/main/permission-fixtures.js';
+import { createSettingsShortcut } from '../../src/main/settings-shortcut.js';
+import type { PermissionFixtureName } from '../../src/ipc/schemas.js';
 
 /**
  * In-memory implementations of the shell's ports.
@@ -130,6 +135,41 @@ export class FakeTrayHost implements TrayHost {
   get latest(): FakeTray | undefined {
     return this.created.at(-1);
   }
+}
+
+export interface PermissionHarnessOptions {
+  /** Starting permission state. Defaults to nothing having been asked for. */
+  readonly fixture?: PermissionFixtureName;
+  /** Host platform the settings seam sees. Defaults to a machine without one. */
+  readonly platform?: string;
+  /** Omit the fixture source, as a build against a real platform would. */
+  readonly withFixtures?: boolean;
+  readonly now?: () => number;
+}
+
+export interface PermissionHarness {
+  readonly gate: PermissionGate;
+  readonly adapter: FakePermissionAdapter;
+}
+
+/**
+ * A {@link PermissionGate} over the PR-001 fake adapter, wired exactly as
+ * `main/index.ts` wires it. Tests drive the real gate rather than a stand-in,
+ * so the behaviour they assert is the behaviour the app has.
+ */
+export function permissionHarness(options: PermissionHarnessOptions = {}): PermissionHarness {
+  const adapter = new FakePermissionAdapter();
+  const withFixtures = options.withFixtures ?? true;
+  const fixtures = withFixtures
+    ? createPermissionFixtureSource(adapter, options.fixture ?? 'unknown')
+    : undefined;
+  const gate = new PermissionGate({
+    adapter,
+    settings: createSettingsShortcut({ platform: options.platform ?? 'linux', adapter }),
+    ...(fixtures === undefined ? {} : { fixtures }),
+    ...(options.now === undefined ? {} : { now: options.now }),
+  });
+  return { gate, adapter };
 }
 
 export class FakeSingleInstanceHost implements SingleInstanceHost {

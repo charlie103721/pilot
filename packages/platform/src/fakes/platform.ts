@@ -6,6 +6,7 @@ import {
   type ObservedWindow,
   type PermissionKind,
   type PermissionSnapshot,
+  type PermissionState,
   type PermissionStatus,
   type ScreenPoint,
   type ScreenRect,
@@ -39,6 +40,14 @@ export class FakePermissionAdapter implements PermissionAdapter {
   readonly requested: PermissionKind[] = [];
   /** Whether a `request()` call resolves to `granted` (default) or `denied`. */
   grantOnRequest = true;
+  /**
+   * Per-kind override of the state a `request()` resolves to, for the cases
+   * `grantOnRequest` cannot express — notably a prompt that comes back
+   * `restricted` because policy, not the user, refused it.
+   */
+  readonly requestOutcomes = new Map<PermissionKind, PermissionState>();
+  /** When set, `openSettings()` rejects with it once. */
+  openSettingsError: Error | null = null;
 
   constructor(snapshot: PermissionSnapshot = FIXTURE_PERMISSIONS_GRANTED) {
     this.#snapshot = { ...snapshot };
@@ -62,7 +71,7 @@ export class FakePermissionAdapter implements PermissionAdapter {
     }
     const next: PermissionStatus = {
       kind,
-      state: this.grantOnRequest ? 'granted' : 'denied',
+      state: this.requestOutcomes.get(kind) ?? (this.grantOnRequest ? 'granted' : 'denied'),
       canRequest: false,
     };
     this.set(next);
@@ -70,6 +79,11 @@ export class FakePermissionAdapter implements PermissionAdapter {
   }
 
   async openSettings(kind: PermissionKind): Promise<void> {
+    if (this.openSettingsError !== null) {
+      const error = this.openSettingsError;
+      this.openSettingsError = null;
+      throw error;
+    }
     this.openedSettings.push(kind);
   }
 
@@ -79,6 +93,24 @@ export class FakePermissionAdapter implements PermissionAdapter {
     next[status.kind] = status;
     this.#snapshot = next;
     this.#emitter.emit(status);
+  }
+
+  /**
+   * Test control: replace every permission at once, as an external change would
+   * (the user editing System Settings while Pilot is running). Emits once per
+   * permission that actually changed, so a subscriber sees the same event
+   * stream a real adapter would produce and not four redundant notifications.
+   */
+  setSnapshot(snapshot: PermissionSnapshot): void {
+    const previous = this.#snapshot;
+    this.#snapshot = { ...snapshot };
+    for (const kind of Object.keys(snapshot) as PermissionKind[]) {
+      const before = previous[kind];
+      const after = this.#snapshot[kind];
+      if (before.state !== after.state || before.canRequest !== after.canRequest) {
+        this.#emitter.emit(after);
+      }
+    }
   }
 }
 

@@ -2,6 +2,7 @@ import {
   conversationIdSchema,
   interactionStateSchema,
   observedWindowSchema,
+  permissionKindSchema,
   permissionSnapshotSchema,
   serializedPilotErrorSchema,
   utteranceIdSchema,
@@ -121,3 +122,93 @@ export type SetPanelVisibleRequest = z.infer<typeof setPanelVisibleSchema>;
 export const acknowledgementSchema = z.strictObject({ accepted: z.literal(true) });
 
 export type Acknowledgement = z.infer<typeof acknowledgementSchema>;
+
+// ---------------------------------------------------------------------------
+// Permission onboarding (PR-008)
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether Pilot can open the platform's permission settings from here.
+ *
+ * Modelled as data rather than assumed, because it is false on every machine
+ * this repository is developed on: `PermissionAdapter.openSettings` describes a
+ * macOS pane, and there is no such pane on Linux. Carrying the reason across
+ * the wire is what lets the panel render a disabled control that explains
+ * itself instead of a button that does nothing (delivery rule: "expose an
+ * explicit failure or unavailable state").
+ */
+export const permissionSettingsAvailabilitySchema = z.strictObject({
+  available: z.boolean(),
+  /** `process.platform` of the main process, for the explanation text. */
+  platform: z.string(),
+  /** Non-null exactly when `available` is false. */
+  reason: z.string().nullable(),
+});
+
+export type PermissionSettingsAvailability = z.infer<typeof permissionSettingsAvailabilitySchema>;
+
+export const PERMISSION_ACTIONS = ['refresh', 'request', 'open-settings', 'dismiss-error'] as const;
+
+export type PermissionActionType = (typeof PERMISSION_ACTIONS)[number];
+
+export type PermissionAction =
+  /** Re-read every permission from the platform. The "check again" affordance. */
+  | { readonly type: 'refresh' }
+  /** Ask the platform to prompt. Only meaningful while `canRequest` is true. */
+  | { readonly type: 'request'; readonly kind: z.infer<typeof permissionKindSchema> }
+  | { readonly type: 'open-settings'; readonly kind: z.infer<typeof permissionKindSchema> }
+  | { readonly type: 'dismiss-error' };
+
+export const permissionActionSchema: z.ZodType<PermissionAction> = z.discriminatedUnion('type', [
+  z.strictObject({ type: z.literal('refresh') }),
+  z.strictObject({ type: z.literal('request'), kind: permissionKindSchema }),
+  z.strictObject({ type: z.literal('open-settings'), kind: permissionKindSchema }),
+  z.strictObject({ type: z.literal('dismiss-error') }),
+]);
+
+/**
+ * Named permission states a reviewer can switch between at runtime.
+ *
+ * PR-008 has no real TCC to drive (runbook §5 amendment 8: Mac verification is
+ * deferred), so the demo required by `docs/implementation.md` — "switch fixtures
+ * through unknown, denied, restricted, and granted states" — has to be
+ * reachable without editing source. These names are the vocabulary for that,
+ * validated like any other renderer input.
+ */
+export const PERMISSION_FIXTURES = [
+  'unknown',
+  'granted',
+  'denied',
+  'restricted',
+  'screen-denied',
+  'accessibility-denied',
+  'mixed',
+] as const;
+
+export type PermissionFixtureName = (typeof PERMISSION_FIXTURES)[number];
+
+export const permissionFixtureSchema = z.enum(PERMISSION_FIXTURES);
+
+/**
+ * Everything the panel needs to draw the onboarding view, and nothing more.
+ *
+ * Deliberately close to the platform contract: the presentation (titles,
+ * explanations, severity) is derived in `src/permissions/view-model.ts` from
+ * this plus the static catalogue, so the wire format does not have to change
+ * when the copy does.
+ */
+export const permissionGateStateSchema = z.strictObject({
+  /** Null until the first check completes — never conflated with "denied". */
+  snapshot: permissionSnapshotSchema.nullable(),
+  /** Kinds with a check, prompt or settings call in flight right now. */
+  pending: z.array(permissionKindSchema).readonly(),
+  /** When the snapshot was last read from the platform. */
+  checkedAt: z.number().int().nonnegative().nullable(),
+  settings: permissionSettingsAvailabilitySchema,
+  /** The last refused permission action; cleared by `dismiss-error`. */
+  lastError: serializedPilotErrorSchema.nullable(),
+  /** The fixture currently loaded, or null in a build with a real platform. */
+  fixture: permissionFixtureSchema.nullable(),
+});
+
+export type PermissionGateState = z.infer<typeof permissionGateStateSchema>;

@@ -20,6 +20,7 @@
     "package": "pnpm --filter @pilot/desktop run package",
     "smoke": "pnpm --filter @pilot/desktop run smoke",
     "demo:interaction": "pnpm build && pnpm --filter @pilot/interaction run demo",
+    "demo:permissions": "pnpm --filter @pilot/desktop run demo:permissions",
     "clean": "tsc --build tsconfig.json --clean && rm -rf apps/desktop/dist apps/desktop/release apps/desktop/resources"
   },
   "devDependencies": {
