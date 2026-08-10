@@ -360,6 +360,36 @@ Deterministic: injected clock, counter identifiers, scripted agent and
 synthesiser, and a manual scheduler — the machine still owns no timers, and
 nothing anywhere waits on real time.
 
+## Demo (PR-023 — safe session persistence)
+
+```sh
+pnpm build && pnpm --filter @pilot/agent run demo:persistence
+```
+
+Runs twelve screen questions through a real Pi session backed by a real SQLite
+session database in a temporary directory, quits, and relaunches — then
+**scans every byte of every file on disk** for the image payloads that were in
+the live model context a moment earlier. It prints each file, its size, and
+whether the pixels, the withheld-image audit record, the question text and the
+answer text are present.
+
+The point is that Pi has no option for this. `Session.appendMessage`
+serializes the message it is handed, verbatim, on both shipped backends
+(`docs/pi-notes.md` §3.1); the pixels are absent because Pilot is the only
+writer and every write goes through one sanitising choke point.
+
+Six acts: the conversation and its compaction; the quit, which flushes the
+writer queue and releases the SQLite writer lease; the disk scan; the
+relaunch, which restores transcript **plus** summary **plus** boundary and
+compares the two contexts property by property; what persisting the summary is
+actually worth, as the size of the first provider request with and without it;
+the writer lease, including what a second instance sees; and clear
+conversation, followed by a second disk scan.
+
+Deterministic: fixed fixtures, an injected clock, no network and no
+credentials — the model is Pi's built-in faux provider. The only thing that
+varies between runs is the temporary directory name.
+
 ## Demo (PR-007 — development build baseline)
 
 ```sh

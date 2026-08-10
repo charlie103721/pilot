@@ -451,6 +451,10 @@ reversible; raise any that look wrong.
 | **A `before-and-after` is bounded by a scene *revision*, not only by time** (PR-019) | PR-017 left the choice of `comparisonWindow` to this PR. The facade takes the most recent revision at or before the question anchor that actually changed something, finds the last frame captured before it, and asks for `from` = that frame, `to` = the anchor, plus `minSceneRevision` = the transition on the `after` half only. The time bound alone is not enough: frames arrive at 2–3 FPS and a transition lands between two of them, so "later than the transition" and "captured after the transition" are different claims. With no transition in the retained lineage the enforcer's own default (the whole local buffer up to the anchor) is used, and it either finds two frames or refuses — it never invents a comparison. |
 | **Compact metadata rides beside `ScreenObservation`, not inside it** (PR-019) | §9's schema is strict and two other lanes parse it (PR-021) and prune it (PR-022a), so widening it would have been a contract change to both. `observeDetailed()` returns the same observation plus a `ScreenObservationMetadata` carrying frame provenance, image sizes and byte totals, the redaction report, the lineage verdict on the requested scene, and the `ActiveContextPlan` PR-022a evicts from. It is content-free by construction — a test asserts no image payload appears in its JSON — so it is safe to log and safe to show in the diagnostics panel. `observe()` is unchanged and still returns the bare observation, which is right for the tool: it may not see anything the model may not. |
 | **An abort is honoured even by an adapter that ignores its signal** (PR-019) | `ObservationAdapter.captureFresh` takes the signal and the Mac adapter honours it, but §15 is a promise about the tool call rather than about every adapter. The facade races the capture against the signal, refuses promptly with the existing `request-cancelled` rule, and discards a frame that lands late instead of letting it enter the ring. It also checks the signal *before* the rate limiter takes a slot, so a cancelled call does not spend the next one's budget. |
+| **`WriterLeaseHeldError` carries `code: 'internal'`, not a new error code** (PR-023) | "Another Pilot process is writing this conversation" deserves its own `PilotErrorCode`, but `PILOT_ERROR_CODES` feeds `PILOT_ERROR_DOMAIN_BY_CODE` — an exhaustive `Record` — and several lanes were in flight, so widening the union was not an additive change. The stable discriminators are `instanceof WriterLeaseHeldError` and `details.reason === 'writer-lease-held'`, exported with an `isWriterLeaseHeld()` helper. **Say if you would rather have a real `session-locked` code**; it is a ten-line change once the lanes are merged. |
+| **Clear conversation reclaims the SQLite pages, at the cost of closing and reopening the database** (PR-023) | Deleting rows leaves the text readable in the file — `grep` finds it — and §13's "clear conversation" would then be a lie of the kind PR-041 exists to catch. `clear()` closes the repository, switches the file to `journal_mode=DELETE` (a `VACUUM` in WAL mode does not truncate), vacuums, and reopens. It is a user-initiated, once-in-a-while operation, and the demo greps for the text afterwards. |
+| **A restored transcript that ends with an unanswered question keeps it** (PR-023) | Pilot writes at turn boundaries only, so a crash truncates the durable log between turns and this case should not arise; if it does, restoring the question is the kinder reading than deleting the user's own words on the strength of a guess about why the process stopped. Structurally impossible states — an assistant turn whose tool call nothing answered, an orphan tool result — *are* dropped, because several providers reject them outright. |
+| **The durable transcript keeps a record of every withheld image** (PR-023) | A stripped image block becomes `[image withheld: image/png, 131072 base64 chars]`, and the pruning and compaction records around it name the scene and the window. So the pixels never reach disk, but *that an observation happened, of which window* does — which is what system-design §11 asks a persistent session to contain ("scene metadata, and tool audit metadata") and what makes a restored conversation legible. **Say if you would rather the audit record went too**; it is one line in `stripImageBlocks`, and it would leave a restored conversation unable to say why it once talked about a screen. |
 | **`ObservationAdapter.subscribeEvents` added as an *optional* member** (PR-012) | Capture has to report why it stopped — window lost, screen locked, protected content — and how many frames it refused; the four verbatim methods from system-design §5 carry none of that. Optional keeps it source-compatible: every existing implementation, including the shared fakes, still satisfies the interface untouched. Same shape as PR-011's `PermissionAdapter.attribution?()`. |
 
 ---
@@ -467,6 +471,7 @@ reversible; raise any that look wrong.
 | Phase 2 — capability lanes | In progress. **Merged:** PR-008, PR-011, PR-016, PR-017, PR-020, PR-021, PR-022a, PR-024, PR-025, PR-026, PR-027 (the voice and interaction lane is complete). **In flight:** PR-009, PR-012, PR-013, PR-014, PR-018, PR-022b. **Remaining:** PR-010, PR-015, PR-019, PR-023. |
 | Phase 2 — capability lanes | In progress: PR-008, PR-011, PR-016, PR-017, PR-018, PR-020, PR-021, PR-022a, PR-024, PR-025 merged; PR-009, PR-012, PR-013, PR-014, PR-022b, PR-026 in flight. |
 | Phase 2 — capability lanes | In progress. **Merged:** PR-008, PR-011, PR-015, PR-016, PR-017, PR-020, PR-021, PR-022a, PR-024, PR-025. **In flight:** PR-009, PR-012, PR-013, PR-014, PR-018, PR-022b, PR-026. **Remaining:** PR-010, PR-019, PR-023, PR-027. |
+| Phase 2 — capability lanes | In progress. **Merged:** PR-008, PR-011, PR-015, PR-016, PR-017, PR-018, PR-020, PR-021, PR-022a, PR-022b, PR-024, PR-025, PR-026, PR-027. **In flight:** PR-009, PR-010, PR-012, PR-013, PR-014, PR-019. **Landing now:** PR-023 — the agent runtime lane (PR-020 → 021 → 022 → 023) is complete. |
 | Phase 3 — integration (028…036) | Not started. Blocked on Phase 2; most steps also need the Mac (§1) and a signed-in model (§2). |
 | Phase 4 — providers (037…039) | Not started. PR-037 (Codex) is the one the user's decision selects. |
 | Phase 5 — hardening and release (040…044) | Not started. |
@@ -482,6 +487,19 @@ demo executed against the merged tree.
 ---
 
 ## 5. Risks worth watching
+
+- **The SQLite writer lease is a launch-time failure mode nobody has seen yet**
+  (PR-023). The session database is single-writer: the backend claims a row in
+  `writer_leases`, renews it every 10 s, and releases it on `close()`. A second
+  Pilot instance, or a relaunch inside 30 s of a crash, fails to open the
+  conversation — deliberately, with a typed error and a user-facing sentence,
+  rather than corrupting anything. Two things have to be true in the app for
+  that to read as "wait a moment" instead of "Pilot is broken": `close()` must
+  run on quit (runbook follow-up 18), and the error must reach the UI rather
+  than a log. Until PR-036 wires it, neither is true. The mechanism itself is
+  tested — second writer, crashed writer, and a zombie whose write is rejected
+  after a takeover — but only against a temporary directory on Linux, never
+  against a real Electron quit or a real force-quit on macOS.
 
 - **TCC attribution for the spawned Swift helper** remains the top structural
   risk in the plan. PR-011 has landed the *detection* for it — a typed

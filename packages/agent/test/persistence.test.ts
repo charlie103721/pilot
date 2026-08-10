@@ -9,10 +9,12 @@ import {
   createNodeSqliteFactory,
 } from '@earendil-works/pi-session-backend-sqlite-node';
 import {
+  PILOT_COMPACTION_ENTRY_TYPE,
   containsImageBytes,
   createDurableTranscriptSink,
   createUnsafeDurableTranscriptSinkForTests,
   stripImageBlocks,
+  toDurableJson,
   toDurablePayload,
 } from '../src/index.js';
 import { PNG_1PX_BASE64 } from './support.js';
@@ -144,6 +146,35 @@ describe('Session.appendMessage payload validation', () => {
     // toDurablePayload (applied by the sanitising sink) is the fix.
     await expect(
       session.appendMessage(toDurablePayload(assistantMessageAsPiBuildsIt)),
+    ).resolves.toBeTypeOf('string');
+  });
+});
+
+/**
+ * PR-023 extension. The transcript is not the only thing Pilot writes: the
+ * compaction summary goes to disk beside it, as a custom entry. Custom entries
+ * go through the same serializer and the same validator, so both facts above
+ * have to be re-proved for the second write path rather than assumed.
+ */
+describe('Session.appendCustomEntry — the summary write path', () => {
+  it('serializes custom entry payloads verbatim, exactly like messages', async () => {
+    const { directory, session } = await sqliteSession();
+
+    await session.appendCustomEntry('pilot.test.unsafe', { note: PNG_1PX_BASE64 });
+
+    expect((await bytesOnDisk(directory)).includes(Buffer.from(PNG_1PX_BASE64))).toBe(true);
+  });
+
+  it('rejects explicit undefined in the payload, exactly like messages', async () => {
+    const { session } = await sqliteSession();
+    const summaryWithHoles = { generation: 1, supersededBy: undefined };
+
+    await expect(
+      session.appendCustomEntry(PILOT_COMPACTION_ENTRY_TYPE, summaryWithHoles),
+    ).rejects.toMatchObject({ code: 'invalid_payload' });
+    // `toDurableJson` is the fix, and is what `saveCompaction` applies.
+    await expect(
+      session.appendCustomEntry(PILOT_COMPACTION_ENTRY_TYPE, toDurableJson(summaryWithHoles)),
     ).resolves.toBeTypeOf('string');
   });
 });

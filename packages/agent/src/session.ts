@@ -36,7 +36,9 @@ import {
   type CompactionPolicy,
   type CompactionState,
   type NowFn,
+  type RestoredCompaction,
 } from './compaction.js';
+import type { ConversationStore, RestoredConversation } from './conversation-store.js';
 import { markFailedToolResults, toolFailureError } from './tool-result.js';
 import {
   pruneVisualContextByPolicy,
@@ -118,6 +120,24 @@ export interface PiAgentSessionOptions {
   /** Durable state. Omit to run entirely in memory. */
   readonly transcript?: TranscriptSink;
   /**
+   * Durable store for this conversation (PR-023).
+   *
+   * Supplying it is the same as supplying `transcript: store.transcript`, and
+   * additionally makes the session persist its compaction snapshot and gives
+   * {@link PiAgentSession.clearConversation} something to delete. An explicit
+   * `transcript` still wins, so PR-005's in-memory sink keeps working.
+   */
+  readonly store?: ConversationStore;
+  /**
+   * Conversation state read back from {@link ConversationStore.restore}.
+   *
+   * Restores the transcript into `agent.state.messages` and the compaction
+   * generation, boundary and summary into the controller — the two halves
+   * §11 splits the context into. Restoring only the transcript would make a
+   * relaunched session re-send the entire history to the provider.
+   */
+  readonly restore?: RestoredConversation;
+  /**
    * Active-context image limits and replacement records (system-design §10,
    * §11). Defaults to {@link MVP_SCREEN_CONTEXT_POLICY} with no recorded
    * summaries; pass `summaryFor` from a {@link createObservationNotebook} that
@@ -164,6 +184,12 @@ export interface SessionCompactionOptions {
   readonly contextWindow?: number;
   /** Injected clock for the summary message's timestamp. */
   readonly now?: NowFn;
+  /**
+   * Compaction state to start from. Normally comes from
+   * `PiAgentSessionOptions.restore.compaction`; set it directly only when the
+   * transcript is being restored by some other route.
+   */
+  readonly restore?: RestoredCompaction;
 }
 
 /** Default text rendering of a question envelope (system-design §8). */
@@ -226,6 +252,7 @@ export class PiAgentSession implements AgentSession {
   readonly #listeners = new Set<Listener>();
   readonly #ids: IdFactory;
   readonly #transcript: TranscriptSink | undefined;
+  readonly #store: ConversationStore | undefined;
   readonly #renderEnvelope: (envelope: QuestionEnvelope) => string;
   readonly #unsubscribePi: () => void;
   readonly #compaction: CompactionController | undefined;
@@ -234,6 +261,16 @@ export class PiAgentSession implements AgentSession {
   #active: ActiveRun | null = null;
   #persistedCount = 0;
   #disposed = false;
+  /**
+   * Serialises every durable write.
+   *
+   * `#persistNewMessages` and the compaction snapshot are both started from
+   * Pi's synchronous event handler, and the snapshot's `boundaryIndex` is only
+   * meaningful against a transcript that is already on disk. Chaining them
+   * through one promise is what makes "summary alongside the transcript" true
+   * on disk rather than merely intended.
+   */
+  #writes: Promise<void> = Promise.resolve();
 
   constructor(options: PiAgentSessionOptions) {
     // THE GATE (PR-020). Runs before `new Agent(...)`, before any tool is
@@ -254,8 +291,16 @@ export class PiAgentSession implements AgentSession {
     this.capabilityReport = report;
     this.capabilities = { vision: report.vision, tools: report.tools };
     this.#ids = options.idFactory ?? createIdFactory();
-    this.#transcript = options.transcript;
+    this.#store = options.store;
+    this.#transcript = options.transcript ?? options.store?.transcript;
     this.#renderEnvelope = options.renderEnvelope ?? renderQuestionEnvelope;
+    // How much of the *in-memory* transcript is already durable. It is
+    // `messages.length`, not `persistedMessageCount`: the two differ only when
+    // structural repair withheld an entry that is still on disk, and using the
+    // disk count there would skip persisting real messages afterwards.
+    // `repairTranscript` is a whole-list, idempotent function, so the withheld
+    // entry is dropped again on every later restore wherever it has ended up.
+    this.#persistedCount = options.restore?.messages.length ?? 0;
 
     // One options object, built once: `transformContext` runs before every
     // provider request, and rebuilding this per request would be pure waste.
@@ -272,12 +317,17 @@ export class PiAgentSession implements AgentSession {
     // which is also what makes the 60% trigger self-limiting.
     const prune = (messages: readonly AgentMessage[]): AgentMessage[] =>
       pruneVisualContextByPolicy(messages, visualContext);
+    // PR-023: the compaction half of a restore. `boundaryIndex` indexes the
+    // unmodified transcript, which is exactly what was just restored into
+    // `initialState.messages`, so the two halves need no reconciliation.
+    const restoredCompaction = options.compaction?.restore ?? options.restore?.compaction;
     this.#compaction =
       options.compaction?.enabled === false
         ? undefined
         : createCompactionController({
             contextWindow: options.compaction?.contextWindow ?? options.model.contextWindow,
             prune,
+            ...(restoredCompaction === undefined ? {} : { restore: restoredCompaction }),
             ...(options.compaction?.policy === undefined
               ? {}
               : { policy: options.compaction.policy }),
@@ -298,6 +348,14 @@ export class PiAgentSession implements AgentSession {
         systemPrompt: options.systemPrompt,
         model: options.model,
         tools: (options.tools ?? []) as AgentTool<never>[],
+        // Restore-on-launch (PR-023). `AgentState.messages` is an accessor
+        // that copies the array it is assigned, so the restored list cannot be
+        // mutated from underneath us. The messages are the *sanitised* ones —
+        // every image block is already a `[image withheld: …]` text block —
+        // which is both the privacy guarantee and the right context: §11 calls
+        // screenshots replaceable environmental state, and a screenshot from
+        // before a restart describes a screen that has certainly moved on.
+        ...(options.restore === undefined ? {} : { messages: [...options.restore.messages] }),
       },
       // Pi contract: transformContext must not throw. Both halves are total:
       // `apply` catches and falls back to the untouched list, and
@@ -451,6 +509,29 @@ export class PiAgentSession implements AgentSession {
     this.#agent.steer({ role: 'user', content: detail, timestamp: Date.now() });
   }
 
+  /**
+   * Clear conversation (system-design §13).
+   *
+   * Aborts anything in flight, deletes the durable data, and empties the live
+   * transcript and the compaction state. Everything is dropped together on
+   * purpose: leaving the summary behind would keep quoting a conversation the
+   * user asked Pilot to forget, and leaving the in-memory transcript behind
+   * would silently re-persist it on the next turn.
+   *
+   * Safe with no store — an in-memory session simply forgets.
+   */
+  async clearConversation(): Promise<void> {
+    if (this.#active !== null) {
+      this.#agent.abort();
+      await this.#agent.waitForIdle();
+    }
+    await this.#writes;
+    this.#agent.reset();
+    this.#compaction?.reset();
+    this.#persistedCount = 0;
+    await this.#store?.clear();
+  }
+
   async dispose(): Promise<void> {
     if (this.#disposed) {
       return;
@@ -460,8 +541,17 @@ export class PiAgentSession implements AgentSession {
       this.#agent.abort();
       await this.#agent.waitForIdle();
     }
+    // Flush before releasing. `agent_end` starts the last write and does not
+    // await it, so a dispose that returned first would lose the final turn of
+    // every conversation — the one a restart is most likely to want.
+    await this.#writes;
     this.#unsubscribePi();
     this.#listeners.clear();
+  }
+
+  /** Resolves when every durable write started so far has landed. */
+  async flush(): Promise<void> {
+    await this.#writes;
   }
 
   #emit(event: AgentEvent): void {
@@ -535,12 +625,12 @@ export class PiAgentSession implements AgentSession {
         return;
       }
       case 'turn_end': {
-        void this.#persistNewMessages();
+        this.#persistNewMessages();
         this.#maybeCompact(runId);
         return;
       }
       case 'agent_end': {
-        void this.#persistNewMessages();
+        this.#persistNewMessages();
         // Before settling: a caller that awaits `completed` and immediately
         // reads `activeContext()` must see the compaction this run caused.
         this.#maybeCompact(runId);
@@ -572,8 +662,28 @@ export class PiAgentSession implements AgentSession {
     }
     const outcome = controller.maybeCompact(this.#agent.state.messages);
     if (outcome.kind === 'compacted') {
+      // Runbook follow-up 8. The transcript on disk is complete, so without
+      // this a restored session would have no summary and would re-send the
+      // whole history — undoing at every restart exactly what §11 does at
+      // every turn. Enqueued behind the message writes so the boundary index
+      // always refers to a transcript that is already durable.
+      this.#enqueueWrite(async () => {
+        await this.#store?.saveCompaction(controller.state);
+      });
       this.#emit({ type: 'context-compacted', runId, summary: outcome.summary.text });
     }
+  }
+
+  /**
+   * Chains a durable write onto the single writer queue.
+   *
+   * Failures are swallowed on purpose. Persistence is best-effort state, not
+   * the product: a full disk or a lost SQLite writer lease must not take down
+   * a run that is answering the user's question. The next successful write
+   * catches up, because `#persistedCount` only advances on success.
+   */
+  #enqueueWrite(write: () => Promise<void>): void {
+    this.#writes = this.#writes.then(write).catch(() => undefined);
   }
 
   #terminalEvent(runId: RunId): AgentEvent {
@@ -597,19 +707,25 @@ export class PiAgentSession implements AgentSession {
     return { type: 'run-completed', runId, text: assistantText(last) };
   }
 
-  async #persistNewMessages(): Promise<void> {
+  #persistNewMessages(): void {
     const sink = this.#transcript;
     if (sink === undefined) {
       return;
     }
-    const messages = this.#agent.state.messages;
-    while (this.#persistedCount < messages.length) {
-      const message = messages[this.#persistedCount];
-      this.#persistedCount += 1;
-      if (message !== undefined) {
-        await sink.append(message);
+    // Snapshot the length now: the queue drains later, by which time Pi may
+    // have appended more, and those belong to the next enqueued write.
+    const messages = [...this.#agent.state.messages];
+    this.#enqueueWrite(async () => {
+      while (this.#persistedCount < messages.length) {
+        const message = messages[this.#persistedCount];
+        if (message !== undefined) {
+          // Advance only after the write lands, so a failed append is retried
+          // by the next turn rather than silently skipped.
+          await sink.append(message);
+        }
+        this.#persistedCount += 1;
       }
-    }
+    });
   }
 }
 

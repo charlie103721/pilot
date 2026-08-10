@@ -850,6 +850,39 @@ export interface CompactionState {
   readonly summary: CompactionSummary | undefined;
   /** Total observations counted when the last compaction ran. */
   readonly observationsAtLastCompaction: number;
+  /**
+   * Timestamp carried by the summary message `apply()` injects (PR-023).
+   *
+   * Optional and additive. It exists so a restored session rebuilds the exact
+   * same provider-facing message rather than one with a fresh clock reading —
+   * "reproduce the pre-restart context exactly" is a byte-level claim, and a
+   * timestamp is part of the message.
+   */
+  readonly summaryTimestamp?: number;
+  /**
+   * Question records for turns after {@link boundaryIndex} (PR-023).
+   *
+   * Optional and additive. Not needed to reproduce the current context; needed
+   * so the *next* compaction after a restart can still quote the user's own
+   * words for turns that were live when the process died.
+   */
+  readonly questions?: readonly QuestionRecord[];
+}
+
+/**
+ * Compaction state as a restart hands it back (PR-023).
+ *
+ * `boundaryIndex` indexes the **unmodified** transcript — compaction never
+ * writes to `agent.state.messages` — so the transcript and the summary restore
+ * independently and the index still means what it meant.
+ */
+export interface RestoredCompaction {
+  readonly generation: number;
+  readonly boundaryIndex: number;
+  readonly summary: CompactionSummary;
+  readonly observationsAtLastCompaction?: number;
+  readonly summaryTimestamp?: number;
+  readonly questions?: readonly QuestionRecord[];
 }
 
 export type CompactionOutcome =
@@ -885,6 +918,14 @@ export interface CompactionControllerOptions {
    * PR-022a's pruner; the default is identity, which only over-estimates.
    */
   readonly prune?: (messages: readonly AgentMessage[]) => AgentMessage[];
+  /**
+   * Compaction state read back from durable storage (PR-023).
+   *
+   * The controller starts at that generation and boundary and rebuilds the
+   * summary message from the persisted text, so the first provider request
+   * after a restart is the one the last request before it would have been.
+   */
+  readonly restore?: RestoredCompaction;
 }
 
 export interface CompactionController {
@@ -910,6 +951,14 @@ export interface CompactionController {
    * only the summary text.
    */
   readonly lastOutcome: CompactionOutcome | undefined;
+  /**
+   * Forget everything (PR-023, "clear conversation").
+   *
+   * Returns the controller to generation 0 with no summary and no recorded
+   * questions, which is the only honest state once the transcript those
+   * records quote has been deleted.
+   */
+  reset(): void;
 }
 
 const MAX_QUESTION_RECORDS = 512;
@@ -925,12 +974,31 @@ export function createCompactionController(
   let boundaryIndex = 0;
   let summary: CompactionSummary | undefined;
   let summaryMessage: AgentMessage | undefined;
+  let summaryTimestamp: number | undefined;
   let observationsAtLastCompaction = 0;
   let currentScene: SceneStampFacts | undefined;
   /** Transcript length at the last `nothing-to-compact`, to avoid re-deciding. */
   let gaveUpAt = -1;
   let lastOutcome: CompactionOutcome | undefined;
   const questions: QuestionRecord[] = [];
+
+  /** Whose voice the folded history speaks in. Shared by fold and restore. */
+  const renderSummaryMessage = (text: string, timestamp: number): AgentMessage => ({
+    role: 'user',
+    content: [{ type: 'text', text }],
+    timestamp,
+  });
+
+  if (options.restore !== undefined) {
+    const restored = options.restore;
+    generation = restored.generation;
+    boundaryIndex = restored.boundaryIndex;
+    summary = restored.summary;
+    summaryTimestamp = restored.summaryTimestamp ?? now();
+    summaryMessage = renderSummaryMessage(restored.summary.text, summaryTimestamp);
+    observationsAtLastCompaction = restored.observationsAtLastCompaction ?? 0;
+    questions.push(...(restored.questions ?? []));
+  }
 
   const activeContextFor = (messages: readonly AgentMessage[]): AgentMessage[] =>
     prune(applyTo(messages));
@@ -1011,11 +1079,31 @@ export function createCompactionController(
     },
 
     get state(): CompactionState {
-      return { generation, boundaryIndex, summary, observationsAtLastCompaction };
+      return {
+        generation,
+        boundaryIndex,
+        summary,
+        observationsAtLastCompaction,
+        ...(summaryTimestamp === undefined ? {} : { summaryTimestamp }),
+        questions: [...questions],
+      };
     },
 
     get lastOutcome(): CompactionOutcome | undefined {
       return lastOutcome;
+    },
+
+    reset(): void {
+      generation = 0;
+      boundaryIndex = 0;
+      summary = undefined;
+      summaryMessage = undefined;
+      summaryTimestamp = undefined;
+      observationsAtLastCompaction = 0;
+      currentScene = undefined;
+      gaveUpAt = -1;
+      lastOutcome = undefined;
+      questions.length = 0;
     },
   };
 
@@ -1070,11 +1158,8 @@ export function createCompactionController(
     // silently dropped and the model never sees the summary at all. The rich
     // converter that understands it lives in `harness/messages.js` and is not
     // exported from the package index. The header says whose voice this is.
-    summaryMessage = {
-      role: 'user',
-      content: [{ type: 'text', text: next.text }],
-      timestamp: now(),
-    };
+    summaryTimestamp = now();
+    summaryMessage = renderSummaryMessage(next.text, summaryTimestamp);
     const tokensAfter = estimateActiveContext(activeContextFor(messages), {
       contextWindow: options.contextWindow,
       imageTokenCost: policy.imageTokenCost,
