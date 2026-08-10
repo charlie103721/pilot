@@ -90,6 +90,18 @@ describe('pnpm demo:codex', () => {
       'idle → observing → listening → transcribing → thinking → observing-screen → thinking → speaking → observing',
     );
     shows('observe_screen calls:', '1');
+    // …and *why*, when it is not 1. A refusal is reported to the model, not to
+    // the user (PR-021), so `observe_screen calls: 0` alone says nothing about
+    // whether the tool was called and refused or never called at all. Runbook
+    // follow-up 43 was a day of that ambiguity; the rule is printed now, and
+    // asserted so it stays printed.
+    shows('observations refused:', '(none)');
+    // The frame `moment: "question"` chose must be at or before the anchor —
+    // the ordering follow-up 43 turned out to be about. `false` here means the
+    // walkthrough pushed its one frame on the wrong side of the question and
+    // is passing only because the two landed in the same millisecond.
+    shows('the frame it answered from:', 'origin=ring');
+    expect(output).toContain('at or before the anchor: true');
     shows('pointer target the model was told:', 'AXButton');
     expect(output).toMatch(/answer on screen: +That is the Update payment method button\./);
     expect(output).toMatch(/utterances spoken: +[1-9]/);

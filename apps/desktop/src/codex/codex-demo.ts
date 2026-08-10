@@ -19,6 +19,7 @@ import {
   asUtteranceId,
   createLogger,
   createMemorySink,
+  MVP_SCREEN_POLICY,
   type LogRecord,
   type LogSink,
   type QuestionEnvelope,
@@ -502,20 +503,33 @@ export async function runCodexDemo(): Promise<CodexDemoResult> {
         return live !== null && live !== '';
       });
       // Outside the window, then over another application's window, then onto
-      // the control the question is about — one coalescing bucket apart, as the
-      // 30 Hz poller would produce them (runbook cross-lane issue 14).
+      // the control the question is about — at least one coalescing bucket
+      // apart, as the 30 Hz poller would produce them (runbook cross-lane
+      // issue 14).
       await rig.observation.samplePointer();
       await nextPointerBucket();
       await rig.observation.samplePointer();
       await nextPointerBucket();
-      await rig.observation.samplePointer();
       // Pushed here rather than before the key, because the frame ring is
       // bounded to ringDurationMs = 3 000 ms and `moment: 'question'` selects
       // the frame from when the question was asked (runbook cross-lane issue 16).
+      //
+      // And pushed *before* the last pointer sample, because that sample is the
+      // question anchor and `moment: 'question'` asks the ring for the newest
+      // frame **at or before** it (`policy-enforcer.ts` §10 step 2,
+      // `direction: 'at-or-before'`). Real Pilot satisfies that for free: frames
+      // arrive at 3 FPS and pointer samples at 30 Hz, so there is always a frame
+      // within ~333 ms *before* any pointer sample. A walkthrough that owns the
+      // ring has exactly one frame in it and has to put it on the right side of
+      // the anchor itself — which is the order `ask-demo.ts` §2 writes and says
+      // why. Pushing after the anchoring sample made the frame 1 ms too new and
+      // the observation was refused `frame-available (no-frame-in-direction)`:
+      // runbook follow-up 43 / hazard 27.
       const admitted = await pushScreenshot(rig, window, {
         id: 'frame-question',
         capturedAt: Date.now(),
       });
+      await rig.observation.samplePointer();
       await releaseKey(rig);
       await settleRun(rig);
 
@@ -538,6 +552,31 @@ export async function runCodexDemo(): Promise<CodexDemoResult> {
         String(rig.anchoring.lastAnchor()?.targetRole),
       );
       evidence('observe_screen calls:', String(rig.agent.notebook.size));
+      // PR-021 reports a refused observation to the *model*, not to the user, so
+      // a run where observe_screen was called and refused reads — from the
+      // panel, the answer and the spoken utterances — exactly like a run where
+      // the model chose not to look. These two lines are the only thing that
+      // tells the two apart, so the walkthrough prints them whether or not
+      // anything went wrong (runbook follow-up 43).
+      const refusal = rig.observation.lastRefusal();
+      evidence(
+        'observations refused:',
+        refusal === null ? '(none)' : `${refusal.rule}/${refusal.step} — ${refusal.detail}`,
+      );
+      const chosen = rig.observation.lastObservation()?.frames[0];
+      // `skewMs` is `capturedAt - anchor.at`, so the *sign* is the property:
+      // `at-or-before` selection can only ever return a frame with skew ≤ 0,
+      // and a walkthrough that pushed on the wrong side of the anchor gets no
+      // frame at all rather than a positive number. Printing it anyway is how
+      // the next reader sees how much margin there was.
+      evidence(
+        'the frame it answered from:',
+        chosen === undefined || chosen.skewMs === null
+          ? '(none from the ring)'
+          : `origin=${chosen.origin} skewMs=${String(chosen.skewMs)} ` +
+              `(at or before the anchor: ${String(chosen.skewMs <= 0)}) ` +
+              `ageMs=${String(chosen.ageMs)} of the ${String(MVP_SCREEN_POLICY.ringDurationMs)} ms ring`,
+      );
       evidence('answer on screen:', answerOf(rig));
       evidence('utterances spoken:', String(utterances.length));
       evidence('provider requests:', String(flowSource.requestCount()));
@@ -549,6 +588,16 @@ export async function runCodexDemo(): Promise<CodexDemoResult> {
       say('   rather than asserted. Everything about the flow itself is exactly');
       say('   what pnpm demo:flow shows and no better: no macOS, no key, no');
       say('   microphone, no speaker, and no model.');
+      say();
+      say('   One thing this trace does *less* faithfully than the product, and');
+      say('   it is the reason for the two lines above: the capture poller is off');
+      say('   (capturePollIntervalMs = 1 h) so the ring holds the single frame');
+      say('   pushed here, where a running Pilot holds ~9 at 3 FPS. `moment:');
+      say('   "question"` takes the newest frame at or before the anchor, so with');
+      say('   nine frames one is always there and with one frame the walkthrough');
+      say('   has to place it on the right side of the anchor by hand. Nothing');
+      say('   about the selection, the policy or the pipeline is relaxed for it —');
+      say('   the skew above is the real number the real rule produced.');
       say();
 
       for (const token of flowSource.surface.issuedTokens) {
