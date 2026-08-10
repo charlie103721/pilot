@@ -1,9 +1,18 @@
-import type { EventEnvelope } from '@pilot/shared';
+import type { EventEnvelope, SpeechRecognitionDisclosure } from '@pilot/shared';
+import type { HotkeyAvailability } from '@pilot/platform';
 import {
+  FakeHotkeyAdapter,
   FakeInteractionController,
   FakePermissionAdapter,
   FakeWindowAdapter,
 } from '@pilot/platform/fakes';
+import { ConversationGate } from '../../src/main/conversation-gate.js';
+import {
+  createFakeConversationDriver,
+  createFakeSpeechDisclosureSource,
+  type ConversationFixtureDriver,
+  type ReplayClock,
+} from '../../src/main/conversation-fixtures.js';
 import type { PanelWindowHandle, PanelWindowHost } from '../../src/main/panel-window.js';
 import type { TrayHandle, TrayHost, TrayMenuItem } from '../../src/main/tray.js';
 import type { SingleInstanceHost } from '../../src/main/single-instance.js';
@@ -222,6 +231,72 @@ export function windowHarness(options: WindowHarnessOptions): WindowHarness {
       adapter,
       selected: () => controller.snapshot().selectedWindow,
     }),
+  };
+}
+
+/**
+ * A clock the test moves by hand.
+ *
+ * The §17 timings are differences between two readings of the gate's clock, so
+ * a test that could not control it could only assert "some number was
+ * recorded". With this, the expected millisecond value is the one the test
+ * advanced by.
+ */
+export function testClock(start = 1_700_000_000_000): ReplayClock {
+  let value = start;
+  return {
+    now: () => value,
+    advance: (milliseconds: number) => {
+      value += Math.max(0, milliseconds);
+    },
+  };
+}
+
+export interface ConversationHarnessOptions {
+  readonly controller?: FakeInteractionController;
+  readonly clock?: ReplayClock;
+  readonly hotkey?: HotkeyAvailability;
+  /** Omit for a build with no hotkey adapter at all. */
+  readonly withHotkey?: boolean;
+  readonly disclosure?: SpeechRecognitionDisclosure;
+  readonly capacity?: number;
+  readonly demoFixtures?: boolean;
+}
+
+export interface ConversationHarness {
+  readonly gate: ConversationGate;
+  readonly controller: FakeInteractionController;
+  readonly clock: ReplayClock;
+  readonly hotkeyAdapter: FakeHotkeyAdapter;
+  /** The panel's fixture replay, as `main/index.ts` builds it. */
+  readonly replay: ConversationFixtureDriver;
+}
+
+/**
+ * A {@link ConversationGate} wired exactly as `main/index.ts` wires it, so what
+ * the tests drive is the shipped path rather than a stand-in for it.
+ */
+export function conversationHarness(options: ConversationHarnessOptions = {}): ConversationHarness {
+  const controller = options.controller ?? new FakeInteractionController();
+  const clock = options.clock ?? testClock();
+  const hotkeyAdapter = new FakeHotkeyAdapter({
+    availability: options.hotkey ?? { status: 'active' },
+  });
+  const speech = createFakeSpeechDisclosureSource(options.disclosure ?? null);
+  const gate = new ConversationGate({
+    interaction: controller,
+    ...(options.withHotkey === false ? {} : { hotkey: hotkeyAdapter }),
+    ...(speech === undefined ? {} : { speech }),
+    demoFixtures: options.demoFixtures ?? true,
+    now: () => clock.now(),
+    ...(options.capacity === undefined ? {} : { telemetry: { capacity: options.capacity } }),
+  });
+  return {
+    gate,
+    controller,
+    clock,
+    hotkeyAdapter,
+    replay: createFakeConversationDriver({ controller, gate, clock }),
   };
 }
 

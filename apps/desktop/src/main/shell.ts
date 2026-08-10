@@ -6,9 +6,13 @@ import {
   type IdFactory,
   type Logger,
 } from '@pilot/shared';
-import type { InteractionController, PilotViewState } from '@pilot/platform';
+import type { InteractionCommand, InteractionController, PilotViewState } from '@pilot/platform';
 import {
   appInfoChannel,
+  conversationActChannel,
+  conversationChangedEvent,
+  conversationGetChannel,
+  demoConversationChannel,
   demoPermissionFixtureChannel,
   demoScenarioChannel,
   interactionDispatchChannel,
@@ -28,6 +32,8 @@ import { IpcRouter } from './ipc-router.js';
 import { PanelController, type PanelWindowHost } from './panel-window.js';
 import { TrayController, type TrayAvailability, type TrayHost } from './tray.js';
 import type { ScenarioDriver } from './scenarios.js';
+import type { ConversationGate } from './conversation-gate.js';
+import type { ConversationFixtureDriver } from './conversation-fixtures.js';
 import type { PermissionGate } from './permission-gate.js';
 import type { WindowGate } from './window-gate.js';
 import type { WindowDemoDriver } from './window-feed.js';
@@ -55,12 +61,16 @@ export interface DesktopShellOptions {
   readonly permissions: PermissionGate;
   /** Owns the window list and the observation controls (PR-009). */
   readonly windows: WindowGate;
+  /** Owns the developer telemetry and the voice affordances (PR-010). */
+  readonly conversation: ConversationGate;
   readonly appInfo: DesktopShellAppInfo;
   readonly quit: () => void;
-  /** Present only while the shell runs on fakes. Omit once PR-010 lands. */
+  /** Present only while the shell runs on fakes. Omit once PR-029 lands. */
   readonly scenarioDriver?: ScenarioDriver;
   /** Present only while the shell runs on the fake window adapter (PR-009). */
   readonly windowDemoDriver?: WindowDemoDriver;
+  /** Present only while the shell runs on the fake controller (PR-010). */
+  readonly conversationFixtureDriver?: ConversationFixtureDriver;
   readonly ids?: IdFactory;
   readonly now?: () => number;
   readonly logger?: Logger;
@@ -77,6 +87,7 @@ export class DesktopShell {
 
   readonly permissions: PermissionGate;
   readonly windows: WindowGate;
+  readonly conversation: ConversationGate;
 
   readonly #controller: InteractionController;
   readonly #options: DesktopShellOptions;
@@ -84,12 +95,14 @@ export class DesktopShell {
   #unsubscribe: (() => void) | null = null;
   #unsubscribePermissions: (() => void) | null = null;
   #unsubscribeWindows: (() => void) | null = null;
+  #unsubscribeConversation: (() => void) | null = null;
 
   constructor(options: DesktopShellOptions) {
     this.#options = options;
     this.#controller = options.controller;
     this.permissions = options.permissions;
     this.windows = options.windows;
+    this.conversation = options.conversation;
     this.#logger = options.logger ?? nullLogger;
     const ids = options.ids ?? createIdFactory();
 
@@ -109,10 +122,10 @@ export class DesktopShell {
           this.tray.setPanelVisible(visible);
         },
         toggleObservation: (enabled) => {
-          this.#controller.dispatch({ type: 'set-observation-enabled', enabled });
+          this.dispatch({ type: 'set-observation-enabled', enabled });
         },
         setPaused: (paused) => {
-          this.#controller.dispatch({ type: paused ? 'pause' : 'resume' });
+          this.dispatch({ type: paused ? 'pause' : 'resume' });
         },
         quit: () => options.quit(),
       },
@@ -141,6 +154,9 @@ export class DesktopShell {
     this.#unsubscribeWindows = this.windows.subscribe((state) => {
       this.panel.broadcast(windowsChangedEvent, state);
     });
+    this.#unsubscribeConversation = this.conversation.subscribe((state) => {
+      this.panel.broadcast(conversationChangedEvent, state);
+    });
     this.#publish(this.#controller.snapshot());
 
     // The first permission read starts immediately, so the panel has something
@@ -149,7 +165,22 @@ export class DesktopShell {
     // Same for the window list: an empty picker must mean "no windows", never
     // "Pilot has not looked yet".
     void this.windows.refresh();
+    // And the voice facts: a push-to-talk button that cannot work must say so
+    // before the user holds it down, not afterwards.
+    void this.conversation.refresh();
     return { trayAvailability };
+  }
+
+  /**
+   * The one way a command reaches the interaction controller from the shell.
+   *
+   * Routed through the conversation gate first so an abandoned answer is
+   * counted once (system-design §17, "abort categories") whether the user
+   * abandoned it from the panel or from the menu bar.
+   */
+  dispatch(command: InteractionCommand): void {
+    this.conversation.noteCommand(command);
+    this.#controller.dispatch(command);
   }
 
   /**
@@ -167,10 +198,12 @@ export class DesktopShell {
     this.panel.broadcast(viewStateChangedEvent, this.#controller.snapshot());
     this.panel.broadcast(permissionsChangedEvent, this.permissions.snapshot());
     this.panel.broadcast(windowsChangedEvent, this.windows.snapshot());
+    this.panel.broadcast(conversationChangedEvent, this.conversation.snapshot());
     void this.permissions.refresh();
     // Windows open and close while the panel is hidden; a stale list would
     // offer the user a window that is no longer there.
     void this.windows.refresh();
+    void this.conversation.refresh();
   }
 
   async dispose(): Promise<void> {
@@ -180,6 +213,11 @@ export class DesktopShell {
     this.#unsubscribePermissions = null;
     this.#unsubscribeWindows?.();
     this.#unsubscribeWindows = null;
+    this.#unsubscribeConversation?.();
+    this.#unsubscribeConversation = null;
+    // Before the window gate, so an answer still in flight is recorded as a
+    // `shutdown` abort rather than as a window that went away.
+    this.conversation.dispose();
     this.windows.dispose();
     this.permissions.dispose();
     this.tray.dispose();
@@ -203,7 +241,7 @@ export class DesktopShell {
     this.router.register(viewStateGetChannel, () => this.#controller.snapshot());
 
     this.router.register(interactionDispatchChannel, (command) => {
-      this.#controller.dispatch(command);
+      this.dispatch(command);
       return this.#controller.snapshot();
     });
 
@@ -227,6 +265,22 @@ export class DesktopShell {
     this.router.register(windowsGetChannel, () => this.windows.snapshot());
 
     this.router.register(windowsActChannel, (action) => this.windows.act(action));
+
+    this.router.register(conversationGetChannel, () => this.conversation.snapshot());
+
+    this.router.register(conversationActChannel, (action) => this.conversation.act(action));
+
+    this.router.register(demoConversationChannel, (fixture) => {
+      const driver = this.#options.conversationFixtureDriver;
+      if (driver === undefined) {
+        throw new PilotError('unsupported-capability', 'This build has no conversation fixtures', {
+          userMessage: 'Fixture conversations are only available in development builds.',
+          details: { fixture },
+        });
+      }
+      driver(fixture);
+      return this.conversation.noteFixture(fixture);
+    });
 
     this.router.register(demoWindowEventChannel, async (event) => {
       const driver = this.#options.windowDemoDriver;

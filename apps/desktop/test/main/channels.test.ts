@@ -13,19 +13,31 @@ import {
   REQUEST_CHANNELS,
 } from '../../src/ipc/channels.js';
 import {
+  conversationActionSchema,
+  conversationFixtureSchema,
+  conversationGateStateSchema,
   interactionCommandSchema,
   permissionActionSchema,
   permissionFixtureSchema,
   permissionGateStateSchema,
   pilotViewStateSchema,
+  telemetrySampleSchema,
   windowActionSchema,
   windowDemoEventSchema,
   windowGateStateSchema,
+  ABORT_CATEGORIES,
+  CONVERSATION_FIXTURES,
+  DEFAULT_TELEMETRY_CAPACITY,
   OBSERVATION_NOTICE_REASONS,
   PERMISSION_FIXTURES,
+  TELEMETRY_METRICS,
+  TELEMETRY_METRIC_UNITS,
   WINDOW_DEMO_EVENTS,
+  type ConversationAction,
+  type ConversationGateState,
   type PermissionAction,
   type PermissionGateState,
+  type TelemetryMetric,
   type WindowAction,
   type WindowGateState,
 } from '../../src/ipc/schemas.js';
@@ -288,6 +300,150 @@ describe('window gate state schema', () => {
       }).success,
     ).toBe(false);
     expect(windowGateStateSchema.safeParse({ ...base, frame: 'AAAA' }).success).toBe(false);
+  });
+});
+
+describe('conversation action schema', () => {
+  it('accepts every conversation action the panel can send', () => {
+    // Same guard as the three unions above, for the same reason: a
+    // `z.ZodType<ConversationAction>` annotation stays satisfied by a schema
+    // that is missing a union member, so the samples are keyed by action type
+    // and TypeScript fails the build when one has no validator behind it.
+    const samples: Record<ConversationAction['type'], ConversationAction> = {
+      refresh: { type: 'refresh' },
+      'clear-telemetry': { type: 'clear-telemetry' },
+      'set-diagnostics-visible': { type: 'set-diagnostics-visible', visible: true },
+    };
+
+    for (const action of Object.values(samples)) {
+      expect(conversationActionSchema.safeParse(action).success).toBe(true);
+    }
+  });
+
+  it('rejects a visibility toggle with no value, and extra properties', () => {
+    expect(conversationActionSchema.safeParse({ type: 'set-diagnostics-visible' }).success).toBe(
+      false,
+    );
+    expect(
+      conversationActionSchema.safeParse({ type: 'refresh', andAlso: 'record-everything' }).success,
+    ).toBe(false);
+  });
+
+  it('accepts only the fixture conversations the shell knows how to replay', () => {
+    for (const fixture of CONVERSATION_FIXTURES) {
+      expect(conversationFixtureSchema.safeParse(fixture).success).toBe(true);
+    }
+    expect(conversationFixtureSchema.safeParse('transcribe-everything').success).toBe(false);
+  });
+});
+
+describe('telemetry schema', () => {
+  const base = {
+    seq: 0,
+    at: 1_700_000_000_000,
+    turn: 1,
+    metric: 'stt-duration' as TelemetryMetric,
+    value: 1_240,
+    category: null,
+  };
+
+  it('has a unit for every metric §17 names', () => {
+    // Keyed by metric so a new metric with no unit fails the build rather than
+    // rendering as a bare number whose meaning nobody can recover.
+    for (const metric of TELEMETRY_METRICS) {
+      expect(TELEMETRY_METRIC_UNITS[metric]).toBeDefined();
+    }
+  });
+
+  it('accepts every metric and every category in the closed vocabulary', () => {
+    for (const metric of TELEMETRY_METRICS) {
+      expect(telemetrySampleSchema.safeParse({ ...base, metric }).success).toBe(true);
+    }
+    for (const category of ABORT_CATEGORIES) {
+      expect(
+        telemetrySampleSchema.safeParse({ ...base, metric: 'abort', value: 1, category }).success,
+      ).toBe(true);
+    }
+    expect(
+      telemetrySampleSchema.safeParse({ ...base, metric: 'failure', value: 1, category: 'timeout' })
+        .success,
+    ).toBe(true);
+  });
+
+  it('rejects a sample carrying anything that is not a number or a category', () => {
+    // The privacy rule, enforced by the wire type rather than by review
+    // (system-design §13, §17). Every one of these is a way screen content
+    // could have reached a diagnostics panel.
+    for (const smuggled of [
+      { ...base, note: 'the user asked about Auto Renew' },
+      { ...base, frame: 'iVBORw0KGgo' },
+      { ...base, details: { windowTitle: 'Billing Settings' } },
+      { ...base, userMessage: 'Pilot could not read the screen' },
+      { ...base, metric: 'transcript' },
+      { ...base, category: 'the user said “what does this do”' },
+      { ...base, value: 'fast' },
+      { ...base, value: -1 },
+    ]) {
+      expect(telemetrySampleSchema.safeParse(smuggled).success).toBe(false);
+    }
+  });
+});
+
+describe('conversation gate state schema', () => {
+  const base: ConversationGateState = {
+    telemetry: {
+      samples: [
+        {
+          seq: 0,
+          at: 1_700_000_000_000,
+          turn: 1,
+          metric: 'stt-duration',
+          value: 1_240,
+          category: null,
+        },
+      ],
+      capacity: DEFAULT_TELEMETRY_CAPACITY,
+      recorded: 1,
+      dropped: 0,
+    },
+    diagnosticsVisible: false,
+    pushToTalk: {
+      usable: false,
+      status: 'unavailable',
+      message: 'Type your question instead.',
+      blockingPermission: 'accessibility',
+      label: 'Right Option',
+    },
+    disclosure: null,
+    fixture: 'spoken-question',
+    demoFixtures: true,
+  };
+
+  it('accepts a fully populated state', () => {
+    expect(conversationGateStateSchema.parse(base).telemetry.samples).toHaveLength(1);
+  });
+
+  it('accepts the build with no shortcut and no recogniser, which is not the same as a refusal', () => {
+    const parsed = conversationGateStateSchema.parse({
+      ...base,
+      pushToTalk: null,
+      disclosure: null,
+      fixture: null,
+    });
+    expect(parsed.pushToTalk).toBeNull();
+  });
+
+  it('rejects a transcript, an image or any unknown field riding along', () => {
+    expect(conversationGateStateSchema.safeParse({ ...base, transcript: ['hello'] }).success).toBe(
+      false,
+    );
+    expect(conversationGateStateSchema.safeParse({ ...base, frame: 'AAAA' }).success).toBe(false);
+    expect(
+      conversationGateStateSchema.safeParse({
+        ...base,
+        telemetry: { ...base.telemetry, lastQuestion: 'what does this do' },
+      }).success,
+    ).toBe(false);
   });
 });
 

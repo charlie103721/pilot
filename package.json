@@ -23,6 +23,7 @@
     "demo:envelope": "pnpm build && pnpm --filter @pilot/interaction run demo:envelope",
     "demo:permissions": "pnpm --filter @pilot/desktop run demo:permissions",
     "demo:windows": "pnpm --filter @pilot/desktop run demo:windows",
+    "demo:conversation": "pnpm --filter @pilot/desktop run demo:conversation",
     "demo:voice": "pnpm build && pnpm --filter @pilot/interaction run demo:voice",
     "demo:response": "pnpm build && pnpm --filter @pilot/interaction run demo:response",
     "demo:interrupt": "pnpm build && pnpm --filter @pilot/interaction run demo:interrupt",

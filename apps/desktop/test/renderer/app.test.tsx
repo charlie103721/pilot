@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
-import { asUtteranceId, PilotError } from '@pilot/shared';
+import { asUtteranceId, PilotError, type InteractionState } from '@pilot/shared';
 import { FakeInteractionController, FIXTURE_WINDOW_RETINA } from '@pilot/platform/fakes';
 import type { PilotViewState } from '@pilot/platform';
 import { App } from '../../src/renderer/App.js';
@@ -14,6 +14,8 @@ import {
 } from '../../src/ipc/channels.js';
 import { createFakeScenarioDriver } from '../../src/main/scenarios.js';
 import type { ViewScenario } from '../../src/ipc/schemas.js';
+import { INTERACTION_STATE_PRESENTATION } from '../../src/conversation/view-model.js';
+import { conversationBridge } from './conversation-bridge.js';
 import { permissionBridge } from './permission-bridge.js';
 import { windowBridge } from './window-bridge.js';
 
@@ -44,6 +46,7 @@ function harness(options: { permissionFixture?: 'granted' | 'denied' } = {}): Ha
   // The panel now also draws the window picker (PR-009); the bridge serves its
   // channels so these smoke tests render the whole panel, not part of it.
   const windows = windowBridge({ controller, permissions: permissions.gate });
+  const conversation = conversationBridge({ controller });
   const listeners = new Set<(payload: unknown) => void>();
   const invocations: string[] = [];
   let pendingFailure: PilotError | null = null;
@@ -66,7 +69,9 @@ function harness(options: { permissionFixture?: 'granted' | 'denied' } = {}): Ha
         return Promise.resolve({ ok: false, error: error.toJSON() });
       }
       const served =
-        permissions.invoke(channelName, payload) ?? windows.invoke(channelName, payload);
+        permissions.invoke(channelName, payload) ??
+        windows.invoke(channelName, payload) ??
+        conversation.invoke(channelName, payload);
       if (served !== null) {
         return served;
       }
@@ -84,7 +89,9 @@ function harness(options: { permissionFixture?: 'granted' | 'denied' } = {}): Ha
     },
     subscribe(channelName: string, listener: (payload: unknown) => void): () => void {
       const served =
-        permissions.subscribe(channelName, listener) ?? windows.subscribe(channelName, listener);
+        permissions.subscribe(channelName, listener) ??
+        windows.subscribe(channelName, listener) ??
+        conversation.subscribe(channelName, listener);
       if (served !== null) {
         return served;
       }
@@ -137,7 +144,9 @@ describe('panel', () => {
 
     render(<App />);
 
-    expect((await screen.findByTestId('state-pill')).textContent).toBe('Idle');
+    expect((await screen.findByTestId('state-pill')).textContent).toBe(
+      INTERACTION_STATE_PRESENTATION.idle.label,
+    );
     expect(screen.getByTestId('selected-window').textContent).toBe('None selected');
     expect(screen.getByTestId('observation-state').textContent).toBe('Off');
     expect(screen.getByTestId('transcript-empty')).toBeTruthy();
@@ -153,7 +162,9 @@ describe('panel', () => {
     test.controller.set({ state: 'listening', liveTranscript: 'what does this toggle do' });
 
     await waitFor(() => {
-      expect(screen.getByTestId('state-pill').textContent).toBe('Listening');
+      expect(screen.getByTestId('state-pill').textContent).toBe(
+        INTERACTION_STATE_PRESENTATION.listening.label,
+      );
     });
     expect(screen.getByTestId('live-transcript').textContent).toBe('what does this toggle do');
   });
@@ -165,19 +176,26 @@ describe('panel', () => {
     render(<App />);
     await screen.findByTestId('state-pill');
 
-    const expected: Readonly<Record<ViewScenario, string>> = {
-      idle: 'Idle',
-      listening: 'Listening',
-      thinking: 'Thinking',
-      speaking: 'Speaking',
-      observing: 'Observing',
-      error: 'Error',
+    // Each scenario's label comes from the one place the app keeps its state
+    // copy (PR-010), so the header and the conversation cannot drift apart.
+    const expected: Readonly<Record<ViewScenario, InteractionState>> = {
+      idle: 'idle',
+      listening: 'listening',
+      thinking: 'thinking',
+      speaking: 'speaking',
+      observing: 'observing',
+      error: 'error',
     };
 
-    for (const [scenario, label] of Object.entries(expected) as [ViewScenario, string][]) {
+    for (const [scenario, state] of Object.entries(expected) as [
+      ViewScenario,
+      InteractionState,
+    ][]) {
       screen.getByTestId(`scenario-${scenario}`).click();
       await waitFor(() => {
-        expect(screen.getByTestId('state-pill').textContent).toBe(label);
+        expect(screen.getByTestId('state-pill').textContent).toBe(
+          INTERACTION_STATE_PRESENTATION[state].label,
+        );
       });
     }
   });

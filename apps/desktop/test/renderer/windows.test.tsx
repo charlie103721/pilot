@@ -16,6 +16,7 @@ import {
 } from '../../src/ipc/channels.js';
 import { WINDOW_DEMO_EVENTS, type PermissionFixtureName } from '../../src/ipc/schemas.js';
 import { OBSERVATION_INDICATORS } from '../../src/observation/view-model.js';
+import { conversationBridge } from './conversation-bridge.js';
 import { permissionBridge } from './permission-bridge.js';
 import { windowBridge } from './window-bridge.js';
 
@@ -40,6 +41,7 @@ function harness(options: { fixture?: PermissionFixtureName } = {}): Harness {
   const controller = new FakeInteractionController();
   const permissions = permissionBridge({ fixture: options.fixture ?? 'granted' });
   const windows = windowBridge({ controller, permissions: permissions.gate });
+  const conversation = conversationBridge({ controller });
   const listeners = new Set<(payload: unknown) => void>();
 
   controller.subscribe((view) => {
@@ -52,7 +54,9 @@ function harness(options: { fixture?: PermissionFixtureName } = {}): Harness {
     protocolVersion: 1,
     invoke(channelName: string, payload: unknown): Promise<BridgeResult<unknown>> {
       const served =
-        permissions.invoke(channelName, payload) ?? windows.invoke(channelName, payload);
+        permissions.invoke(channelName, payload) ??
+        windows.invoke(channelName, payload) ??
+        conversation.invoke(channelName, payload);
       if (served !== null) {
         return served;
       }
@@ -68,7 +72,9 @@ function harness(options: { fixture?: PermissionFixtureName } = {}): Harness {
     },
     subscribe(channelName: string, listener: (payload: unknown) => void): () => void {
       const served =
-        permissions.subscribe(channelName, listener) ?? windows.subscribe(channelName, listener);
+        permissions.subscribe(channelName, listener) ??
+        windows.subscribe(channelName, listener) ??
+        conversation.subscribe(channelName, listener);
       if (served !== null) {
         return served;
       }
