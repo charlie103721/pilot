@@ -21,7 +21,8 @@
   },
   "scripts": {
     "demo": "node ./dist/demo-cli.js",
-    "demo:envelope": "node ./dist/demo-envelope-cli.js"
+    "demo:envelope": "node ./dist/demo-envelope-cli.js",
+    "demo:voice": "node ./dist/demo-voice-cli.js"
   },
   "dependencies": {
     "@pilot/platform": "workspace:*",
