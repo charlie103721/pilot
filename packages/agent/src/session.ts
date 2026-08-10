@@ -30,7 +30,11 @@ import {
   type CapabilityReport,
 } from './capability.js';
 import { markFailedToolResults, toolFailureError } from './tool-result.js';
-import { pruneVisualContext, stripImageBlocks } from './visual-context.js';
+import {
+  pruneVisualContextByPolicy,
+  stripImageBlocks,
+  type VisualContextOptions,
+} from './visual-context.js';
 
 /**
  * Pi-backed `AgentSession`.
@@ -105,7 +109,19 @@ export interface PiAgentSessionOptions {
   readonly tools?: readonly AgentTool<never>[];
   /** Durable state. Omit to run entirely in memory. */
   readonly transcript?: TranscriptSink;
-  /** Image blocks kept in the model's active context (system-design §11). */
+  /**
+   * Active-context image limits and replacement records (system-design §10,
+   * §11). Defaults to {@link MVP_SCREEN_CONTEXT_POLICY} with no recorded
+   * summaries; pass `summaryFor` from a {@link createObservationNotebook} that
+   * the `observe_screen` tool writes to, and pruned frames become truthful,
+   * scene-stamped records instead of bare apologies.
+   */
+  readonly visualContext?: VisualContextOptions;
+  /**
+   * Optional extra cap on the *total* image blocks in active context, applied
+   * after the per-purpose limits. Kept from PR-005 for source compatibility; it
+   * can only shrink the context further, never widen a per-purpose limit.
+   */
   readonly keepMostRecentImages?: number;
   readonly idFactory?: IdFactory;
   /** Renders an envelope into the user turn. Defaults to {@link renderQuestionEnvelope}. */
@@ -207,7 +223,14 @@ export class PiAgentSession implements AgentSession {
     this.#transcript = options.transcript;
     this.#renderEnvelope = options.renderEnvelope ?? renderQuestionEnvelope;
 
-    const keepMostRecent = options.keepMostRecentImages ?? 2;
+    // One options object, built once: `transformContext` runs before every
+    // provider request, and rebuilding this per request would be pure waste.
+    const visualContext: VisualContextOptions = {
+      ...options.visualContext,
+      ...(options.keepMostRecentImages === undefined
+        ? {}
+        : { maxTotalImages: options.keepMostRecentImages }),
+    };
     this.#agent = new Agent({
       streamFn: (model, context, streamOptions) =>
         options.models.streamSimple(model, context, streamOptions),
@@ -216,8 +239,11 @@ export class PiAgentSession implements AgentSession {
         model: options.model,
         tools: (options.tools ?? []) as AgentTool<never>[],
       },
-      // Pi contract: transformContext must not throw. pruneVisualContext is total.
-      transformContext: async (messages) => pruneVisualContext(messages, { keepMostRecent }),
+      // Pi contract: transformContext must not throw. pruneVisualContextByPolicy
+      // is total by construction *and* falls back to the count-based pruner.
+      // This is the only place image blocks are held back from the provider;
+      // `this.#agent.state.messages` keeps every original block (§11).
+      transformContext: async (messages) => pruneVisualContextByPolicy(messages, visualContext),
       // Pilot tools return typed failure results instead of throwing, so that
       // `details` survives for the UI (see `tool-result.ts`). This hook is what
       // makes Pi agree they failed: it sets `isError` on the tool-result
@@ -254,9 +280,28 @@ export class PiAgentSession implements AgentSession {
 
     const runId = this.#ids.run();
     let resolve: () => void = () => undefined;
-    const completed = new Promise<void>((resolveCompleted) => {
+    const settled = new Promise<void>((resolveCompleted) => {
       resolve = resolveCompleted;
     });
+    /**
+     * DEFECT FOUND BY PR-022a, fixed here because every multi-observation demo
+     * and test trips over it. `agent_end` — the event `#settle` listens to —
+     * fires *before* `Agent.prompt()` has finished unwinding, so a caller that
+     * did the obvious thing:
+     *
+     *     await (await session.submit(q1)).completed;
+     *     await (await session.submit(q2)).completed;
+     *
+     * got `run-failed: "Agent is already processing a prompt"` on the second
+     * question, and every question after it. The events were right; the promise
+     * simply resolved a tick too early. Waiting for Pi's own idle signal makes
+     * `completed` mean what its callers assumed it meant. Terminal events are
+     * still emitted at `agent_end`, unchanged — only the promise waits.
+     */
+    const completed = settled
+      .then(() => this.#agent.waitForIdle())
+      .catch(() => undefined)
+      .then(() => undefined);
     const run: ActiveRun = { runId, utteranceId: envelope.utteranceId, settled: false, resolve };
     this.#active = run;
 

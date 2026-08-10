@@ -135,6 +135,34 @@ describe('PiAgentSession', () => {
     await run.completed;
   });
 
+  /**
+   * Regression, found by PR-022a's repeated-observation demo. `agent_end` fires
+   * before `Agent.prompt()` unwinds, so `completed` used to resolve a tick
+   * before Pi was ready — and the obvious sequential loop below failed on the
+   * second question with "Agent is already processing a prompt", and on every
+   * question after it. Three turns, because two would pass even if only the
+   * first hand-off were fixed.
+   */
+  it('accepts the next question as soon as the previous run completes', async () => {
+    const { session, harness, events } = newSession({});
+    harness.setResponses([
+      fauxAssistantMessage('one', { stopReason: 'stop' }),
+      fauxAssistantMessage('two', { stopReason: 'stop' }),
+      fauxAssistantMessage('three', { stopReason: 'stop' }),
+    ]);
+
+    for (let turn = 0; turn < 3; turn += 1) {
+      await (
+        await session.submit(envelope())
+      ).completed;
+    }
+
+    expect(events.filter((event) => event.type === 'run-failed')).toEqual([]);
+    expect(events.flatMap((event) => (event.type === 'run-completed' ? [event.text] : []))).toEqual(
+      ['one', 'two', 'three'],
+    );
+  });
+
   it('interrupt("abort") ends the run with run-aborted', async () => {
     const { session, harness, events } = newSession({ tokensPerSecond: 20 });
     harness.setResponses([fauxAssistantMessage('a '.repeat(500), { stopReason: 'stop' })]);
