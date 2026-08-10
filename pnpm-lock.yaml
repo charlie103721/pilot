@@ -82,6 +82,15 @@ importers:
         specifier: workspace:*
         version: link:../shared
 
+  packages/interaction:
+    dependencies:
+      '@pilot/platform':
+        specifier: workspace:*
+        version: link:../platform
+      '@pilot/shared':
+        specifier: workspace:*
+        version: link:../shared
+
   packages/platform:
     dependencies:
       '@pilot/shared':

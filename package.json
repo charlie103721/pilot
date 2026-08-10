@@ -16,6 +16,7 @@
     "test:watch": "vitest",
     "build": "tsc --build tsconfig.json && pnpm -r --if-present run build:bundle",
     "dev": "pnpm --filter @pilot/desktop run start",
+    "demo:interaction": "pnpm build && pnpm --filter @pilot/interaction run demo",
     "clean": "tsc --build tsconfig.json --clean"
   },
   "devDependencies": {

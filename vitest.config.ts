@@ -19,6 +19,10 @@ export default defineConfig({
         find: '@pilot/observation',
         replacement: fromRoot('./packages/observation/src/index.ts'),
       },
+      {
+        find: '@pilot/interaction',
+        replacement: fromRoot('./packages/interaction/src/index.ts'),
+      },
     ],
   },
   test: {
