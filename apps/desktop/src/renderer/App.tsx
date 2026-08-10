@@ -1,7 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { SerializedPilotError } from '@pilot/shared';
 import type { PilotViewState } from '@pilot/platform';
-import { VIEW_SCENARIOS, type ViewScenario } from '../ipc/schemas.js';
 import {
   buildConversationView,
   INTERACTION_STATE_PRESENTATION,
@@ -92,25 +91,6 @@ function StateHeader({ view }: { view: PilotViewState }) {
         <dd data-testid="speaking-state">{view.speaking ? 'Speaking' : 'Silent'}</dd>
       </dl>
     </header>
-  );
-}
-
-function ScenarioBar({ onApply }: { onApply: (scenario: ViewScenario) => void }) {
-  return (
-    <footer className="scenarios" aria-label="Fake states">
-      <span className="scenarios__label">Fake state</span>
-      {VIEW_SCENARIOS.map((scenario) => (
-        <button
-          key={scenario}
-          type="button"
-          className="button button--quiet"
-          data-testid={`scenario-${scenario}`}
-          onClick={() => onApply(scenario)}
-        >
-          {scenario}
-        </button>
-      ))}
-    </footer>
   );
 }
 
@@ -209,13 +189,6 @@ export function App() {
             : 'Asking Pilot about a window is unavailable until Screen Recording is allowed.'}
         </p>
       )}
-
-      <ScenarioBar
-        onApply={(scenario) => {
-          setDismissedCommandError(false);
-          shell.applyScenario(scenario);
-        }}
-      />
     </main>
   );
 }

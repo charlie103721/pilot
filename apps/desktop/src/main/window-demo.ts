@@ -1,78 +1,24 @@
-import { PilotError, type ObservedWindow, type WindowId } from '@pilot/shared';
-import type { PilotViewState } from '@pilot/platform';
-import type { FakeInteractionController, FakeWindowAdapter } from '@pilot/platform/fakes';
+import { PilotError, type ObservedWindow } from '@pilot/shared';
+import type { FakeWindowAdapter } from '@pilot/platform/fakes';
 import { FIXTURE_GEOMETRY_BY_WINDOW, FIXTURE_WINDOWS } from '@pilot/platform/fakes';
 import type { WindowDemoEvent } from '../ipc/schemas.js';
-import type { ObservationInteraction, WindowFeedEvent } from './window-gate.js';
 
 /**
- * The fake half of the window-picker wiring.
+ * Runtime controls for the *fake* window adapter.
  *
- * Two things live here, both temporary by design:
+ * This is the surviving half of PR-009's `main/window-feed.ts`. The other half
+ * — an `ObservationInteraction` port that reproduced `@pilot/interaction`'s
+ * `windows-changed` and `window-closed` rows against the fake controller — was
+ * deleted by PR-029 (runbook follow-up 10): with the real controller in place
+ * the port is `(event) => controller.send(event)` and the §16 behaviour lives
+ * only in the transition table.
  *
- *  1. {@link createFakeObservationInteraction} — the {@link ObservationInteraction}
- *     port over the PR-001 fake controller. The fake controller has no event
- *     input, so the two window events are applied to its view state directly.
- *     The patches below are the ones `@pilot/interaction`'s transition table
- *     applies for `windows-changed` and `window-closed`; PR-029 deletes this
- *     file and passes `(event) => controller.send(event)` instead.
- *  2. {@link createFakeWindowDemoDriver} — the runtime controls that let a
- *     reviewer close or retitle the selected window without editing source.
- *     PR-011's real enumeration cannot be exercised on Linux (runbook §5
- *     amendment 8), and the §16 behaviour is exactly what needs demonstrating.
+ * What is left is the reviewer's ability to close or retitle the selected
+ * window without editing source. PR-011's real enumeration cannot run on Linux
+ * (runbook §5 amendment 8) and §16's behaviour is exactly what needs
+ * demonstrating, so these stay until PR-028 puts a real window adapter behind
+ * the shell.
  */
-
-/**
- * `@pilot/interaction`'s `window-closed` row, reproduced against the fake:
- * stop, clear the selection, and say why (mvp-01 §7 recoverable failure,
- * system-design §16).
- */
-export function windowClosedError(windowId: WindowId): PilotError {
-  return new PilotError('window-closed', 'The selected window closed', {
-    userMessage: 'The window Pilot was watching closed. Choose another window.',
-    details: { windowId },
-  });
-}
-
-export function createFakeObservationInteraction(
-  controller: FakeInteractionController,
-): ObservationInteraction {
-  return {
-    snapshot: () => controller.snapshot(),
-    subscribe: controller.subscribe,
-    dispatch: (command) => controller.dispatch(command),
-    report: (event: WindowFeedEvent) => {
-      switch (event.type) {
-        case 'windows-changed': {
-          const selected = controller.snapshot().selectedWindow;
-          if (selected === null) {
-            return;
-          }
-          // A window still in the list is replaced by its current form, so a
-          // retitle reaches the summary. One that has left the list is kept
-          // until `window-closed` arrives, exactly as the real table does.
-          const fresh = event.windows.find((entry) => entry.windowId === selected.windowId);
-          if (fresh !== undefined && fresh !== selected) {
-            controller.set({ selectedWindow: fresh });
-          }
-          return;
-        }
-        case 'window-closed': {
-          const patch: Partial<PilotViewState> = {
-            state: 'error',
-            selectedWindow: null,
-            observationEnabled: false,
-            speaking: false,
-            liveTranscript: null,
-            lastError: windowClosedError(event.windowId).toJSON(),
-          };
-          controller.set(patch);
-          return;
-        }
-      }
-    },
-  };
-}
 
 /**
  * Asynchronous because restoring the fixture list has to read the current one

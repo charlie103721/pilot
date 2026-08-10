@@ -37,7 +37,7 @@ function harness(
 ): Harness {
   const controller = new FakeInteractionController();
   const permissions = permissionBridge({ fixture: 'granted' });
-  const windows = windowBridge({ controller, permissions: permissions.gate });
+  const windows = windowBridge({ permissions: permissions.gate });
   const conversation = conversationBridge({ controller, ...options });
   const listeners = new Set<(payload: unknown) => void>();
 

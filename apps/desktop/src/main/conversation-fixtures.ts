@@ -14,15 +14,16 @@ import type { ConversationGate, SpeechDisclosureSource } from './conversation-ga
  * Fixture-driven conversation replay.
  *
  * `docs/implementation.md` requires PR-010 to demo "a fixture-driven
- * conversation and ring-buffer telemetry". Nothing in this build can *cause* a
- * conversation — there is no recogniser (PR-014), no agent (PR-029) and no
- * capture (PR-028) — so the replay drives the same fake controller the panel is
- * already reading and lets the real {@link ConversationGate} derive the §17
- * timings from the resulting view-state stream, exactly as it will from the
- * real controller. Only the measurements the view state cannot show
- * (capture-to-observation latency, image bytes, the active image count) are
- * written into the ring directly, which is the same call the observation lane
- * will make.
+ * conversation and ring-buffer telemetry". This is that replay: scripted view
+ * states on a fake controller, plus a scripted clock, so the printed §17
+ * timings are the ones the script says rather than however long a machine took.
+ *
+ * **The app no longer uses it.** PR-029 replaced the fake controller with the
+ * real one and the fake agent with a real `PiAgentSession`, so the panel's
+ * "Replay" bar now holds actual conversations — see `main/conversation-driver.ts`.
+ * What survives here is the *rendering* fixture: `src/conversation/demo.ts`'s
+ * headless walkthrough and the diagnostics privacy tests need exact words and
+ * an exact clock, and a real conversation gives neither.
  *
  * The scripts below carry question and answer text, because a conversation
  * panel with no words in it demonstrates nothing. **None of that text reaches
@@ -65,7 +66,9 @@ export function createReplayClock(base: () => number = () => Date.now()): Replay
  * the state runbook follow-up 4 is about: no way to speak at all, so the text
  * box is the only way to ask. There is no real `CGEventTap` on Linux and none
  * of PR-015's Mac verification has run (runbook §5 amendment 8), so an
- * environment switch is the only way to see it without editing source.
+ * environment switch is the only way to see it without editing source. Still
+ * used by `main/index.ts` after PR-029: the hotkey adapter is not the boundary
+ * PR-029 replaced.
  */
 export function resolveHotkeyAvailability(raw: string | undefined): HotkeyAvailability {
   switch (raw) {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { PilotError } from '@pilot/shared';
 import { FakeInteractionController, FIXTURE_WINDOW_RETINA } from '@pilot/platform/fakes';
 import { buildTrayMenu, buildTrayTooltip, TrayController } from '../../src/main/tray.js';
-import { DEMO_FAILURE } from '../../src/main/scenarios.js';
 import { FakeTrayHost } from './support.js';
 
 function actions() {
@@ -16,6 +16,20 @@ function actions() {
     },
   };
 }
+
+/**
+ * A recoverable failure to render. Was `scenarios.ts`'s `DEMO_FAILURE` until
+ * PR-029 deleted the fake scenario driver along with the fake controller it
+ * drove; the tooltip rule under test has nothing to do with where the error
+ * came from.
+ */
+const DEMO_FAILURE = new PilotError(
+  'helper-unavailable',
+  'The Pilot helper process is not running',
+  {
+    userMessage: 'Pilot lost contact with its screen helper. Observation is unavailable.',
+  },
+);
 
 describe('tray menu rendering', () => {
   it('shows the interaction state and the selected window', () => {

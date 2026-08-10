@@ -73,24 +73,21 @@ export const interactionCommandSchema: z.ZodType<InteractionCommand> = z.discrim
   ],
 );
 
-/**
- * Scenarios the fake shell can be driven into. PR-002 ships no real platform,
- * agent or voice code, so the demo needs an explicit way to reach every visible
- * state — including the failure state, which must be rendered rather than
- * silently swallowed.
+/*
+ * REMOVED BY PR-029: `VIEW_SCENARIOS` / `viewScenarioSchema`.
+ *
+ * PR-002's scenario bar forced the *fake* controller into a named visible state
+ * by patching its view state. With the real `PilotInteractionController` there
+ * is no such door and there should not be one: a state is reached by sending
+ * the machine an input, and the machine decides. `shell.ts` said so itself —
+ * "Present only while the shell runs on fakes. Omit once PR-029 lands."
+ *
+ * What replaced it, without a forced state anywhere: the replay bar
+ * (`pilot:demo/conversation`) now holds real conversations, `PILOT_*_FIXTURE`
+ * environment switches reach the permission, hotkey, disclosure and model
+ * states, and the fake window controls (`pilot:demo/window-event`) still close
+ * and retitle the selected window.
  */
-export const VIEW_SCENARIOS = [
-  'idle',
-  'listening',
-  'thinking',
-  'speaking',
-  'observing',
-  'error',
-] as const;
-
-export type ViewScenario = (typeof VIEW_SCENARIOS)[number];
-
-export const viewScenarioSchema = z.enum(VIEW_SCENARIOS);
 
 export const emptyPayloadSchema = z.strictObject({});
 
@@ -520,11 +517,12 @@ export type PushToTalk = z.infer<typeof pushToTalkSchema>;
  * Fixture conversations a reviewer can replay at runtime.
  *
  * `docs/implementation.md` requires PR-010 to demo "a fixture-driven
- * conversation and ring-buffer telemetry", and nothing in this build can
- * *cause* a conversation: there is no recogniser (PR-014), no agent (PR-029)
- * and no capture (PR-028). These names are the vocabulary for driving one
- * anyway, validated like any other renderer input and refused outright by a
- * build with no fixture driver behind it.
+ * conversation and ring-buffer telemetry". PR-010 could only replay scripted
+ * view states; since PR-029 these same five names drive **real** commands into
+ * the real controller and a real `PiAgentSession` (`main/conversation-driver.ts`),
+ * so the wire vocabulary is unchanged and what it does behind the panel is not.
+ * The recogniser (PR-032) and capture (PR-028) are still mocked. Validated like
+ * any other renderer input and refused outright by a build with no driver.
  */
 export const CONVERSATION_FIXTURES = [
   /** Held the key, asked, Pilot looked, answered aloud in chunks. */

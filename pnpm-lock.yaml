@@ -38,6 +38,9 @@ importers:
 
   apps/desktop:
     dependencies:
+      '@pilot/agent':
+        specifier: workspace:*
+        version: link:../../packages/agent
       '@pilot/interaction':
         specifier: workspace:*
         version: link:../../packages/interaction

@@ -34,7 +34,7 @@ function harness(options: PermissionBridgeOptions = {}): Harness {
   const permissions = permissionBridge(options);
   // The panel now also draws the window picker (PR-009), so the bridge has to
   // serve its channels for the onboarding cases to render at all.
-  const windows = windowBridge({ controller, permissions: permissions.gate });
+  const windows = windowBridge({ permissions: permissions.gate });
   const conversation = conversationBridge({ controller });
   const listeners = new Set<(payload: unknown) => void>();
   controller.subscribe((view) => {

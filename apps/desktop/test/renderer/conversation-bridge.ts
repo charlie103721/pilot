@@ -40,7 +40,8 @@ export interface ConversationBridge {
 }
 
 export interface ConversationBridgeOptions {
-  readonly controller: FakeInteractionController;
+  /** Omit to let the harness build its own; the gate reads it, nothing else. */
+  readonly controller?: FakeInteractionController;
   readonly hotkey?: HotkeyAvailability;
   readonly withHotkey?: boolean;
   readonly disclosure?: SpeechRecognitionDisclosure;
@@ -49,7 +50,7 @@ export interface ConversationBridgeOptions {
 
 export function conversationBridge(options: ConversationBridgeOptions): ConversationBridge {
   const harness = conversationHarness({
-    controller: options.controller,
+    ...(options.controller === undefined ? {} : { controller: options.controller }),
     ...(options.hotkey === undefined ? {} : { hotkey: options.hotkey }),
     ...(options.withHotkey === undefined ? {} : { withHotkey: options.withHotkey }),
     ...(options.disclosure === undefined ? {} : { disclosure: options.disclosure }),

@@ -1,6 +1,7 @@
 export * from './pinned.js';
 export * from './capability.js';
 export * from './model-profile.js';
+export * from './development-model.js';
 export * from './profile-store.js';
 export * from './auth-facade.js';
 export * from './visual-context.js';
