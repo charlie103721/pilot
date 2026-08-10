@@ -14,10 +14,19 @@ import type { WindowDemoEvent } from '../ipc/schemas.js';
  * only in the transition table.
  *
  * What is left is the reviewer's ability to close or retitle the selected
- * window without editing source. PR-011's real enumeration cannot run on Linux
- * (runbook §5 amendment 8) and §16's behaviour is exactly what needs
- * demonstrating, so these stay until PR-028 puts a real window adapter behind
- * the shell.
+ * window without editing source.
+ *
+ * **PR-028 kept them, and narrowed them.** They were PR-028's to remove once
+ * real enumeration was wired, and real enumeration now is wired — but only when
+ * there is a helper to enumerate through. On a machine that is not a Mac
+ * `main/platform-runtime.ts` still chooses `FakeWindowAdapter` (runbook §5
+ * amendment 8: there is no macOS here), and §16's window-loss behaviour is
+ * exactly what needs demonstrating. So the controls survive *for that build
+ * only*: `main/index.ts` constructs this driver only when
+ * `PlatformRuntime.fakeWindows` is present, and passes `demoEvents: false` to
+ * `WindowGate` otherwise, so a build on the real enumeration does not offer the
+ * panel a control the main process would refuse. Against the real adapter — the
+ * Swift helper, or the Node helper stub — a window is closed by closing it.
  */
 
 /**

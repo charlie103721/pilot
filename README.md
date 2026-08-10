@@ -590,6 +590,85 @@ the same commands the panel's own buttons dispatch, into the real interaction
 controller and a real `PiAgentSession`. The words in the answers come from Pi's
 faux provider, not from a model.
 
+## Demo (PR-028 — observe a real selected window)
+
+```sh
+pnpm demo:observe                           # headless walkthrough, no display needed
+```
+
+**Read this first: `docs/implementation.md`'s demo for PR-028 — "select a real
+window, inspect local frames/pointer target, pause, and verify immediate
+clearing" — cannot be run on the development machine.** There is no macOS and no
+Swift toolchain here (`docs/runbook.md` §5 amendment 8), so no ScreenCaptureKit
+stream has ever produced a pixel and no TCC prompt has ever appeared. The Mac
+commands that do run it are `docs/handoff.md` §1 step 7.
+
+`pnpm demo:observe` is the equivalent that *can* be run here, and it is not a
+model of the app — it is the app. The window gate, the permission gate, the real
+interaction controller, `ObservationSession`, `ObservationCore` and
+`PilotScreenContextService` are the shipping objects, driving the real
+`MacWindowAdapter`, `MacPermissionAdapter`, `MacAccessibilityAdapter` and
+`MacObservationAdapter` over the real framed stdio transport. The only stand-in
+is the process on the far end of the pipe: the Node helper stub
+`packages/platform-mac` tests itself against, which is a second, independent
+implementation of the wire protocol.
+
+Seven sections:
+
+1. **The permission refusal an unwired facade produces.** `ScreenContextConditions.permissions`
+   defaults to `'unknown'`, which system-design §10 step 1 refuses. Then the real
+   states arrive from `MacPermissionAdapter`, with PR-011's attribution verdict
+   beside them.
+2. **Selecting a window starts capture** — the transition table's `select-window`
+   row — **and the frames reach the ring**, with `encoding=png` (see below).
+3. **One observation** through the seven-step policy, printing the frame
+   provenance, the image bytes, the pointer, the accessibility target the
+   timeline recorded, and the three §17 numbers it wrote to the diagnostics ring.
+4. **Pause clears immediately**, through `RetentionGuard.clearFor` rather than
+   through `ObservationSession` alone, so the decoded-frame cache goes with the
+   ring. An observation asked for while paused is refused, not answered.
+5. **The selected window closes** — driven by the real `MacWindowAdapter` diff,
+   nothing here fakes the event — capture stops, the buffers clear, and the panel
+   asks for a new selection (system-design §16).
+6. **Two permission states that refuse**: Screen Recording denied, and — the one
+   that matters — every permission `granted` while macOS credits the grant to the
+   helper. PR-011's verdict is what turns the second into a refusal instead of a
+   capture that quietly returns nothing.
+7. **What none of it proves.** Printed by the demo itself, so it cannot be read
+   as a verification it is not.
+
+**Capture is asked for `png`, not `jpeg`.** PR-018 measured a JPEG *source*
+frame at ~165 ms of pure-JS decode per observation needing a pointer crop — the
+only path over §17's 150 ms budget — and a second JPEG generation roughly
+doubling the visibly-damaged pixels on small text. `bgra` avoids both but does
+not fit the 16 MiB ring. The choice lives at the composition root
+(`CAPTURE_ENCODING` in `apps/desktop/src/main/platform-runtime.ts`), which is
+the only place in the product that starts a stream.
+
+In the app, the same thing by hand — the whole real stack, on Linux, against the
+stub:
+
+```sh
+# The path must be absolute: the Electron main process does not run from the
+# repository root.
+PILOT_HELPER_STUB_PATH="$PWD/packages/platform-mac/test/support/helper-stub.ts" \
+  PILOT_HELPER_STUB='{"permissions":{"screen-recording":"granted","accessibility":"granted","microphone":"granted","speech-recognition":"granted"},"desktop":{"windows":[{"windowNumber":42,"ownerPid":501,"applicationName":"Safari","applicationBundleId":"com.apple.Safari","title":"Billing Settings","titleAvailable":true,"bounds":{"x":100,"y":80,"width":1200,"height":800},"displayNumber":1,"isOnScreen":true,"layer":0}],"displays":[{"displayNumber":1,"bounds":{"x":0,"y":0,"width":1728,"height":1117},"scaleFactor":2,"isPrimary":true}]}}' \
+  pnpm dev
+```
+
+The stub is TypeScript run by Node's own type stripping, and the Electron binary
+is not Node, so the interpreter is named rather than assumed: `node` from `PATH`
+inside Electron, `process.execPath` under plain Node, or
+`PILOT_HELPER_STUB_NODE` when neither is right. A helper that will not start no
+longer takes the application with it — the panel opens and the window and
+permission gates report `helper-unavailable` where the user can see it.
+
+Without that variable the app runs on the fake window and permission adapters
+and has **no capture adapter at all** — the startup log says which and why
+(`platform`, `platformReason`, `capture`), and every observation is refused with
+a typed error naming the missing capture source rather than an empty ring naming
+nothing. `PILOT_PLATFORM=fakes` forces that build on a Mac.
+
 ## Demo (PR-029 — text conversation with a real Pi session)
 
 ```sh
