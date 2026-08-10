@@ -49,6 +49,13 @@ import type { WindowDemoDriver } from './window-demo.js';
 export interface DesktopShellAppInfo {
   readonly version: string;
   readonly platform: string;
+  /**
+   * True when the shell is running on real platform adapters rather than fakes
+   * (PR-028). Optional and defaulting to `false`, so a caller written before
+   * there was a real platform to run on still compiles and still reports the
+   * truth about itself.
+   */
+  readonly usesRealPlatform?: boolean;
 }
 
 export interface DesktopShellOptions {
@@ -234,7 +241,7 @@ export class DesktopShell {
       version: this.#options.appInfo.version,
       protocolVersion: IPC_PROTOCOL_VERSION,
       platform: this.#options.appInfo.platform,
-      usesRealPlatform: false,
+      usesRealPlatform: this.#options.appInfo.usesRealPlatform ?? false,
     }));
 
     this.router.register(viewStateGetChannel, () => this.#controller.snapshot());

@@ -52,6 +52,19 @@ const workspaceAliases = [
     replacement: fromApp('../../packages/interaction/src/index.ts'),
   },
   {
+    // PR-028: the main process owns a real `ObservationCore` ring behind
+    // PR-019's `PilotScreenContextService`. Main-process only — no frame, no
+    // decoded pixel and no image codec reaches Chromium.
+    find: '@pilot/observation',
+    replacement: fromApp('../../packages/observation/src/index.ts'),
+  },
+  {
+    // PR-028: the macOS adapters and the framed stdio transport. Main-process
+    // only, and it spawns a child process, so it must never be renderer-side.
+    find: '@pilot/platform-mac',
+    replacement: fromApp('../../packages/platform-mac/src/index.ts'),
+  },
+  {
     // PR-029: the main process builds a real `PiAgentSession`. This pulls
     // `@earendil-works/pi-agent-core` and `@earendil-works/pi-ai` into the main
     // bundle, which is what `ssr.noExternal` below is for — the packaged asar

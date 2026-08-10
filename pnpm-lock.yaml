@@ -44,9 +44,15 @@ importers:
       '@pilot/interaction':
         specifier: workspace:*
         version: link:../../packages/interaction
+      '@pilot/observation':
+        specifier: workspace:*
+        version: link:../../packages/observation
       '@pilot/platform':
         specifier: workspace:*
         version: link:../../packages/platform
+      '@pilot/platform-mac':
+        specifier: workspace:*
+        version: link:../../packages/platform-mac
       '@pilot/shared':
         specifier: workspace:*
         version: link:../../packages/shared

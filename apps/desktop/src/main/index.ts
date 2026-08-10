@@ -1,11 +1,6 @@
 import { app, ipcMain, type IpcMainInvokeEvent } from 'electron';
 import { asConversationId, createIdFactory, createJsonSink, createLogger } from '@pilot/shared';
-import {
-  FakeHotkeyAdapter,
-  FakePermissionAdapter,
-  FakeSpeechInputAdapter,
-  FakeWindowAdapter,
-} from '@pilot/platform/fakes';
+import { FakeHotkeyAdapter, FakeSpeechInputAdapter } from '@pilot/platform/fakes';
 import { createDevelopmentModelSource, resolveDevelopmentModelFixture } from '@pilot/agent';
 import { IPC_TRANSPORT } from '../ipc/channels.js';
 import { createAgentRuntime } from './agent-runtime.js';
@@ -24,6 +19,8 @@ import {
   resolveFromMain,
 } from './electron-hosts.js';
 import { createInteractionRuntime, createObservationInteraction } from './interaction-runtime.js';
+import { createObservationRuntime, retentionEventForFeed } from './observation-runtime.js';
+import { createPlatformRuntime } from './platform-runtime.js';
 import { PermissionGate } from './permission-gate.js';
 import { createPermissionFixtureSource, resolvePermissionFixture } from './permission-fixtures.js';
 import { createSettingsShortcut } from './settings-shortcut.js';
@@ -41,28 +38,45 @@ import { createFakeWindowDemoDriver } from './window-demo.js';
  * a window. Everything after that is composition — the behaviour lives in
  * `shell.ts` and its collaborators.
  *
- * PR-029 replaced one fake boundary here: **the agent**. What the panel talks to
- * is now `@pilot/interaction`'s real state machine driving a real
- * `PiAgentSession` over a real Pi `Agent`. Text in, streamed answer out.
+ * PR-029 replaced one fake boundary here: **the agent**. PR-028 replaced the
+ * next one: **observation**. The window picker, the permission states and the
+ * capture lifecycle now run on `main/platform-runtime.ts`'s chosen adapters, and
+ * the frames land in a real `ObservationCore` ring behind PR-019's real
+ * `PilotScreenContextService` (`main/observation-runtime.ts`).
  *
  * What is still fake, and who takes each one:
  *
- * | boundary        | today                             | owner   |
- * | --------------- | --------------------------------- | ------- |
- * | permissions     | `FakePermissionAdapter`           | PR-028  |
- * | window list     | `FakeWindowAdapter`               | PR-028  |
- * | screen capture  | mocked port + `FakeScreenContext` | PR-028/030 |
- * | speech in       | `FakeSpeechInputAdapter`          | PR-032  |
- * | speech out      | silent adapter                    | PR-033  |
- * | model           | Pi's faux provider                | PR-037  |
- * | persistence     | none (in-memory session)          | PR-036  |
+ * | boundary        | today                                      | owner   |
+ * | --------------- | ------------------------------------------ | ------- |
+ * | permissions     | real adapter; fake only when `kind: fakes`  | —       |
+ * | window list     | real adapter; fake only when `kind: fakes`  | —       |
+ * | screen capture  | real; **no capture at all** on `kind: fakes`| —       |
+ * | `observe_screen`| `FakeScreenContextService` on the agent side| PR-030  |
+ * | question anchor | `FakeQuestionAnchorSource`                 | PR-031  |
+ * | speech in       | `FakeSpeechInputAdapter`                   | PR-032  |
+ * | speech out      | silent adapter                             | PR-033  |
+ * | model           | Pi's faux provider                         | PR-037  |
+ * | persistence     | none (in-memory session)                   | PR-036  |
  *
- * Every one of them is reachable without editing source:
+ * `kind: fakes` is what a machine that is not a Mac gets, and it is reported
+ * with its reason rather than inferred. **The whole real observation path is
+ * still reachable on Linux**, against the Node helper stub that
+ * `packages/platform-mac` tests itself with:
+ *
+ *   PILOT_HELPER_STUB_PATH="$PWD/packages/platform-mac/test/support/helper-stub.ts" \
+ *     PILOT_HELPER_STUB='{"permissions":{"screen-recording":"granted","accessibility":"granted","microphone":"granted","speech-recognition":"granted"}}' \
+ *     pnpm dev
+ *
+ * (absolute: the main process does not run from the repository root, and the
+ * stub needs a desktop in `PILOT_HELPER_STUB` to enumerate — see the README)
+ *
+ * Every fixture state is reachable without editing source:
  *
  *   PILOT_MODEL_FIXTURE=faux-text-only pnpm dev   # the capability gate refuses
- *   PILOT_PERMISSION_FIXTURE=denied pnpm dev      # onboarding states
+ *   PILOT_PERMISSION_FIXTURE=denied pnpm dev      # onboarding states (fakes only)
  *   PILOT_HOTKEY_FIXTURE=permission-missing pnpm dev
  *   PILOT_SPEECH_DISCLOSURE=remote pnpm dev
+ *   PILOT_PLATFORM=fakes pnpm dev                 # force the fakes on a Mac
  */
 
 const logger = createLogger({
@@ -100,6 +114,28 @@ if (!singleInstance.isPrimary) {
   // costs zero provider requests.
   const agentRuntime = createAgentRuntime({ conversationId, source: modelSource, logger });
 
+  // The platform (PR-028). One decision, in one place: the real macOS adapters
+  // when there is a helper to talk to, the fakes otherwise, and the reason
+  // either way. `start()` is awaited inside `app.whenReady()` below, because it
+  // spawns a child process.
+  const platform = createPlatformRuntime({
+    logger,
+    resourcesPath: process.resourcesPath,
+  });
+
+  // The observation boundary (PR-028). Built before the controller because the
+  // controller takes its `ObservationControlPort` — runbook follow-up 23: "PR-028
+  // passes the real capture lifecycle there".
+  const observation = createObservationRuntime({
+    capture: platform.capture,
+    windows: platform.windows,
+    accessibility: platform.accessibility,
+    ...(platform.permissions.attribution === undefined
+      ? {}
+      : { attribution: platform.permissions.attribution.bind(platform.permissions) }),
+    logger,
+  });
+
   // The interaction controller (PR-006/024/025/026/027), real at last. The
   // recogniser it is given is still mocked; it is constructed here rather than
   // inside the runtime so the replay bar can make recognition *fail*, which is
@@ -109,8 +145,16 @@ if (!singleInstance.isPrimary) {
     agent: agentRuntime.session,
     conversationId,
     speechInput,
+    observation: observation.port,
     logger,
   });
+
+  // §10 step 1 takes the pause switch and the observation switch from the
+  // machine, which is the only thing that knows them.
+  controller.subscribe((view) => {
+    observation.noteViewState(view);
+  });
+  observation.noteViewState(controller.snapshot());
 
   if (!agentRuntime.capability.ok) {
     // Say it now rather than when the user asks their first question. The
@@ -119,14 +163,19 @@ if (!singleInstance.isPrimary) {
     controller.send({ type: 'failure', error: agentRuntime.capability.error });
   }
 
-  // Permission onboarding (PR-008). The fixture the app boots into is chosen by
-  // the environment so every state is reachable without editing source:
+  // Permission onboarding (PR-008), now on the platform's own adapter. The
+  // named fixtures survive only on the fake build — a real TCC state cannot be
+  // forced from a panel, and offering a control that would be refused is the
+  // thing PR-009 exists not to do.
   //   PILOT_PERMISSION_FIXTURE=denied pnpm dev
-  const permissionAdapter = new FakePermissionAdapter();
-  const fixtures = createPermissionFixtureSource(
-    permissionAdapter,
-    resolvePermissionFixture(process.env['PILOT_PERMISSION_FIXTURE']),
-  );
+  const permissionAdapter = platform.permissions;
+  const fixtures =
+    platform.fakePermissions === null
+      ? undefined
+      : createPermissionFixtureSource(
+          platform.fakePermissions,
+          resolvePermissionFixture(process.env['PILOT_PERMISSION_FIXTURE']),
+        );
   const permissions = new PermissionGate({
     adapter: permissionAdapter,
     // On anything but macOS this seam reports itself unavailable, and the panel
@@ -135,7 +184,7 @@ if (!singleInstance.isPrimary) {
       platform: process.platform,
       adapter: permissionAdapter,
     }),
-    fixtures,
+    ...(fixtures === undefined ? {} : { fixtures }),
     logger,
   });
 
@@ -143,7 +192,13 @@ if (!singleInstance.isPrimary) {
   // other resting state), so the gate's snapshot has to reach it. Until one
   // arrives the controller holds `null`, which means "nothing reported yet" and
   // deliberately does not block — never "granted".
+  //
+  // The same snapshot is what §10 step 1 validates (runbook follow-up 16): with
+  // it unwired every observation is refused as `permission-denied`, so this line
+  // is the difference between an observation path that works and one that looks
+  // broken for the wrong reason.
   permissions.subscribe((state) => {
+    observation.notePermissions(state.snapshot);
     if (state.snapshot !== null) {
       controller.send({ type: 'permissions-changed', permissions: state.snapshot });
     }
@@ -175,36 +230,62 @@ if (!singleInstance.isPrimary) {
     now: () => replayClock.now(),
     logger,
   });
+  // §17's three capture-side numbers — capture-to-observation latency, image
+  // bytes and the active image count — are the ones PR-010 deliberately left to
+  // this PR, because none of them can be seen from the view-state stream.
+  observation.attachTelemetry(conversation.telemetry);
   // Availability only. Turning `hotkey-down`/`hotkey-up` into
   // `push-to-talk-down`/`push-to-talk-up` is runbook follow-up 19, owned by
   // PR-032; wiring it here would put the same mapping in two places.
   void hotkeyAdapter.start();
 
-  // Window picker and observation controls (PR-009). Still the PR-001 fake
-  // adapter: PR-011's real enumeration cannot run here, and PR-012 owns the
-  // capture that a selection will eventually start. What *is* real now is the
-  // interaction side — `report` is `controller.send`, so `windows-changed`,
+  // Window picker and observation controls (PR-009), on the platform's own
+  // enumeration (PR-028). `report` is `controller.send`, so `windows-changed`,
   // `window-closed`, `screen-locked` and `screen-unlocked` are answered by the
-  // transition table rather than by a copy of it (runbook follow-ups 10, 11).
-  const windowAdapter = new FakeWindowAdapter();
+  // transition table rather than by a copy of it (runbook follow-ups 10, 11) —
+  // and each of them now also names the retention occasion for the clear the
+  // table is about to ask for, so the log says "screen-lock" rather than
+  // guessing (follow-up 17).
   const observationInteraction = createObservationInteraction(controller);
   const windows = new WindowGate({
-    windows: windowAdapter,
+    windows: platform.windows,
     interaction: {
       ...observationInteraction,
       dispatch: (command) => {
         conversation.noteCommand(command);
+        if (command.type === 'pause') {
+          observation.noteRetentionEvent('pause');
+        } else if (command.type === 'select-window') {
+          observation.noteRetentionEvent('window-change');
+        } else if (command.type === 'set-observation-enabled' && !command.enabled) {
+          observation.noteRetentionEvent('observation-disabled');
+        }
         observationInteraction.dispatch(command);
+      },
+      report: (event) => {
+        const retentionEvent = retentionEventForFeed(event);
+        if (retentionEvent !== null) {
+          observation.noteRetentionEvent(retentionEvent);
+        }
+        observationInteraction.report(event);
       },
     },
     permissions,
-    demoEvents: true,
+    // The fake window-lifecycle controls are offered only by a build that has a
+    // fake window adapter behind them (PR-028's half of runbook follow-up 10).
+    // On the real enumeration the panel must not offer to close a window Pilot
+    // does not own, and the shell would refuse it.
+    demoEvents: platform.fakeWindows !== null,
     logger,
   });
-  const windowDemoDriver = createFakeWindowDemoDriver({
-    adapter: windowAdapter,
-    selected: () => controller.snapshot().selectedWindow,
-  });
+  const fakeWindows = platform.fakeWindows;
+  const windowDemoDriver =
+    fakeWindows === null
+      ? undefined
+      : createFakeWindowDemoDriver({
+          adapter: fakeWindows,
+          selected: () => controller.snapshot().selectedWindow,
+        });
   // The panel's "Replay" bar. Since PR-029 it holds real conversations against
   // the real controller instead of replaying scripted view states.
   const conversationFixtureDriver = createLiveConversationDriver({
@@ -223,7 +304,25 @@ if (!singleInstance.isPrimary) {
       ? { file: resolveFromMain('../renderer/index.html') }
       : { url: rendererDevUrl };
 
-  const start = (): void => {
+  const start = async (): Promise<void> => {
+    // Spawns the helper, when there is one. Before the shell, so the first
+    // window list and the first permission read have something to talk to.
+    //
+    // A helper that will not start must not take the application with it: the
+    // panel is where the user is told what happened, and the window and
+    // permission gates already surface `helper-unavailable` as a typed
+    // `lastError`. Quitting instead would leave them with a menu bar item that
+    // vanished and no explanation anywhere.
+    try {
+      await platform.start();
+    } catch (cause) {
+      logger.error('the platform helper did not start; observation is unavailable', {
+        cause: String(cause),
+        platform: platform.kind,
+      });
+    }
+    await observation.refreshAttribution();
+
     const trayHost = createElectronTrayHost({
       onSelect: (id: TrayMenuItem['id']) => shell?.tray.select(id),
     });
@@ -238,9 +337,14 @@ if (!singleInstance.isPrimary) {
       permissions,
       windows,
       conversation,
-      windowDemoDriver,
+      ...(windowDemoDriver === undefined ? {} : { windowDemoDriver }),
       conversationFixtureDriver,
-      appInfo: { version: app.getVersion(), platform: process.platform },
+      appInfo: {
+        version: app.getVersion(),
+        platform: process.platform,
+        // No longer a constant: this build may be on the real macOS adapters.
+        usesRealPlatform: platform.kind !== 'fakes',
+      },
       quit: () => app.quit(),
       ids: createIdFactory(),
       logger,
@@ -269,13 +373,19 @@ if (!singleInstance.isPrimary) {
       trayAvailable: trayAvailability.available,
       panelVisible: shell.panel.isVisible(),
       agent: agentRuntime.capability.ok ? 'ready' : 'refused',
+      platform: platform.kind,
+      platformReason: platform.reason,
+      capture: observation.captureAvailable ? 'available' : 'unavailable',
     });
   };
 
-  app.whenReady().then(start, (cause: unknown) => {
-    logger.error('failed to start', { cause: String(cause) });
-    app.exit(1);
-  });
+  app
+    .whenReady()
+    .then(start)
+    .catch((cause: unknown) => {
+      logger.error('failed to start', { cause: String(cause) });
+      app.exit(1);
+    });
 
   // Pilot is a menu bar app: closing the panel must not quit it.
   app.on('window-all-closed', () => undefined);
@@ -286,7 +396,16 @@ if (!singleInstance.isPrimary) {
     // The shell disposes the controller, which aborts anything in flight; the
     // session itself is disposed here because the shell does not own it.
     // PR-036 adds `store.close()` next to this line.
-    void shell?.dispose().then(() => agentRuntime.dispose());
+    //
+    // Observation goes before the platform, and it goes through the retention
+    // guard: system-design §13 lists process shutdown among the occasions the
+    // buffers must be cleared, and `shutdown` is terminal, so the scene lineage
+    // goes with them.
+    const quitting = shell?.dispose() ?? Promise.resolve();
+    void quitting
+      .then(() => observation.dispose())
+      .then(() => platform.dispose())
+      .then(() => agentRuntime.dispose());
     shell = null;
   });
 }

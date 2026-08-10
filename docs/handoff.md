@@ -92,6 +92,22 @@ pnpm --filter @pilot/platform-mac demo:hotkey
 #    a loose executable:
 PILOT_HELPER_BINARY="$(pwd)/apps/desktop/release/mac-arm64/Pilot.app/Contents/Resources/helper/PilotHelper" \
   pnpm --filter @pilot/platform-mac demo:hotkey
+
+# 7. PR-028 — the whole observation path inside the app. THIS ONE PROMPTS
+#    (Screen Recording, and Accessibility for the pointer). Run it after step 5.
+#    First the stub-driven walkthrough, which already passes on Linux, so a
+#    difference on the Mac is a difference in the *platform*, not in the wiring:
+pnpm demo:observe
+
+#    Then the real thing. `pnpm dev` on a Mac finds the helper only through
+#    PILOT_HELPER_BINARY or a packaged bundle — the bundled main process cannot
+#    compute the SwiftPM path — so name it:
+PILOT_HELPER_BINARY="$(pwd)/packages/platform-mac/native/.build/debug/PilotHelper" \
+  PILOT_LOG_LEVEL=debug pnpm dev
+
+#    …and from inside the packaged .app, which is the only layout where TCC can
+#    plausibly attribute Screen Recording to Pilot:
+open apps/desktop/release/mac-arm64/Pilot.app
 ```
 
 Notes:
@@ -332,6 +348,57 @@ Also worth capturing while you are there:
   in section 3 move during a real run, the callback is too slow and that is a
   defect, not a curiosity.
 
+### What to look for in step 7 (PR-028)
+
+This is the first time the *application* has tried to watch a window: PR-012's
+demo drives the capture adapter alone, and this drives it through the window
+picker, the interaction table, the frame ring and the screen policy. Six things,
+in order:
+
+1. **Does the log line at startup say `platform: "macos"`?** `pnpm dev` prints
+   `shell ready` with `platform`, `platformReason` and `capture`. If it says
+   `platform: "fakes"` with a `no helper binary` reason, everything below is the
+   Linux build again and nothing was observed. `usesRealPlatform` in the panel's
+   app info says the same thing.
+2. **Does the picker list your real windows, with real titles?** Titles reading
+   "(title unavailable…)" while Screen Recording reports `granted` is the
+   attribution bug from the other side — the same combination step 5 item 3 asks
+   about, now in the product.
+3. **Does selecting a window start capture, and does the ring fill?** With
+   `PILOT_LOG_LEVEL=debug` the observation scope logs `capture started` and then
+   `observation allowed` with a frame count and byte totals. Zero frames means
+   the stream never delivered; that is PR-012's `starting` case, step 6 item 1.
+4. **Look now.** The developer diagnostics surface should gain
+   `capture-to-observation`, `image-bytes` and `active-images`. **The number
+   that matters is `capture-to-observation`**: system-design §17 budgets image
+   preprocessing at under 150 ms, and PR-018 measured 71–135 ms for a `png`
+   source on this Linux container. Report the Mac's number either way.
+5. **Pause, and watch the buffers go.** The panel's Pause must empty the ring
+   *immediately*, not at the next observation. The retention guard logs
+   `retention clear` with the counts; a `Buffers were not empty after clearing`
+   error would be the one retention failure that must never be silent.
+6. **Close the observed window while Pilot is watching it.** Expect: capture
+   stops, the ring empties, the panel shows "The window Pilot was watching
+   closed. Choose another window." Then try a **DRM-protected video or a
+   password manager** as the selected window — expect `protected-content` and a
+   stopped stream, never a black rectangle described as the application.
+
+Also worth capturing while you are there:
+
+- Whether a **motionless window** keeps the ring populated. Leave the selected
+  window untouched for ten seconds and then Look now: an observation that
+  refuses with `frame-available` means ScreenCaptureKit is not re-sending idle
+  frames and PR-012's assumption is wrong (step 6 item 4, from the other side).
+- The **frame byte sizes**, now that capture is asked for `png` rather than
+  `jpeg` (runbook follow-up 18). PNG is bigger on the wire and the ring holds
+  16 MiB; if a normal UI window produces frames over ~1.8 MB the ring will hold
+  under three seconds and that is worth reporting, because the trade would then
+  need revisiting.
+- Whether the **pointer target** is ever identified. The observation metadata's
+  `targetRole` stays null until PR-031 wires the question anchor, but the
+  pointer *timeline* records the element on every sample; `PILOT_LOG_LEVEL=debug`
+  shows whether grounding is degraded.
+
 **Fallback in use:** Mac-gated code is written unverified and batched here
 (runbook amendment 8, user decision). Accepted risk: PR-011 through PR-015
 accumulate on top of an uncompiled helper. PR-011 additionally ships an
@@ -346,6 +413,12 @@ unknown until step 5 runs. PR-015 ships an event tap that has never been
 created, for a key that has never been pressed; its coalescing, pairing and
 permission-fallback logic is fully tested on Linux against a scripted stub, but
 whether macOS lets the tap exist at all is unknown until step 6 runs.
+PR-028 wires all of that into the application and is verified the same way — the
+whole path from the window picker to the frame ring to the screen policy runs
+here against the Node helper stub (`pnpm demo:observe`, and
+`apps/desktop/test/main/observation-runtime.test.ts`), and **not one pixel,
+permission prompt or accessibility element in it has ever been real**. Step 7 is
+what produces that answer.
 
 ---
 
@@ -485,6 +558,11 @@ reversible; raise any that look wrong.
 | **Speech output is a silent adapter, not the shared fake** (PR-029) | The shell needs something behind `SpeechOutputAdapter` until PR-033. `FakeSpeechOutputAdapter` reports `started` and then waits for a test to call `finish()`, which would leave the app in `speaking` for ever after its first answer. The replacement reports `started` then `finished` immediately and makes no sound. Consequence worth knowing: the panel briefly shows *Speaking* for an answer nobody hears. The alternative — no speech state at all — would have meant a different machine path in development from the one in production. |
 | **The development model source lives in `@pilot/agent`, not in the app** (PR-029) | `apps/desktop` gained `@pilot/agent` as a dependency, which pulls Pi into the main bundle; it did **not** gain a dependency on `@earendil-works/*`. Every Pi type stays behind `@pilot/agent`'s door, which is what `packages/platform`'s facade comment asks for, and it is why the demo script and the desktop tests can build a scripted provider without importing Pi. Cost: the main bundle grew from ~90 KB to ~1.1 MB. It is inlined, not external, so the packaged asar still contains no `node_modules`. |
 | **A refused capability is an agent that refuses, not a missing agent** (PR-029) | When the gate rejects the configured profile the app still builds a controller, over an `AgentSession` whose `submit` throws the refusal. The panel opens in `error` with the model's own `userMessage` and remedy, and the text box stays live (system-design §16). The alternative — no agent at all — would have made an unsupported model look like a broken Pilot. |
+| **Capture is started with `encoding: 'png'` at the composition root, not by changing PR-012's default** (PR-028, confirming runbook follow-up 18) | PR-018 measured a `jpeg` *source* frame at ~165 ms of pure-JS decode per observation that needs a pointer crop — the only path over §17's 150 ms budget — plus a second generation of compression loss on exactly the small text grounding depends on. `bgra` avoids both but a three-second ring at 1440×960 needs ~47 MB against a 16 MiB bound, so `png` is the choice. It is set in `apps/desktop/src/main/platform-runtime.ts` (`CAPTURE_ENCODING`), which is the only place in the product that starts a capture stream. `MacObservationAdapter`'s own default is left at `jpeg`, because changing another lane's default inside an integration PR would rewrite PR-012's tests to mean something else. **Cost worth knowing:** PNG frames are larger on the wire than JPEG, so the ring holds fewer seconds of a busy window. Nobody has measured a real one — §1 step 7 asks for the number. **Say if you would rather pay the decode and keep JPEG.** |
+| **A build with no helper runs on the fakes and says so, rather than failing to start** (PR-028) | `createPlatformRuntime` chooses the macOS adapters when there is a helper binary to talk to and the fake window/permission adapters otherwise, and reports which and **why** — in the startup log (`platform`, `platformReason`), in the panel's `usesRealPlatform`, and in the demo's first line. The alternative, refusing to start without a helper, would make every Linux development run impossible; the alternative of falling back quietly is the failure this project has been avoiding everywhere else. The fake build has **no capture adapter at all**: `FakeObservationAdapter` only produces a frame when a test calls `emitNext()`, which is the shape runbook cross-lane issue 10 records as wrong in an app. So on Linux the ring stays empty and every observation is refused with a typed error naming the missing capture source. |
+| **The fake window-lifecycle controls survive, scoped to the fake build** (PR-028) | They were PR-028's to remove. Real enumeration is now wired, but only where there is a helper: on Linux the picker is still `FakeWindowAdapter`, and closing the observed window mid-observation is precisely the §16 behaviour that needs demonstrating. So `main/window-demo.ts` stays, and `main/index.ts` builds the driver only when the platform runtime reports a fake adapter — a build on the real enumeration passes `demoEvents: false` and the panel does not offer a control the main process would refuse. **Say if you would rather they went entirely**; it is one deletion plus one option. |
+| **"Look now" asks for `view: 'window'`, `moment: 'current'`** (PR-028) | `moment: 'current'` is the honest reading of "look now" — a fresh capture rather than whichever frame is in the ring. `view: 'window'` rather than `'both'` because a pointer crop is cropped around the *question* anchor and there is no anchor until PR-031 wires one; cropping around a pointer nobody pointed with would be a picture of the wrong thing. It also means an unchanged frame is passed through unencoded (PR-018), so the ordinary look costs no re-encode. The model's own `observe_screen` chooses its own view and moment and reaches the same facade through PR-030. |
+| **A failing attribution verdict makes the observation path read the permissions as `denied`** (PR-028, closing runbook follow-up 16) | PR-011's verdict answers a different question from the permission API: "macOS says granted" and "the grant reaches this process" are not the same claim. Under the `enforce` policy the adapter throws before reporting anything, but under `warn` — and against the stub, where the identity is invented — a `granted` state would otherwise flow straight into `ScreenContextConditions` and Pilot would capture nothing while reporting no error. `observationPermissionConditions` maps `helper-attributed` and `bundle-mismatch` onto `denied`; `unknown` is deliberately left alone, because PR-011 calls it a non-answer rather than a failure. |
 | **`ObservationAdapter.subscribeEvents` added as an *optional* member** (PR-012) | Capture has to report why it stopped — window lost, screen locked, protected content — and how many frames it refused; the four verbatim methods from system-design §5 carry none of that. Optional keeps it source-compatible: every existing implementation, including the shared fakes, still satisfies the interface untouched. Same shape as PR-011's `PermissionAdapter.attribution?()`. |
 
 ---
@@ -505,6 +583,7 @@ reversible; raise any that look wrong.
 | Phase 2 — capability lanes | **The desktop lane (PR-008 → 009 → 010) is complete.** PR-010 closed runbook follow-up 4 (both copies) and the panel halves of follow-ups 9 and 13. |
 | Phase 3 — integration (028…036) | **In progress.** PR-029 (text conversation with a real Pi session) first, because it is the one integration step fully verifiable on Linux. PR-028 and everything from PR-030 onward also need the Mac (§1); nothing past PR-029 can be *demonstrated against a real model* until the Codex sign-in (§2). |
 | Phase 3 — integration (028…036) | In progress. **PR-029 is merged**: the desktop app holds real, multi-turn, interruptible text conversations through a real `PiAgentSession` — against a faux provider, because §2 is still open. Observation, speech, permissions, the window list and persistence are still fake. The remaining steps mostly need the Mac (§1) and a signed-in model (§2). |
+| Phase 3 — integration (028…036) | In progress. **PR-028 is merged**: the observation boundary is real. The window picker, the permission states and the capture lifecycle run on `MacWindowAdapter`, `MacPermissionAdapter`, `MacAccessibilityAdapter` and `MacObservationAdapter`, the frames land in a real `ObservationCore` ring, and PR-019's `PilotScreenContextService` answers behind it — verified end to end against the Node helper stub, and **never once against macOS** (§1 step 7). Speech, the model, persistence and the agent-side `observe_screen` (PR-030) are still fake. |
 | Phase 4 — providers (037…039) | Not started. PR-037 (Codex) is the one the user's decision selects. |
 | Phase 5 — hardening and release (040…044) | Not started. |
 
@@ -717,14 +796,41 @@ demo executed against the merged tree.
   observation and drops the cache then, which is a backstop. Routing lifecycle
   events through `RetentionGuard.clearFor` (runbook follow-up 19) closes the
   window between the event and the next look, and PR-041 should assert it.
-- **Nothing supplies the facade's permission states yet** (PR-019). Deliberate,
-  and it fails safe rather than silently: `ScreenContextConditions.permissions`
-  defaults to `'unknown'`, so an unwired `ScreenContextService` refuses every
-  observation with `permission-denied`. If PR-028 or PR-030 sees nothing but
-  permission errors from a Mac that plainly has the grant, this is why — the
-  wiring is `MutableScreenContextInputs.setConditions`, and it also carries
-  `paused` and `enabled` from the interaction controller and `captureSource`
-  from the capture adapter.
+  **PR-028 closed that door**: every lifecycle path in
+  `main/observation-runtime.ts` — stop, pause, screen lock, window loss,
+  permission loss, shutdown — ends in `RetentionGuard.clearFor`, which drops the
+  ring, the pointer timeline and the decoded frame in one call and then throws
+  rather than reporting a clear that did not work. The occasion is named by the
+  event that caused it, so the retention log says `screen-lock` rather than
+  guessing. What is *not* closed: none of it has cleared a real screenshot,
+  because none has ever existed here.
+- ~~**Nothing supplies the facade's permission states yet** (PR-019).~~
+  **CLOSED by PR-028.** `apps/desktop/src/main/observation-runtime.ts` feeds
+  `MutableScreenContextInputs.setConditions` from the permission gate's
+  snapshot plus PR-011's attribution verdict, and `paused`/`enabled` from the
+  interaction controller's view state. `captureSource` is pinned to
+  `'selected-window'`, which is the only thing `MacObservationAdapter` can
+  produce. If a Mac that plainly has the grant still refuses, read the verdict
+  first: a `helper-attributed` or `bundle-mismatch` attribution is deliberately
+  reported as `denied`, because a grant credited to the helper is one Pilot
+  cannot use.
+- **The whole observation path is now real code that has never touched a
+  screen** (PR-028). This is the largest gap in the tree. Every object between
+  the window picker and the frame ring is the shipping one and every one of them
+  is exercised end to end — but against the Node helper stub, whose "frames" are
+  deterministic bytes with meaningful headers and meaningless contents. In
+  particular: **the decode-and-crop half of §10 step 5 is not reachable through
+  the stub at all** (its bytes are not a decodable PNG), so the only place a real
+  pointer crop is rendered is one test that encodes a synthetic screen with the
+  pipeline's own codec. On a Mac that path runs on every observation the model
+  asks a pointer question about. §1 step 7 is what settles it.
+- **PNG frames are larger than JPEG ones, and the ring is 16 MiB** (PR-028,
+  following PR-018's recommendation). Choosing `png` removes ~165 ms of pure-JS
+  decode and a second generation of compression loss; it costs ring seconds, and
+  nobody has measured a real window's PNG frame. If a normal UI window turns out
+  to produce frames over ~1.8 MB the three-second ring will not hold three
+  seconds, and the fix is either `quality`/scale on the capture options or going
+  back to JPEG and paying the decode. §1 step 7 asks for the number.
 - **Nothing has ever spoken to a real provider** (PR-029). The whole agent path
   now runs — capability gate, envelope, `Agent.prompt`, streamed deltas, tool
   calls, abort — but always against Pi's faux provider, which is a cooperative,
