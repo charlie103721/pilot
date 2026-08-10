@@ -26,6 +26,13 @@ export const PILOT_ERROR_CODES = [
   'permission-denied',
   'permission-unknown',
   'permission-restricted',
+  /**
+   * The operating system credits permission grants to the wrong process — the
+   * spawned native helper rather than the parent application bundle. Every
+   * permission state reported under this condition is untrustworthy, so it is
+   * a distinct code rather than a flavour of `permission-denied` (PR-011).
+   */
+  'permission-attribution-mismatch',
   // platform
   'platform-unavailable',
   'helper-unavailable',
@@ -68,6 +75,7 @@ export const PILOT_ERROR_DOMAIN_BY_CODE: Readonly<Record<PilotErrorCode, PilotEr
   'permission-denied': 'permission',
   'permission-unknown': 'permission',
   'permission-restricted': 'permission',
+  'permission-attribution-mismatch': 'permission',
   'platform-unavailable': 'platform',
   'helper-unavailable': 'platform',
   'window-not-found': 'platform',

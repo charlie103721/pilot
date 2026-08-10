@@ -12,26 +12,37 @@ public enum HelperOutcome {
 
 /// The helper's request loop.
 ///
-/// PR-003 implements transport only: `health` (the host's startup handshake and
-/// liveness probe) and `echo` (which round-trips the binary body so the
-/// length-prefixed payload path is exercised before PR-012 needs it).
+/// PR-003 implemented transport only: `health` (the host's startup handshake
+/// and liveness probe) and `echo` (which round-trips the binary body so the
+/// length-prefixed payload path is exercised before PR-012 needs it). PR-011
+/// added the permission and window operations.
 ///
-/// `handle(frame:)` is a pure function of its input so the XCTest target can
-/// exercise every branch without spawning a process.
+/// `handle(frame:)` remains a function of its input and its two injected
+/// services, so the XCTest target exercises every branch — including the
+/// permission and window ones — without a window server, a TCC prompt or a
+/// spawned process.
 public final class HelperServer {
     public let helperVersion: String
     private let processIdentifier: Int
     private let startedAt: Date
+    private let permissions: PermissionService
+    private let windows: WindowService
     private var eventCounter = 0
 
+    /// The services default to the live ones, so `main.swift` is unchanged and
+    /// the PR-003 initialiser call still compiles.
     public init(
         helperVersion: String,
         processIdentifier: Int = Int(ProcessInfo.processInfo.processIdentifier),
-        startedAt: Date = Date()
+        startedAt: Date = Date(),
+        permissions: PermissionService = SystemPermissionService(),
+        windows: WindowService = SystemWindowService()
     ) {
         self.helperVersion = helperVersion
         self.processIdentifier = processIdentifier
         self.startedAt = startedAt
+        self.permissions = permissions
+        self.windows = windows
     }
 
     private var uptimeMilliseconds: Int {
@@ -106,7 +117,92 @@ public final class HelperServer {
                 payload: ["text": text, "binaryLength": frame.binary.count],
                 binary: frame.binary
             )
+        case .permissionsStatus:
+            guard let kind = permissionKind(from: request) else {
+                return invalidKind(request: request)
+            }
+            return success(request: request, payload: ["probe": permissions.probe(kind).jsonObject])
+        case .permissionsSnapshot:
+            return success(
+                request: request,
+                payload: ["probes": permissions.snapshot().map { $0.jsonObject }]
+            )
+        case .permissionsRequest:
+            guard let kind = permissionKind(from: request) else {
+                return invalidKind(request: request)
+            }
+            let outcome = permissions.request(kind)
+            return success(
+                request: request,
+                payload: ["probe": outcome.probe.jsonObject, "prompted": outcome.prompted]
+            )
+        case .permissionsOpenSettings:
+            guard let kind = permissionKind(from: request) else {
+                return invalidKind(request: request)
+            }
+            let outcome = permissions.openSettings(kind)
+            return success(
+                request: request,
+                payload: ["opened": outcome.opened, "target": outcome.target]
+            )
+        case .permissionsAttribution:
+            guard let expected = request.payload["expected"] as? [String: Any],
+                let hostPid = (expected["hostPid"] as? NSNumber)?.intValue
+            else {
+                return failure(
+                    request: request,
+                    code: "invalid-request",
+                    domain: "ipc",
+                    message: "permissions.attribution requires an expected.hostPid"
+                )
+            }
+            let evidence = permissions.attribution(
+                expectedBundleIdentifier: expected["bundleIdentifier"] as? String,
+                expectedBundlePath: expected["bundlePath"] as? String,
+                hostPid: hostPid
+            )
+            return success(request: request, payload: ["evidence": evidence.jsonObject])
+        case .windowsList:
+            let includeAllLayers = (request.payload["includeAllLayers"] as? Bool) ?? false
+            return success(
+                request: request,
+                payload: windows.snapshot(includeAllLayers: includeAllLayers).jsonObject
+            )
+        case .windowsGet:
+            guard let number = (request.payload["windowNumber"] as? NSNumber)?.intValue else {
+                return failure(
+                    request: request,
+                    code: "invalid-request",
+                    domain: "ipc",
+                    message: "windows.get requires a windowNumber"
+                )
+            }
+            let outcome = windows.window(number: number)
+            return success(
+                request: request,
+                payload: [
+                    "window": JSONValue.orNull(outcome.window?.jsonObject),
+                    "display": JSONValue.orNull(outcome.display?.jsonObject),
+                    "screenLocked": outcome.screenLocked,
+                ]
+            )
         }
+    }
+
+    private func permissionKind(from request: HelperRequest) -> PermissionKind? {
+        guard let raw = request.payload["kind"] as? String else {
+            return nil
+        }
+        return PermissionKind(rawValue: raw)
+    }
+
+    private func invalidKind(request: HelperRequest) -> HelperOutcome {
+        failure(
+            request: request,
+            code: "invalid-request",
+            domain: "ipc",
+            message: "\"\(request.op)\" requires a known permission kind"
+        )
     }
 
     private func success(

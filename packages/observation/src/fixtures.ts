@@ -654,7 +654,7 @@ export async function replayFixtureThroughAdapters(
 function applyWindowEvent(windows: FakeWindowAdapter, event: WindowEvent): void {
   switch (event.type) {
     case 'window-changed':
-      windows.changeWindow(event.window);
+      windows.replaceWindow(event.window);
       return;
     case 'window-closed':
       windows.closeWindow(event.windowId);

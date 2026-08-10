@@ -4,6 +4,7 @@ import {
   type AccessibilityNode,
   type CredentialRef,
   type ObservedWindow,
+  type PermissionAttribution,
   type PermissionKind,
   type PermissionSnapshot,
   type PermissionState,
@@ -19,6 +20,7 @@ import type {
   ManagedPlatformAdapter,
   PermissionAdapter,
   WindowAdapter,
+  WindowChangeKind,
   WindowEvent,
 } from '../adapters.js';
 import { Emitter } from './support.js';
@@ -32,10 +34,25 @@ import {
 import { FakeObservationAdapter } from './observation.js';
 import { FakeSpeechInputAdapter, FakeSpeechOutputAdapter } from './speech.js';
 
+/**
+ * The attribution a well-behaved platform reports: the operating system
+ * credits the parent application, established directly (PR-011).
+ */
+export const FIXTURE_ATTRIBUTION_MATCHED: PermissionAttribution = {
+  verdict: 'matched',
+  confidence: 'direct',
+  expected: { bundleIdentifier: 'com.pilot.app', path: '/Applications/Pilot.app', pid: 100 },
+  attributed: { bundleIdentifier: 'com.pilot.app', path: '/Applications/Pilot.app', pid: 100 },
+  reason: 'responsible-process-is-host',
+  evidence: {},
+  checkedAt: 0,
+};
+
 /** Deterministic `PermissionAdapter`. Grants only when a test says so. */
 export class FakePermissionAdapter implements PermissionAdapter {
   readonly #emitter = new Emitter<PermissionStatus>();
   #snapshot: PermissionSnapshot;
+  #attribution: PermissionAttribution = FIXTURE_ATTRIBUTION_MATCHED;
   readonly openedSettings: PermissionKind[] = [];
   readonly requested: PermissionKind[] = [];
   /** Whether a `request()` call resolves to `granted` (default) or `denied`. */
@@ -54,6 +71,15 @@ export class FakePermissionAdapter implements PermissionAdapter {
   }
 
   subscribe = this.#emitter.subscribe;
+
+  async attribution(): Promise<PermissionAttribution> {
+    return this.#attribution;
+  }
+
+  /** Test control: force an attribution verdict, including the failing ones. */
+  setAttribution(attribution: PermissionAttribution): void {
+    this.#attribution = attribution;
+  }
 
   async status(kind: PermissionKind): Promise<PermissionStatus> {
     return this.#snapshot[kind];
@@ -143,10 +169,14 @@ export class FakeWindowAdapter implements WindowAdapter {
   }
 
   /**
-   * Test control: replace a window's title, bounds or scale and emit
-   * `window-changed`. Adds the window when the list does not hold it yet.
+   * Test control: replace a window wholesale and emit `window-changed`. Adds
+   * the window when the list does not hold it yet, which is what fixture
+   * replay needs when a recording starts mid-session.
+   *
+   * Use `changeWindow` instead when the test cares about *which* attributes
+   * changed; this one deliberately emits no `changes`/`previous` detail.
    */
-  changeWindow(window: ObservedWindow): void {
+  replaceWindow(window: ObservedWindow): void {
     const index = this.#windows.findIndex((entry) => entry.windowId === window.windowId);
     if (index >= 0) {
       this.#windows[index] = window;
@@ -166,6 +196,35 @@ export class FakeWindowAdapter implements WindowAdapter {
     this.#windows = this.#windows.filter((window) => window.windowId !== windowId);
     this.#geometry.delete(windowId);
     this.#emitter.emit({ type: 'window-closed', windowId });
+    this.#emitter.emit({ type: 'window-list-changed', disappeared: [windowId] });
+  }
+
+  /** Test control: add a window and emit `window-list-changed` with `appeared`. */
+  openWindow(window: ObservedWindow, geometry?: WindowGeometry): void {
+    this.#windows = [...this.#windows, window];
+    if (geometry !== undefined) {
+      this.#geometry.set(window.windowId, geometry);
+    }
+    this.#emitter.emit({ type: 'window-list-changed', appeared: [window] });
+  }
+
+  /**
+   * Test control: mutate a window in place and emit `window-changed`. The
+   * `changes` set is supplied rather than derived; the real diff lives in
+   * `@pilot/platform-mac`.
+   */
+  changeWindow(
+    windowId: WindowId,
+    patch: Partial<Omit<ObservedWindow, 'windowId'>>,
+    changes: readonly WindowChangeKind[],
+  ): void {
+    const previous = this.#windows.find((window) => window.windowId === windowId);
+    if (previous === undefined) {
+      return;
+    }
+    const next: ObservedWindow = { ...previous, ...patch };
+    this.#windows = this.#windows.map((window) => (window.windowId === windowId ? next : window));
+    this.#emitter.emit({ type: 'window-changed', window: next, changes, previous });
   }
 
   /** Test control: emit lock/unlock so buffer-clearing paths can be exercised. */
