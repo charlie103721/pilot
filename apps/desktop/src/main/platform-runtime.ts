@@ -8,8 +8,10 @@ import type {
 import { FakePermissionAdapter, FakeWindowAdapter } from '@pilot/platform/fakes';
 import {
   MacAccessibilityAdapter,
+  MacHotkeyAdapter,
   MacObservationAdapter,
   MacPermissionAdapter,
+  MacSpeechInputAdapter,
   MacWindowAdapter,
   NativeHelperTransport,
   resolveHelperBinary,
@@ -56,6 +58,18 @@ import {
  * `ScreenContextService` refuses every observation with a typed error that
  * names the missing capture source rather than an empty ring that names
  * nothing.
+ *
+ * ## Voice (PR-032)
+ *
+ * `hotkey` and `speechInput` follow `capture`: real on both helper branches,
+ * `null` on `fakes`. They differ from capture in what the composition root does
+ * about it — `main/index.ts` substitutes `FakeHotkeyAdapter` and
+ * `FakeSpeechInputAdapter` when they are `null`, because unlike
+ * `FakeObservationAdapter` both of those *do* complete on their own (the fake
+ * recogniser finalises on `stop()`, which is the release of the key) and
+ * because PR-010's `PILOT_HOTKEY_FIXTURE` states have nowhere else to live.
+ * The substitution is visible at the call site, and the boundary table in
+ * `main/index.ts` says which build is which.
  */
 
 /** Development switch: run the macOS stack against the Node helper stub. */
@@ -94,6 +108,25 @@ export interface PlatformRuntime {
   /** `null` when this build cannot capture anything. See the note above. */
   readonly capture: ObservationAdapter | null;
   readonly accessibility: AccessibilityAdapter | null;
+  /**
+   * The global push-to-talk tap (PR-032), or `null` on the fake build.
+   *
+   * `null` rather than a fake for the same reason `capture` is: a
+   * `FakeHotkeyAdapter` here would report `active` while no key on the machine
+   * could ever reach it. `main/index.ts` supplies the fake explicitly when this
+   * is `null`, so the fixture states PR-010 built (`PILOT_HOTKEY_FIXTURE`) stay
+   * reachable on a Linux development run and the substitution is visible at the
+   * composition root rather than hidden in here.
+   */
+  readonly hotkey: MacHotkeyAdapter | null;
+  /**
+   * Apple Speech (PR-014) behind the helper, or `null` on the fake build.
+   *
+   * Concrete rather than `SpeechInputAdapter` because two consumers need more
+   * than the interface: `ConversationGate` takes `disclosure()` (runbook
+   * follow-up 13) and disposal has to release the microphone.
+   */
+  readonly speechInput: MacSpeechInputAdapter | null;
   /**
    * Present only on the fake build. The panel's window-lifecycle controls act
    * on it, and `main/index.ts` offers them only when it is here — so a build on
@@ -156,6 +189,16 @@ export interface PlatformRuntimeOptions {
    * claims, and only the second one entitles Pilot to look at a screen.
    */
   readonly attributionPolicy?: AttributionPolicy;
+  /**
+   * Stuck-key watchdog interval for the push-to-talk tap (PR-032). A demo or a
+   * test sets it long and calls `MacHotkeyAdapter.sweep()` itself, so a
+   * walkthrough never races a one-second timer.
+   */
+  readonly holdWatchdogIntervalMs?: number;
+  /** Drain interval for the recogniser's event queue. See `MacSpeechInputAdapter`. */
+  readonly speechPollIntervalMs?: number;
+  /** system-design §11. Defaults to `true`; only a test turns it off. */
+  readonly requireOnDeviceSpeech?: boolean;
 }
 
 /** Overrides the Node binary used to run the helper stub. */
@@ -292,6 +335,8 @@ export function createPlatformRuntime(options: PlatformRuntimeOptions = {}): Pla
       windows,
       capture: null,
       accessibility: null,
+      hotkey: null,
+      speechInput: null,
       fakeWindows: windows,
       fakePermissions: permissions,
       transport: null,
@@ -344,6 +389,28 @@ export function createPlatformRuntime(options: PlatformRuntimeOptions = {}): Pla
     ...(identity.hostPid === undefined ? {} : { hostPid: identity.hostPid }),
   });
   const accessibility = new MacAccessibilityAdapter({ transport, logger });
+  // PR-032. Neither is started here: the tap opens only after
+  // `main/voice-runtime.ts` has established PR-011's attribution verdict
+  // (runbook follow-up 12), and the recogniser opens only when the interaction
+  // machine asks for an utterance.
+  const hotkey = new MacHotkeyAdapter({
+    transport,
+    logger,
+    ...(options.holdWatchdogIntervalMs === undefined
+      ? {}
+      : { holdWatchdogIntervalMs: options.holdWatchdogIntervalMs }),
+  });
+  const speechInput = new MacSpeechInputAdapter({
+    transport,
+    logger,
+    // system-design §11: Pilot does not record unless recognition stays on this
+    // Mac. `SpeechInputBinding` passes the same default per utterance; this is
+    // what `availability()` and `disclosure()` answer for.
+    requireOnDevice: options.requireOnDeviceSpeech ?? true,
+    ...(options.speechPollIntervalMs === undefined
+      ? {}
+      : { pollIntervalMs: options.speechPollIntervalMs }),
+  });
 
   logger.info('running on the macOS platform adapters', {
     kind: choice.kind,
@@ -358,6 +425,8 @@ export function createPlatformRuntime(options: PlatformRuntimeOptions = {}): Pla
     windows,
     capture,
     accessibility,
+    hotkey,
+    speechInput,
     fakeWindows: null,
     fakePermissions: null,
     transport,
@@ -370,6 +439,11 @@ export function createPlatformRuntime(options: PlatformRuntimeOptions = {}): Pla
       capture.dispose();
       windows.dispose();
       permissions.dispose();
+      hotkey.dispose();
+      // Releases the microphone if an utterance was still open (§11: shutdown
+      // clears audio). Awaited before the transport goes, because the release
+      // is a round trip.
+      await speechInput.dispose().catch(() => undefined);
       if (choice.owned) {
         await transport.stop();
       }

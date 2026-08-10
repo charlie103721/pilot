@@ -101,6 +101,17 @@ export const DEFAULT_PUSH_TO_TALK_BINDING: HotkeyBinding = {
 export const HOTKEY_UNAVAILABLE_REASONS = [
   /** The permission a global key listener needs has not been granted. */
   'permission-missing',
+  /**
+   * The permissions read as granted, but the platform credits them to some
+   * other process (PR-032, runbook follow-up 12).
+   *
+   * Distinct from `permission-missing` because granting the permission again
+   * would not help: macOS has the grant, it is simply attached to the wrong
+   * identity, and the fix is to run the packaged application rather than to
+   * visit System Settings. `permission` still names the grant that would be
+   * unusable, so a shell can say which one.
+   */
+  'permission-unattributed',
   /** The permission is present but the platform refused to create the listener. */
   'listener-rejected',
   /** The system switched a working listener off and it could not be restored. */
@@ -246,6 +257,12 @@ export function hotkeyUnavailableMessage(availability: HotkeyAvailability): stri
       return (
         'Pilot needs Accessibility permission to hear the push-to-talk shortcut while ' +
         'another app is in front. Until then, type your question instead.'
+      );
+    case 'permission-unattributed':
+      return (
+        'macOS is giving Pilot’s microphone and Accessibility permissions to another ' +
+        'program, so Pilot will not listen. Open the installed Pilot app rather than a ' +
+        'development build. You can still type your question.'
       );
     case 'listener-rejected':
       return (
