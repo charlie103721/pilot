@@ -166,7 +166,7 @@ PILOT_HELPER_BINARY="$(pwd)/packages/platform-mac/native/.build/debug/PilotHelpe
 
 #    …and then from inside the packaged .app, which is the only layout where TCC
 #    can plausibly attribute Accessibility and the Microphone to Pilot:
-open apps/desktop/release/mac-arm64/Pilot.app
+open "$(packaged_app)"
 ```
 
 Notes:
