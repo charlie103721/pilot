@@ -1,12 +1,16 @@
 import type { Api, Model } from '@earendil-works/pi-ai';
 import {
-  PilotError,
   asModelProfileId,
+  isLoopbackUrl,
   modelProfileSchema,
-  supportsVisualConversation,
   type ModelProfile,
 } from '@pilot/shared';
 import type { AgentSessionCapabilities } from '@pilot/platform';
+import {
+  assertCapabilityDecision,
+  checkVisualConversation,
+  type CapabilityConfidence,
+} from './capability.js';
 
 /**
  * How Pilot obtained credentials for a profile. This is Pilot's own axis;
@@ -29,19 +33,16 @@ export interface ModelProfileInput {
    * nothing about tools). Defaults to `true` because every provider Pi ships
    * a chat API for accepts tool definitions; set it to `false` for a model
    * you know does not.
+   *
+   * When omitted, {@link toModelProfileWithProvenance} reports the value as
+   * `'assumed'` so nothing downstream can mistake the default for a probe.
    */
   readonly supportsTools?: boolean;
 }
 
-const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0']);
-
-/** True when a base URL points at this machine, i.e. the model is local. */
+/** @deprecated Prefer `isLoopbackUrl` from `@pilot/shared`; kept for source compatibility. */
 export function isLoopbackBaseUrl(baseUrl: string): boolean {
-  try {
-    return LOOPBACK_HOSTS.has(new URL(baseUrl).hostname);
-  } catch {
-    return false;
-  }
+  return isLoopbackUrl(baseUrl);
 }
 
 /**
@@ -64,10 +65,32 @@ export function toModelProfile(model: Model<Api>, input: ModelProfileInput): Mod
     baseUrl: model.baseUrl,
     supportsVision: model.input.includes('image'),
     supportsTools: input.supportsTools ?? true,
-    isRemote: !isLoopbackBaseUrl(model.baseUrl),
+    isRemote: !isLoopbackUrl(model.baseUrl),
   });
 }
 
+export interface ModelProfileWithProvenance {
+  readonly profile: ModelProfile;
+  /**
+   * `'verified'` when the caller stated `supportsTools` explicitly,
+   * `'assumed'` when the default was taken. Feed this into the profile store
+   * and the capability report so the distinction survives persistence.
+   */
+  readonly toolSupport: CapabilityConfidence;
+}
+
+/** {@link toModelProfile}, but it also tells you how much to trust `supportsTools`. */
+export function toModelProfileWithProvenance(
+  model: Model<Api>,
+  input: ModelProfileInput,
+): ModelProfileWithProvenance {
+  return {
+    profile: toModelProfile(model, input),
+    toolSupport: input.supportsTools === undefined ? 'assumed' : 'verified',
+  };
+}
+
+/** Narrows a full {@link CapabilityReport} to the `@pilot/platform` contract shape. */
 export function capabilitiesOf(profile: ModelProfile): AgentSessionCapabilities {
   return { vision: profile.supportsVision, tools: profile.supportsTools };
 }
@@ -76,17 +99,11 @@ export function capabilitiesOf(profile: ModelProfile): AgentSessionCapabilities 
  * Capability gate from system-design §12, applied before any provider request.
  * Throws `unsupported-capability`; the caller may fall back to the degraded,
  * explicitly labelled accessibility/OCR-only mode instead.
+ *
+ * Kept for source compatibility with PR-005. New code should prefer
+ * {@link checkVisualConversation} (typed decision, no exception) or
+ * {@link verifyProfileAgainstModel} (also re-probes Pi metadata).
  */
 export function assertSupportsVisualConversation(profile: ModelProfile): void {
-  if (supportsVisualConversation(profile)) {
-    return;
-  }
-  throw new PilotError('unsupported-capability', 'Model lacks vision or tool support', {
-    userMessage: 'The selected model cannot look at your screen. Choose another model.',
-    details: {
-      profileId: profile.id,
-      supportsVision: profile.supportsVision,
-      supportsTools: profile.supportsTools,
-    },
-  });
+  assertCapabilityDecision(checkVisualConversation(profile));
 }
