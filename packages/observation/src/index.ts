@@ -15,12 +15,19 @@
  *   window lifecycle (PR-016).
  * - {@link resolveQuestionAnchor} — the grounding point for an utterance
  *   (PR-016).
+ * - {@link DEFAULT_SCREEN_CONTEXT_POLICY} — the §10 screen policy as data, and
+ *   {@link ScreenPolicyEnforcer}, which runs its seven-step execution order
+ *   (PR-017).
+ * - {@link RetentionGuard} — clear-on-pause/lock/window-loss/shutdown with a
+ *   post-condition (PR-017).
+ * - {@link ObservationRateLimiter} — the clock-driven observation rate limit.
+ * - {@link ImageProcessor} — the PR-018 seam, plus a deterministic fake.
  * - Recorded fixtures for downstream lanes and the demos.
  *
- * Screen policy enforcement (PR-017), image processing (PR-018) and the
- * `ScreenContextService` facade (PR-019) build on this and are deliberately
- * absent. Frames arrive through the `ObservationAdapter` contract from
- * `@pilot/platform`; this package never captures anything itself.
+ * Image processing (PR-018) and the `ScreenContextService` facade (PR-019)
+ * build on this and are deliberately absent. Frames arrive through the
+ * `ObservationAdapter` contract from `@pilot/platform`; this package never
+ * captures anything itself.
  */
 export * from './clock.js';
 export * from './hashing.js';
@@ -32,4 +39,10 @@ export * from './content-fingerprint.js';
 export * from './observation-core.js';
 export * from './question-anchor.js';
 export * from './observation-session.js';
+export * from './screen-policy.js';
+export * from './observation-rate.js';
+export * from './retention.js';
+export * from './secure-content.js';
+export * from './image-pipeline.js';
+export * from './policy-enforcer.js';
 export * from './fixtures.js';

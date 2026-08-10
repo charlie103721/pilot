@@ -20,7 +20,7 @@ apps/desktop/          Electron shell: main process, sandboxed preload, React pa
 packages/shared/       identifiers, geometry, errors, IPC envelopes, logging, domain types
 packages/platform/     adapter interfaces, cross-block service contracts, fakes
 packages/platform-mac/ embedded Swift helper and its framed stdio transport
-packages/observation/  frame ring, pointer timeline, scene revision, deterministic clear
+packages/observation/  frame ring, pointer timeline, scene revision, deterministic clear, screen policy
 packages/interaction/  the interaction state machine, its transition table and controller
 packages/agent/        Pi agent session, tools, and the Pi dependency boundary
 ```
@@ -210,6 +210,28 @@ lifecycle, and the scene lineage — with every stale scene reference refused.
 
 The fingerprint rule and its failure modes are documented at the top of
 `packages/observation/src/content-fingerprint.ts`.
+
+## Demo (PR-017 — screen policy)
+
+Run allowed and rejected observation scenarios against the same fixtures and
+see which policy rule decided each one:
+
+```sh
+pnpm build && pnpm --filter @pilot/observation demo:policy
+```
+
+It prints the policy in force (system-design §10), the full rule table
+(rule → step → error code → what it rejects), six allowed observations with the
+images they produced, nineteen rejected ones with the single rule that refused
+each, the observation rate limit at its exact boundary, the buffer clear for
+each of pause / screen lock / window loss / shutdown, and the sentence that says
+what redaction does *not* promise. Three scenarios are marked `PRIVACY:` — they
+are the ones that refuse to look at anything but the selected window.
+
+The policy is data (`packages/observation/src/screen-policy.ts`) and its
+execution order is an explicit seven-step sequence
+(`packages/observation/src/policy-enforcer.ts`). Steps 5 and 6 of §10 — the
+actual image work — sit behind the `ImageProcessor` seam that PR-018 fills in.
 
 ## Demo (PR-006 — interaction state machine)
 

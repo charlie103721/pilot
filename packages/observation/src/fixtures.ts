@@ -6,6 +6,8 @@ import {
   type CapturedFrame,
   type NormalizedPoint,
   type ObservedWindow,
+  type PermissionState,
+  type SceneState,
   type WindowGeometry,
 } from '@pilot/shared';
 import type { WindowEvent } from '@pilot/platform';
@@ -26,6 +28,16 @@ import { ObservationSession, type FrameIngestOutcome } from './observation-sessi
 import type { PointerSampleInput } from './pointer-timeline.js';
 import type { SceneSignalsPatch, SceneTransition } from './scene-tracker.js';
 import type { FrameIngestResult, PointerIngestResult } from './observation-core.js';
+import { FakeImageProcessor } from './image-pipeline.js';
+import { ObservationRateLimiter } from './observation-rate.js';
+import { RetentionGuard } from './retention.js';
+import { DEFAULT_SCREEN_CONTEXT_POLICY, type ScreenContextPolicy } from './screen-policy.js';
+import {
+  ScreenPolicyEnforcer,
+  type CaptureSource,
+  type ObservationRuntimeState,
+  type ObservationSource,
+} from './policy-enforcer.js';
 
 /**
  * Recorded observation fixtures.
@@ -649,6 +661,144 @@ export async function replayFixtureThroughAdapters(
     contentRevisions: metrics.contentRevisions,
     frameOutcomes,
   };
+}
+
+// ---------------------------------------------------------------------------
+// PR-017: screen policy harness
+// ---------------------------------------------------------------------------
+
+/** Overrides for {@link PolicyHarness.state}. Absent means "read it live". */
+export interface PolicyStateOverrides {
+  readonly enabled?: boolean;
+  readonly paused?: boolean;
+  readonly screenLocked?: boolean;
+  readonly screenRecording?: PermissionState;
+  readonly accessibility?: PermissionState;
+  readonly captureSource?: CaptureSource;
+  readonly selectedWindow?: ObservedWindow | null;
+  readonly geometry?: WindowGeometry | null;
+  readonly scene?: SceneState | null;
+}
+
+export interface PolicyHarness {
+  readonly clock: AdjustableClock;
+  readonly core: ObservationCore;
+  readonly session: ObservationSession;
+  readonly adapters: ReplayAdapters;
+  readonly policy: ScreenContextPolicy;
+  readonly images: FakeImageProcessor;
+  readonly rateLimiter: ObservationRateLimiter;
+  readonly enforcer: ScreenPolicyEnforcer;
+  readonly retention: RetentionGuard;
+  /** Runtime state read live from the session, with optional overrides. */
+  state(overrides?: PolicyStateOverrides): ObservationRuntimeState;
+  /** The buffers as the enforcer reads them, optionally with a fresh source. */
+  source(captureFresh?: (signal?: AbortSignal) => Promise<CapturedFrame>): ObservationSource;
+}
+
+export interface PolicyHarnessOptions {
+  readonly policy?: ScreenContextPolicy;
+  readonly fixture?: RecordedObservationFixture;
+  readonly images?: FakeImageProcessor;
+}
+
+/**
+ * Core, session, policy, rate limiter, retention guard and a fake image
+ * processor, all on one fake clock (PR-017).
+ *
+ * This is the harness the policy tests and the policy demo share, so a scenario
+ * written in a test reads exactly like a scenario printed by the demo.
+ */
+export function createPolicyHarness(options: PolicyHarnessOptions = {}): PolicyHarness {
+  const policy = options.policy ?? DEFAULT_SCREEN_CONTEXT_POLICY;
+  const fixture = options.fixture ?? createSceneLineageFixture();
+  const clock = createFakeClock(fixture.startedAt);
+  const ids = createIdFactory(createCounterIdSource());
+  const core = new ObservationCore({ clock, ids, policy });
+  const adapters: ReplayAdapters = {
+    observation: new FakeObservationAdapter({ frames: fixture.frames }),
+    accessibility: new FakeAccessibilityAdapter(),
+    windows: new FakeWindowAdapter(),
+  };
+  const session = new ObservationSession({
+    core,
+    clock,
+    policy,
+    observation: adapters.observation,
+    accessibility: adapters.accessibility,
+    windows: adapters.windows,
+  });
+  const images = options.images ?? new FakeImageProcessor();
+  const rateLimiter = new ObservationRateLimiter({ clock, policy });
+  const enforcer = new ScreenPolicyEnforcer({ clock, policy, images, ids, rateLimiter });
+  const retention = new RetentionGuard({ core, policy, rateLimiter });
+
+  const state = (overrides: PolicyStateOverrides = {}): ObservationRuntimeState => ({
+    enabled: overrides.enabled ?? session.state === 'observing',
+    paused: overrides.paused ?? false,
+    screenLocked: overrides.screenLocked ?? session.state === 'suspended',
+    permissions: {
+      screenRecording: overrides.screenRecording ?? 'granted',
+      accessibility: overrides.accessibility ?? 'granted',
+    },
+    selectedWindow:
+      'selectedWindow' in overrides
+        ? (overrides.selectedWindow ?? null)
+        : (session.selection?.window ?? null),
+    geometry:
+      'geometry' in overrides
+        ? (overrides.geometry ?? null)
+        : (session.selection?.geometry ?? null),
+    scene: 'scene' in overrides ? (overrides.scene ?? null) : core.scene,
+    captureSource: overrides.captureSource ?? 'selected-window',
+  });
+
+  const source = (
+    captureFresh?: (signal?: AbortSignal) => Promise<CapturedFrame>,
+  ): ObservationSource => ({
+    selectFrame: (requestedAt, query) => core.selectFrame(requestedAt, query),
+    selectPointer: (requestedAt, query) => core.selectPointer(requestedAt, query),
+    checkScene: (ref) => core.checkScene(ref),
+    ...(captureFresh === undefined ? {} : { captureFresh }),
+  });
+
+  return {
+    clock,
+    core,
+    session,
+    adapters,
+    policy,
+    images,
+    rateLimiter,
+    enforcer,
+    retention,
+    state,
+    source,
+  };
+}
+
+/**
+ * Replays a fixture into a policy harness and stops at the question moment, so
+ * the ring holds frames around `fixture.questionAt` and the pointer timeline
+ * holds the path that grounds it.
+ */
+export async function primePolicyHarness(
+  harness: PolicyHarness,
+  fixture: RecordedObservationFixture,
+  options: AdapterReplayOptions = {},
+): Promise<AdapterReplayReport> {
+  return replayFixtureThroughAdapters(
+    {
+      clock: harness.clock,
+      core: harness.core,
+      session: harness.session,
+      adapters: harness.adapters,
+      transitions: [],
+      frameOutcomes: [],
+    },
+    fixture,
+    { until: fixture.questionAt, ...options },
+  );
 }
 
 function applyWindowEvent(windows: FakeWindowAdapter, event: WindowEvent): void {
