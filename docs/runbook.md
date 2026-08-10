@@ -209,6 +209,7 @@ the two in step.
 | **TCC attribution + real permissions and windows** | `pnpm --filter @pilot/platform-mac demo:permissions`, then again with `PILOT_HELPER_BINARY` pointing inside the packaged `.app` | PR-011 | **yes** |
 | Pointer grounding, AX hit testing, secure fields | `pnpm --filter @pilot/platform-mac demo:accessibility`, with and without an Accessibility grant | PR-013 | no |
 | **Real speech: transcription, on-device recognition and audible playback** | `pnpm --filter @pilot/platform-mac demo:speech` — opens the microphone and makes noise; run after the permissions row | PR-014 | **yes** |
+| **Selected-window capture** — the first real pixel | `pnpm --filter @pilot/platform-mac demo:capture` (run the row above first; without a Screen Recording grant this cannot work) | PR-012 | **yes** |
 
 A Swift compile failure is a **PR-003 defect** in the transport files, a
 **PR-011 defect** in `PermissionModel.swift`, `Attribution.swift`,
@@ -234,6 +235,14 @@ the top structural risk in the plan (§7). The speech row is the only one that
 opens the microphone or produces sound, and part of its answer is audible
 rather than printed. What to look for in both is spelled out in
 `docs/handoff.md` §1.
+a **PR-012 defect** in `CaptureModel.swift` and `CaptureEngine.swift`: either
+way, send the compiler output and it gets fixed, not worked around.
+
+Every row but the last two raises **no TCC prompt** — that separation is
+deliberate, isolating "does the helper build and talk" from "does macOS trust
+it". The last two are the second question, and the permissions one settles the
+top structural risk in the plan (§7). What to look for in both is spelled out
+in `docs/handoff.md` §1.
 
 ## 6. Verification commands
 
@@ -373,6 +382,42 @@ written blind per amendment 8).
    one starts failing in isolation, that is real. Do not "fix" them by widening
    their tolerances — the bounds and the deadline are the properties under
    test, and a stress test that cannot fail proves nothing.
+7. **A test that anticipates a later PR must be updated, not deleted.** PR-011
+   asserted "binary is attached to nothing but `echo`" and said in a comment
+   that capture frames arrive in PR-012. They did: `capture.pull` answers with
+   a binary body. PR-012 narrowed that assertion to "nothing but `echo` and
+   `capture.pull`, and only on the response" and said why in the comment,
+   rather than removing it — the invariant it was protecting (a permission or
+   window response must never carry bytes) is still worth having.
+8. **Optional interface members are the additive shape that works.** PR-011
+   added `PermissionAdapter.attribution?()`; PR-012 added
+   `ObservationAdapter.subscribeEvents?`. Both are source-compatible — existing
+   implementations, including the shared fakes, still satisfy the interface
+   untouched — which matters because `packages/platform/src/adapters.ts`
+   collides on nearly every merge. Keep such additions in one contiguous block
+   marked with the PR id so the collision resolves as a union.
+
+8. **Never union conflict regions in *code* mechanically.** Merging PR-012,
+   PR-013 and PR-014 — three lanes appending to the same protocol registry,
+   the same Swift `HelperServer` and the same Node stub — a textual union
+   introduced four defects that no conflict marker showed:
+   - a **dropped comma** in a Swift parameter list (`accessibility: … ()`
+     followed by `speechInput:`), which only a Mac compile would catch;
+   - a **duplicated `private var eventCounter`** and a duplicated doc comment
+     in the same Swift class;
+   - a **dropped closing brace** on a TypeScript function, which moved every
+     following declaration inside it — `tsc` reported it only as `'}' expected`
+     at end of file, 600 lines away from the cause;
+   - a block of interface fields unioned into the **wrong interface**, so
+     `StubConfig` compiled while the code reading those fields did not.
+
+   Union the *lists* (registry entries, exports, switch cases, doc rows); write
+   the *prose* deliberately, because two lanes each describing "the third
+   adapter" produce contradictory paragraphs. Afterwards check, in order:
+   `grep` for duplicate declarations and duplicate switch cases, a brace-balance
+   scan that skips strings and comments, then `pnpm typecheck`. For Swift,
+   none of this is caught by any gate here — read the init parameter list and
+   the property block by eye.
 
 ### Pending cross-lane follow-ups
 

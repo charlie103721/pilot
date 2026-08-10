@@ -63,16 +63,25 @@ describe('the operation set', () => {
     );
   });
 
-  it('attaches binary to nothing but echo', () => {
-    // Capture frames arrive in PR-012. Until then a binary body on a
-    // permission or window response is a protocol violation, not a curiosity.
+  it('attaches binary to nothing but echo and the capture stream', () => {
+    // PR-011 asserted "nothing but echo" and said capture frames would arrive
+    // in PR-012. They have: `capture.pull` answers with a frame's encoded
+    // pixels in the binary body. Its *request* still carries none, and every
+    // other operation still carries none in either direction — a binary body
+    // on a permission or window response remains a protocol violation.
     for (const operation of Object.values(HELPER_OPERATIONS)) {
       if (operation.name === 'echo') {
         continue;
       }
       expect(operation.requestBinary, operation.name).toBe(false);
-      expect(operation.responseBinary, operation.name).toBe(false);
+      expect(operation.responseBinary, operation.name).toBe(operation.name === 'capture.pull');
     }
+  });
+
+  it('exposes the PR-012 capture operations', () => {
+    expect(HELPER_OPERATION_NAMES).toEqual(
+      expect.arrayContaining(['capture.start', 'capture.stop', 'capture.pull']),
+    );
   });
 });
 

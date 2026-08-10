@@ -34,6 +34,13 @@ public enum HelperOutcome {
 /// lock-protected queue and `speech.*.poll` drains it. None of that touches
 /// this loop, so stdout still has exactly one writer — the property PR-003's
 /// framing and supervision depend on.
+/// added the permission and window operations; PR-012 adds capture, and is the
+/// first real user of that binary body.
+///
+/// `handle(frame:)` remains a function of its input and its three injected
+/// services, so the XCTest target exercises every branch — including the
+/// permission, window and capture ones — without a window server, a TCC prompt,
+/// a compositor or a spawned process.
 public final class HelperServer {
     public let helperVersion: String
     private let processIdentifier: Int
@@ -43,6 +50,7 @@ public final class HelperServer {
     private let accessibility: AccessibilityService
     private let speechInput: SpeechInputService
     private let speechOutput: SpeechOutputService
+    private let capture: CaptureService
     private var eventCounter = 0
 
     /// The services default to the live ones, so `main.swift` is unchanged and
@@ -56,7 +64,8 @@ public final class HelperServer {
         windows: WindowService = SystemWindowService(),
         accessibility: AccessibilityService = SystemAccessibilityService(),
         speechInput: SpeechInputService = SystemSpeechInputService(),
-        speechOutput: SpeechOutputService = SystemSpeechOutputService()
+        speechOutput: SpeechOutputService = SystemSpeechOutputService(),
+        capture: CaptureService = SystemCaptureService()
     ) {
         self.helperVersion = helperVersion
         self.processIdentifier = processIdentifier
@@ -66,6 +75,7 @@ public final class HelperServer {
         self.accessibility = accessibility
         self.speechInput = speechInput
         self.speechOutput = speechOutput
+        self.capture = capture
     }
 
     private var uptimeMilliseconds: Int {
@@ -242,6 +252,8 @@ public final class HelperServer {
                 !utteranceId.isEmpty,
                 let onDevice = request.payload["onDevice"] as? Bool
             else {
+        case .captureStart:
+            guard let settings = CaptureConfiguration.parse(request.payload) else {
                 return failure(
                     request: request,
                     code: "invalid-request",
@@ -280,6 +292,24 @@ public final class HelperServer {
             }
         case .speechInputStop:
             guard let utteranceId = request.payload["utteranceId"] as? String else {
+                    message: "capture.start requires windowNumber, width, height and sampleFps"
+                )
+            }
+            let outcome = capture.start(settings)
+            guard let session = outcome.session else {
+                return failure(
+                    request: request,
+                    code: outcome.failureCode,
+                    domain: "observation",
+                    message: outcome.failure ?? "capture could not start"
+                )
+            }
+            return success(request: request, payload: ["session": session.jsonObject])
+        case .captureStop:
+            let requested = request.payload["streamId"] as? String
+            return success(request: request, payload: capture.stop(streamId: requested).jsonObject)
+        case .capturePull:
+            guard let streamId = request.payload["streamId"] as? String, !streamId.isEmpty else {
                 return failure(
                     request: request,
                     code: "invalid-request",
@@ -376,6 +406,17 @@ public final class HelperServer {
             return success(
                 request: request,
                 payload: speechOutput.poll(since: since).outputJSONObject
+                    message: "capture.pull requires a streamId"
+                )
+            }
+            let notBefore = (request.payload["notBefore"] as? NSNumber)?.intValue
+            let outcome = capture.pull(streamId: streamId, notBefore: notBefore)
+            // The pixels ride in the frame's binary body, never in the JSON:
+            // message metadata stays printable and log-safe (PR-003).
+            return success(
+                request: request,
+                payload: outcome.jsonObject,
+                binary: outcome.frame?.bytes ?? []
             )
         }
     }

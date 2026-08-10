@@ -10,6 +10,8 @@ import type {
   PermissionSnapshot,
   PermissionStatus,
   QuestionGrounding,
+  PilotError,
+  PixelSize,
   ScreenPoint,
   SpeechId,
   SpeechRecognitionDestination,
@@ -127,12 +129,93 @@ export interface WindowAdapter {
 // Observation
 // ---------------------------------------------------------------------------
 
-/** system-design §5, verbatim. */
+/**
+ * Why capture stopped (PR-012).
+ *
+ * `window-lost`, `screen-locked` and `protected-content` are the three the
+ * design names explicitly (system-design §16), and each one means the consumer
+ * must clear its buffers as well as stop reading — a frame of a window that no
+ * longer exists is not a stale frame, it is a frame of somebody else's screen.
+ */
+export const CAPTURE_STOP_REASONS = [
+  /** `stop()` was called. */
+  'requested',
+  /** The selected window is gone. */
+  'window-lost',
+  /** The session locked (system-design §14). */
+  'screen-locked',
+  /** The application blocks capture; its pixels are blank, not black. */
+  'protected-content',
+  /** The native helper died or became unreachable. */
+  'helper-unavailable',
+  /** Any other capture failure. */
+  'failed',
+] as const;
+
+export type CaptureStopReason = (typeof CAPTURE_STOP_REASONS)[number];
+
+/** Why a frame the platform received never reached the consumer (PR-012). */
+export const FRAME_DROP_REASONS = [
+  /** The frame belonged to a window that is not the selected one. */
+  'foreign-window',
+  /** Zero-length payload. The ring rejects these; they never leave the adapter. */
+  'empty-bytes',
+  /** The producer repeated a sequence number already delivered. */
+  'duplicate',
+  /** Declared byte length disagreed with the payload actually received. */
+  'byte-length-mismatch',
+  /** Larger than any buffer configured to hold it. */
+  'too-large',
+  /** The producer's timestamp was implausible and was replaced. */
+  'clock-skew',
+  /** Dropped by the producer's own bounded queue, before the host saw it. */
+  'producer-backpressure',
+] as const;
+
+export type FrameDropReason = (typeof FRAME_DROP_REASONS)[number];
+
+/**
+ * Capture lifecycle, separate from the frames themselves (PR-012).
+ *
+ * Frames flow through `ObservationAdapter.subscribe`; this is everything else a
+ * consumer needs in order to obey system-design §6 and §16 — start, stop and
+ * the reason, plus the drops it would otherwise have to infer from silence.
+ */
+export type ObservationEvent =
+  | {
+      readonly type: 'capture-started';
+      readonly windowId: WindowId;
+      /** Pixel size the stream was configured at, after the policy downscale. */
+      readonly captureSize: PixelSize;
+    }
+  | {
+      readonly type: 'capture-stopped';
+      readonly reason: CaptureStopReason;
+      /** Present for every reason but `requested`. */
+      readonly error?: PilotError;
+    }
+  | {
+      readonly type: 'frames-dropped';
+      readonly reason: FrameDropReason;
+      readonly count: number;
+    };
+
+/**
+ * system-design §5, verbatim — plus one optional member added by PR-012.
+ *
+ * `subscribeEvents` is optional for the same reason `PermissionAdapter.
+ * attribution` is: adapters written before it existed still satisfy the
+ * interface, and a caller that needs the answer handles `undefined` as "this
+ * platform does not report capture lifecycle". Adding an optional member is
+ * source-compatible; the four verbatim methods are untouched.
+ */
 export interface ObservationAdapter {
   start(window: ObservedWindow, options: CaptureOptions): Promise<void>;
   stop(): Promise<void>;
   captureFresh(signal?: AbortSignal): Promise<CapturedFrame>;
   subscribe(listener: (frame: CapturedFrame) => void): () => void;
+  /** Capture lifecycle and drop notifications (PR-012). */
+  subscribeEvents?: Subscribe<ObservationEvent>;
 }
 
 // ---------------------------------------------------------------------------

@@ -73,6 +73,14 @@ PILOT_HELPER_BINARY="$(pwd)/apps/desktop/release/mac-arm64/Pilot.app/Contents/Re
 #    Run it after step 5, so the two grants already exist. Turn the volume up:
 #    part of what is being checked is audible, not printed.
 pnpm --filter @pilot/platform-mac demo:speech
+# 6. PR-012 — the first real pixel Pilot has ever captured. RUN STEP 5 FIRST:
+#    without a Screen Recording grant this cannot work, and the failure would
+#    look like a capture bug rather than a missing permission.
+#    Open a window titled something recognisable before running it.
+pnpm --filter @pilot/platform-mac demo:capture
+
+PILOT_HELPER_BINARY="$(pwd)/apps/desktop/release/mac-arm64/Pilot.app/Contents/Resources/helper/PilotHelper" \
+  pnpm --filter @pilot/platform-mac demo:capture
 ```
 
 Notes:
@@ -95,6 +103,14 @@ Notes:
 - **Step 6 is the only one that opens the microphone or makes a sound.** It is
   also the only one where part of the answer is audible rather than printed, so
   it needs speakers on and someone listening.
+  and a **PR-012 defect** for `CaptureModel.swift` and `CaptureEngine.swift`.
+  Either way, send the compiler output; it gets fixed, not worked around. The
+  authors could not compile any of it and deliberately avoided constructs they
+  were unsure of.
+- **Steps 1–4 raise no TCC prompt. Steps 5 and 6 do.** That separation is
+  deliberate: it isolates "does the helper build and talk" from "does macOS
+  trust it". Do steps 1–4 first; if the helper does not build, steps 5 and 6
+  cannot tell you anything.
 - `--require-native` in step 3 is the flag that matters. Without it the build
   silently stages a placeholder, and a bundle that cannot observe the screen is
   indistinguishable from one that can until someone tries it.
@@ -224,6 +240,41 @@ Also worth capturing while you are there:
   it are community folklore and have never been checked. A wrong guess degrades
   to a correct-but-generic `recognizer-failed`, so this is a quality
   improvement rather than a bug hunt.
+### What to look for in step 6 (PR-012)
+
+The demo targets a hard-coded fixture window on the stub. Against the real
+helper it enumerates and picks one, and **prints which window it selected on
+its second line** — check that line first: everything below it is scoped to
+that window and to nothing else.
+
+Then, in order:
+
+1. **Does it capture at all.** Frames should appear with non-zero byte counts.
+   Zero frames with `state=starting` means the stream never delivered; zero
+   frames with `state=protected` means the window blocks capture (try a plain
+   TextEdit window before concluding anything).
+2. **`age=` on each frame.** This is `Date.now() - capturedAt`, and it is the
+   mach → epoch timestamp conversion showing its work. Tens of milliseconds is
+   right. **Hours, or a negative number, means the conversion is wrong** — the
+   frame ring would then reject every frame as stale and Pilot would observe
+   nothing while reporting no error at all. Report the number either way.
+3. **Byte counts.** A 1440×960 JPEG of a normal UI window should be roughly
+   100–400 KB. Consistently over ~1.8 MB would exhaust the 16 MiB ring in under
+   three seconds and is worth reporting; the fix is the `quality` option.
+4. **A motionless window.** Leave the window untouched for ten seconds. Frames
+   should keep arriving at ~3 FPS with `contentChanged: false` — that is the
+   re-send that keeps the ring populated. If they stop, the assumption that
+   ScreenCaptureKit delivers `idle` frames at the configured interval is wrong,
+   and a static window will have no frame to answer questions from.
+5. **A window that blocks capture.** Try a DRM-protected video or a password
+   manager. Expected: `protected-content` and a stopped stream. If instead a
+   frame arrives that is entirely black, `SCFrameStatus.blank` is not being
+   reported and §16's protected-content path never fires — say so, because the
+   model would then describe a black rectangle as if it were the application.
+6. **System Settings → Privacy & Security → Screen Recording**, again. Capture
+   is the first thing that really uses the grant; a second entry named
+   `PilotHelper` appearing here would be the attribution risk (§5) showing up
+   at the moment it matters most.
 
 **Fallback in use:** Mac-gated code is written unverified and batched here
 (runbook amendment 8, user decision). Accepted risk: PR-011 through PR-015
@@ -318,6 +369,10 @@ reversible; raise any that look wrong.
 | **`AccessibilityAdapter` gained two *optional* methods** (PR-013) | `availability()` and `ground()`, added the same way PR-011 added `PermissionAdapter.attribution?()`: optional, so every existing implementation and fake still satisfies the interface untouched, and no other lane has to change. system-design §5's two original methods are unchanged. The alternative — a second interface — would have split "the accessibility adapter" in two for no gain. |
 | **Accessibility element *values* are off by default** (PR-013) | A value is arbitrary screen content, and the secure-field flag that would keep a password out of it is best effort (§14). So `MacAccessibilityAdapter` does not read `AXValue` unless a host opts in with `includeElementValues`, and never for a secure element. Cost: a consumer that wants the text in a field must ask for it deliberately. **Say if you would rather have values on by default** — PR-018/PR-028 are the consumers this affects. |
 | **The accessibility hit test is scoped to the window's application** (PR-013) | `AXUIElementCreateApplication(ownerPid)` rather than the system-wide element, because a point inside the selected window can be covered by a notification or a floating palette from another app, and describing it would leak from a window Pilot is not observing. Cost: an element genuinely owned by a *different* process — a plugin host, an out-of-process web view — will not be found, and shows as `no target`. If real apps turn out to be full of those, the scoping is the first thing to loosen. |
+| **Capture is pulled by the host, not pushed by the helper** (PR-012) | The helper's stdio loop is a single blocking read/answer cycle and a ScreenCaptureKit stream delivers on its own queue. Pushing frames would need a second writer racing the request loop for stdout — a write lock and an interleaving hazard on a *binary* body, in Swift nobody here can compile. The stream callback enqueues into a bounded in-helper queue and `capture.pull` drains it. Cost: one IPC round trip per frame (3/s). Benefit: one writer, explicit backpressure, and the drain rule lives in TypeScript where it is tested. |
+| **Capture encodes JPEG in the helper at quality 0.9** (PR-012) | Raw BGRA at 1440×960 is 5.2 MB a frame; a three-second ring at 3 FPS would need ~47 MB against a 16 MiB bound. So capture must encode, and PR-018 encodes again — the double-JPEG risk already recorded in §5. `encoding: 'png'` is a one-line switch on `MacObservationAdapter` that removes the first lossy pass if PR-043 finds small text illegible; it costs ring bytes. **Say if you would rather start with `png`.** |
+| **A motionless window is re-sent rather than left to age out** (PR-012) | ScreenCaptureKit only produces pixels when something changes, so a user reading a static page would fill the ring once and let it empty — and a question asked thirty seconds in would find no frame at all. On an idle frame the helper re-sends its retained encoding with a new instant and sequence, flagged `contentChanged: false`. It costs no new encoding and the frame is honest. It does assume idle frames arrive at the configured interval, which is unverified (§1 step 6, item 4). |
+| **`ObservationAdapter.subscribeEvents` added as an *optional* member** (PR-012) | Capture has to report why it stopped — window lost, screen locked, protected content — and how many frames it refused; the four verbatim methods from system-design §5 carry none of that. Optional keeps it source-compatible: every existing implementation, including the shared fakes, still satisfies the interface untouched. Same shape as PR-011's `PermissionAdapter.attribution?()`. |
 
 ---
 
@@ -328,6 +383,7 @@ reversible; raise any that look wrong.
 | Phase 1 — foundations (PR-001…007) | **Complete.** All seven merged. |
 | Phase 2 — capability lanes | In progress. **Merged:** PR-008, PR-011, PR-016, PR-017, PR-020, PR-021, PR-022a, PR-024, PR-025. **In flight:** PR-009, PR-012, PR-013, PR-014, PR-018, PR-022b, PR-026. **Remaining:** PR-010, PR-015, PR-019, PR-023, PR-027. |
 | Phase 2 — capability lanes | In progress: PR-008, PR-011, PR-016, PR-020, PR-021, PR-022a, PR-024, PR-025 merged; PR-009 ready; PR-012, PR-013, PR-014, PR-017, PR-022b, PR-026 in flight. |
+| Phase 2 — capability lanes | In progress: PR-008, PR-011, PR-016, PR-020, PR-021, PR-024, PR-025 merged; PR-012, PR-013, PR-014, PR-017, PR-022a, PR-026 in flight. |
 | Phase 3 — integration (028…036) | Not started. Blocked on Phase 2; most steps also need the Mac (§1) and a signed-in model (§2). |
 | Phase 4 — providers (037…039) | Not started. PR-037 (Codex) is the one the user's decision selects. |
 | Phase 5 — hardening and release (040…044) | Not started. |
@@ -382,6 +438,20 @@ demo executed against the merged tree.
   spin a run loop on the main one. That is a PR-003-shaped change to the
   helper's threading model and would affect PR-012 and PR-013 as well, which is
   exactly why it was not done speculatively.
+- **Nothing about ScreenCaptureKit has ever run** (PR-012). The capture engine
+  is the largest piece of unverified Swift in the tree, and three of its
+  assumptions are load-bearing enough to be worth stating on their own:
+  - **Idle frames arrive at the configured interval.** If they do not, a
+    motionless window puts nothing in the ring and a question about a static
+    page finds no frame. §1 step 6, item 4 is the check.
+  - **A protected window reports `SCFrameStatus.blank`.** If it instead hands
+    over black pixels, `protected-content` never fires and the model describes
+    a black rectangle as though it were the application. §1 step 6, item 5.
+  - **The mach → epoch timestamp conversion is right.** If it is not, every
+    frame is rejected by the ring as stale and Pilot observes nothing *while
+    reporting no error at all*. The host substitutes its own clock when the
+    skew is implausible, which turns a silent failure into a logged one, but
+    the conversion is what should be correct. §1 step 6, item 2.
 - **`sharp` prebuilds inside packaged Electron (arm64)** — PR-018 owns image
   encoding; the packaging interaction has not been tested.
 - **Double-JPEG legibility of small text** — capture encodes once, the

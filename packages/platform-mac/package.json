@@ -25,6 +25,7 @@
     "demo:permissions": "node test/demo-permissions.ts",
     "demo:accessibility": "node test/demo-accessibility.ts",
     "demo:speech": "node test/demo-speech.ts",
+    "demo:capture": "node test/demo-capture.ts",
     "helper:build": "swift build --package-path native -c debug",
     "helper:build:release": "swift build --package-path native -c release",
     "helper:test": "swift test --package-path native"
@@ -33,5 +34,8 @@
     "@pilot/platform": "workspace:*",
     "@pilot/shared": "workspace:*",
     "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@pilot/observation": "workspace:*"
   }
 }
