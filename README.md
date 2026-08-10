@@ -805,3 +805,92 @@ now** — the indicator says Pilot is reading the window, and the developer
 diagnostics gain `capture-to-observation`, `image-bytes` and `active-images`.
 The faux provider does not call the tool on its own, so a *model*-initiated look
 needs either the scripted source (`pnpm demo:look`) or a signed-in model.
+
+## Demo (PR-031 — point-and-ask with text input)
+
+```sh
+pnpm demo:ask                               # headless walkthrough, no display needed
+```
+
+This is the PR in which the product's core idea first works: **point at
+something, ask about it in words, and get an answer grounded in what you were
+pointing at.** One fake boundary went — the **question anchor**.
+`FakeQuestionAnchorSource` (an empty recording) is gone from the real path, and
+`ScreenContextInputs.anchor`, the last unwired input on the observation side, is
+set at submission. `apps/desktop/src/main/question-anchor.ts` builds PR-024's
+envelope factory over the real `ObservationCore` pointer timeline and, in the
+same call, hands the resolved system-design §6 anchor to the *same*
+`PilotScreenContextService` the `observe_screen` tool holds. Three things come
+alive at once:
+
+- `moment: 'question'` selects the frame from **when the question was asked**
+  rather than the newest one in the ring;
+- `view: 'pointer'` crops around the anchor rather than around wherever the
+  mouse was last seen;
+- the accessibility element under the anchor reaches the model as
+  `pointer target: AXButton — Update payment method`, and reaches §10's
+  redaction step as an `AccessibilityNode` with `isSecure` and bounds.
+
+**Read this first.** `docs/implementation.md`'s demo for PR-031 — "point at a UI
+element, type 'what is this?', receive a grounded answer" — cannot be fully run
+here, for three independent reasons, and the third is the one that matters:
+
+- **No model is real** (`docs/handoff.md` §2). Pi's faux provider, scripted, so
+  *that* the tool is called and with which `moment` is chosen by the demo.
+- **No pixel was ever on a screen.** The stub's frames are not a decodable image
+  and a pointer crop must decode, so the frames are synthetic screenshots
+  (`renderSyntheticScreen` + `encodePng`) pushed through the same
+  `ObservationSession.ingestFrame` the capture stream arrives on. The decode,
+  the crop and the encode are real; the subject is not.
+- **No real pointer has ever been read, and no real accessibility element has
+  ever been hit-tested.** There is no macOS here. So *"the crop is centred on
+  what the user pointed at"* is **not verified anywhere in this repository** —
+  only that it is centred on the pointer sample the anchor selected.
+  `docs/handoff.md` §1 step 9 is what settles it, and item 1 of that list is the
+  single most valuable observation in the whole Mac batch.
+
+The walkthrough prints seven sections:
+
+1. **The boundary that changed**, and that one `ObservationCore` sits behind
+   both the envelope and the facade.
+2. **Point at a button, type "what is this?"** — the anchor (`insideWindow`,
+   `skewMs`, `targetRole`), the observation (`moment=question`, a `window` image
+   and a `pointer` crop), the **rendered envelope the model actually received**,
+   and the answer.
+3. **The anchor selects the question-time frame**: a newer frame lands in the
+   ring and the answer still comes from the one that was on screen when the
+   question was asked.
+4. **The crop follows the anchor**: the same window and the same screen, two
+   pointer positions, two different pictures at the same policy crop size.
+5. **The window changes between the question and the tool call** —
+   `requestedSceneStatus=stale-revision`, `revisionsBehind=1`. Answered, not
+   refused, and the model is told how far behind it is.
+6. **A pointer that is not over the selected window identifies nothing**, in
+   both of its forms — outside the window's frame (proved *at the wire*:
+   `accessibility.element-at` is never sent) and inside the frame but over
+   another application's window (proved at the wire too: `accessibility.sample`
+   carries `ownerPid`). Plus an unknown pointer rendering as `pointer: unknown`
+   and never as `-1.000`.
+7. **What none of it proves**, printed by the demo itself.
+
+Section 6b is there because PR-031 had to fix it. `AccessibilityGroundingTarget.
+ownerPid` is optional and **both** of PR-013's foreign-application defences are
+conditional on it; PR-028 omitted it, which cost nothing until the element
+started reaching a prompt. The first run of this demo put a label from the
+*other* stub window into the model's request. See `docs/runbook.md` cross-lane
+issue 12 and follow-up 29.
+
+In the app, the same thing by hand — the whole real stack, on Linux, against the
+stub (use the long `PILOT_HELPER_STUB` from the PR-028 section above):
+
+```sh
+PILOT_HELPER_STUB_PATH="$PWD/packages/platform-mac/test/support/helper-stub.ts" \
+  PILOT_HELPER_STUB='…' pnpm dev
+```
+
+Click path: grant the permission fixtures, pick a window, type a question. With
+`PILOT_LOG_LEVEL=debug` the observation scope logs `question anchored` with the
+scene, the revision, the skew and the target role at submission, and
+`observation allowed` with `targetRole` when the look happens. The stub's frames
+do not decode, so a `view: 'pointer'` observation is refused there — that is the
+stub's limit, not the anchor's, and `pnpm demo:ask` is where the crop is real.
