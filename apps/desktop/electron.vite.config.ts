@@ -1,4 +1,6 @@
+import { cpSync, existsSync } from 'node:fs';
 import { builtinModules } from 'node:module';
+import { resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'electron-vite';
 import type { Plugin } from 'vite';
@@ -149,6 +151,67 @@ function rendererCspGuard(): Plugin {
   };
 }
 
+/**
+ * Stages the SQLite backend's migration `.sql` files beside the bundled main
+ * process (PR-036).
+ *
+ * FOUND BY `pnpm smoke`, and it is invisible everywhere else.
+ * `@earendil-works/pi-session-backend-sqlite-node` reads its schema with
+ * `readFile(new URL('./migrations/001_initial.sql', import.meta.url))`. Under
+ * `ssr.noExternal: true` the package is inlined into `dist/main/index.js`, so
+ * `import.meta.url` becomes the bundle's own path and the lookup goes to
+ * `dist/main/migrations/001_initial.sql` — a file that does not exist. Opening
+ * the conversation store then fails with `ENOENT`, which
+ * `main/conversation-store.ts` turns into "running in memory": **the app starts,
+ * answers questions, and silently persists nothing.** Every test and every demo
+ * runs from source through vitest or Vite, where the package resolves its own
+ * files, so nothing but a built app can catch it.
+ *
+ * A `.sql` file is data, not a module, so there is nothing for Rollup to inline;
+ * copying it is the fix. It lands under `dist/`, which `electron-builder.yml`
+ * already ships into the asar, and `scripts/verify-bundle.js` asserts it is
+ * there.
+ */
+const SQLITE_MIGRATION_CANDIDATES = [
+  // pnpm's default, non-hoisted layout: the dependency is `@pilot/agent`'s.
+  resolvePath(
+    repoRoot,
+    'packages/agent/node_modules/@earendil-works/pi-session-backend-sqlite-node/dist/sqlite/migrations',
+  ),
+  // A hoisted or npm/yarn layout.
+  resolvePath(
+    repoRoot,
+    'node_modules/@earendil-works/pi-session-backend-sqlite-node/dist/sqlite/migrations',
+  ),
+];
+
+function stageSqliteMigrations(): Plugin {
+  return {
+    name: 'pilot:sqlite-migrations',
+    apply: 'build',
+    closeBundle(): void {
+      // Neither resolver can be used here. `require.resolve` is refused by the
+      // package's `exports` map (which declares `import` only), and
+      // `import.meta.resolve` resolves from *this* file — `apps/desktop`, which
+      // does not depend on the backend; `@pilot/agent` does. So the two layouts
+      // pnpm can produce are named, and a third fails the build loudly.
+      const from = SQLITE_MIGRATION_CANDIDATES.find((candidate) => existsSync(candidate));
+      if (from === undefined) {
+        // A silent copy of nothing is exactly the failure this plugin exists to
+        // prevent, so an upstream layout change fails the build instead.
+        throw new Error(
+          "main build: the SQLite backend's migrations are in none of:\n" +
+            SQLITE_MIGRATION_CANDIDATES.map((candidate) => `  ${candidate}`).join('\n') +
+            '\nThe pinned package moved them, or the dependency layout changed. ' +
+            'Fix this before shipping, or the packaged app starts with ' +
+            'persistence silently disabled.',
+        );
+      }
+      cpSync(from, fromApp('dist/main/migrations'), { recursive: true });
+    },
+  };
+}
+
 /** Swaps in {@link DEVELOPMENT_CSP} while `electron-vite dev` is serving. */
 function rendererDevCsp(): Plugin {
   return {
@@ -197,6 +260,7 @@ export default defineConfig({
   main: {
     resolve: { alias: workspaceAliases },
     ssr: { noExternal: true },
+    plugins: [stageSqliteMigrations()],
     build: {
       outDir: fromApp('dist/main'),
       emptyOutDir: true,

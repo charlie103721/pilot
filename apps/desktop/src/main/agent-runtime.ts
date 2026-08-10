@@ -22,11 +22,23 @@ import {
   buildSystemPrompt,
   createObservationNotebook,
   createObserveScreenTool,
+  containsImageBytes,
   type CapabilityReport,
+  type CompactionOutcome,
+  type ConversationStore,
   type ModelSource,
   type ObservationNotebook,
+  type RestoredConversation,
 } from '@pilot/agent';
 import { renderAnchoredQuestionEnvelope } from '@pilot/interaction';
+import type { TelemetryMetric } from '../ipc/schemas.js';
+import {
+  contextWindowInputOf,
+  describeContextWindow,
+  parseContextWindowOverride,
+  resolveContextWindow,
+  type ContextWindowDecision,
+} from './context-window.js';
 
 /**
  * The real agent session, assembled (PR-029).
@@ -64,17 +76,65 @@ import { renderAnchoredQuestionEnvelope } from '@pilot/interaction';
  *     {@link AgentRuntime.capability} reports and the tests assert against
  *     `ModelSource.requestCount()`.
  *
- * What is *not* here, on purpose: the `ConversationStore`. PR-023 built it and
- * PR-036 owns wiring it (`openConversationStore` → `restore()` →
- * `new PiAgentSession({ store, restore })` → `store.close()` on quit).
- * `PiAgentSessionOptions.store`/`restore` are additive, so PR-036 adds two
- * options to the object built below and changes nothing else.
+ * PR-036 wired the last two, and they are the two this file's own comment used
+ * to say were missing:
+ *
+ *  4. **`store` and `restore`** (follow-up 20). `main/conversation-store.ts`
+ *     opens the durable conversation and reads it back; the two values arrive
+ *     here as {@link AgentRuntimeOptions.store} and
+ *     {@link AgentRuntimeOptions.restore} and are handed to `PiAgentSession`
+ *     together. Passing `store` without `restore` is the failure that follow-up
+ *     20 (b) describes — the history is on disk and invisible to the model —
+ *     so, like the notebook above, they are written on adjacent lines.
+ *  5. **`compaction.contextWindow`** (follow-ups 7 and 9). Not
+ *     `model.contextWindow`: see `main/context-window.ts` for why a local
+ *     endpoint's advertised window is not a budget Pilot can trust.
+ *
+ * Telemetry (follow-up 9's other half) is attached separately, through
+ * {@link AgentRuntime.attachTelemetry}, for the same reason the observation
+ * runtime's is: `ConversationGate` owns the ring and cannot exist until the
+ * controller does, and the controller needs this session.
  */
 
 export type AgentCapabilityStatus =
   | { readonly ok: true; readonly report: CapabilityReport }
   /** The gate refused. Nothing was sent; `session` refuses every question. */
   | { readonly ok: false; readonly error: SerializedPilotError };
+
+/**
+ * What the agent reports to the diagnostics ring (PR-036).
+ *
+ * `count` and nothing else, deliberately. The two metrics this runtime records
+ * are token *estimates*; the `context-compacted` event beside them carries the
+ * summary **text**, which is conversation content, and system-design §17 does
+ * not permit recording it. A sink with no method that accepts a string is how
+ * that is enforced rather than remembered — the same shape
+ * `ObservationTelemetrySink` uses for the same reason.
+ */
+export interface AgentTelemetrySink {
+  count(metric: TelemetryMetric, value: number): void;
+}
+
+/**
+ * How big the conversation is, in counts (PR-036).
+ *
+ * Three numbers and nothing else, for the same reason {@link AgentTelemetrySink}
+ * has one method: this is the shape in which the *size* of a conversation can
+ * leave the session without any of its content coming with it. The diagnostics
+ * surface and the memory walkthrough both read it; neither can read a word of
+ * the transcript through it.
+ *
+ * It also keeps Pi's `AgentMessage` out of `apps/desktop`, which nothing here
+ * imports and nothing here should.
+ */
+export interface AgentContextSummary {
+  /** Messages in the durable, unmodified transcript (system-design §11). */
+  readonly transcriptMessages: number;
+  /** Messages the next provider request would carry: folded, then pruned. */
+  readonly contextMessages: number;
+  /** Of those, how many still carry raw image bytes. §10 bounds this. */
+  readonly contextImages: number;
+}
 
 export interface AgentRuntime {
   readonly session: AgentSession;
@@ -88,6 +148,18 @@ export interface AgentRuntime {
    * is the scripted desktop suites.
    */
   readonly screenContext: ScreenContextService;
+  /** The §11 budget in force, and which rule produced it (PR-036). */
+  readonly contextWindow: ContextWindowDecision;
+  /**
+   * The most recent compaction decision, or `undefined` when nothing has
+   * compacted yet — `null` when this runtime holds a refused session, which has
+   * no compaction controller at all.
+   */
+  lastCompaction(): CompactionOutcome | undefined;
+  /** Counts only. `null` for a refused session, which has no context at all. */
+  contextSummary(): AgentContextSummary | null;
+  /** Attaches the diagnostics ring. See {@link AgentTelemetrySink}. */
+  attachTelemetry(sink: AgentTelemetrySink): void;
   dispose(): Promise<void>;
 }
 
@@ -100,6 +172,27 @@ export interface AgentRuntimeOptions {
    * observation runtime to hand.
    */
   readonly screenContext?: ScreenContextService;
+  /**
+   * The durable conversation (PR-036, follow-up 20). Omit to run entirely in
+   * memory, which is what every scripted desktop suite does and what the app
+   * itself falls back to when the store cannot be opened.
+   */
+  readonly store?: ConversationStore;
+  /**
+   * What `ConversationStore.restore()` read back. Supply it whenever `store` is
+   * supplied: without it the transcript stays on disk and the model never sees
+   * it (follow-up 20 (b)).
+   */
+  readonly restore?: RestoredConversation;
+  /**
+   * Overrides the §11 context budget. Defaults to
+   * {@link resolveContextWindow} over the profile, which is the whole of
+   * follow-ups 7 and 9; the demo passes a small window so twelve turns really
+   * do trip the usage trigger.
+   */
+  readonly contextWindow?: number;
+  /** Reads `PILOT_CONTEXT_WINDOW`. Defaults to `process.env`. */
+  readonly env?: Readonly<Record<string, string | undefined>>;
   readonly logger?: Logger;
 }
 
@@ -150,6 +243,15 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
   const screenContext: ScreenContextService =
     options.screenContext ?? new FakeScreenContextService();
 
+  // Follow-ups 7 and 9. Resolved before the session exists, so the number the
+  // triggers are measured against is chosen in one place and logged there too.
+  const env = options.env ?? process.env;
+  const contextWindow = resolveContextWindow(contextWindowInputOf(source), {
+    override: options.contextWindow ?? parseContextWindowOverride(env['PILOT_CONTEXT_WINDOW']),
+  });
+
+  let telemetry: AgentTelemetrySink | undefined;
+
   try {
     const session = new PiAgentSession({
       conversationId: options.conversationId,
@@ -165,8 +267,29 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       // Follow-up 4, second half. Passing one without the other is the failure
       // mode the follow-up exists to prevent, so they are written together.
       visualContext: { summaryFor: notebook.summaryFor },
+      // Follow-up 20, and the same rule applies: `store` without `restore` is a
+      // conversation the model cannot see, so they are written together.
+      ...(options.store === undefined ? {} : { store: options.store }),
+      ...(options.restore === undefined ? {} : { restore: options.restore }),
+      // Follow-ups 7 and 9.
+      compaction: { contextWindow: contextWindow.contextWindow },
       // Follow-up 1.
       renderEnvelope: renderAnchoredQuestionEnvelope,
+    });
+    // Follow-up 9's other half. `context-compacted` says *that* the context was
+    // folded and carries the summary text; `lastCompaction` says how much was
+    // folded, as two numbers. Only the numbers are recorded — the event's
+    // `summary` is deliberately not read here (system-design §17).
+    session.subscribe((event) => {
+      if (event.type !== 'context-compacted' || telemetry === undefined) {
+        return;
+      }
+      const outcome = session.lastCompaction;
+      if (outcome?.kind !== 'compacted') {
+        return;
+      }
+      telemetry.count('context-tokens-before', outcome.tokensBefore);
+      telemetry.count('context-tokens-after', outcome.tokensAfter);
     });
     logger.info('agent session ready', {
       provider: source.profile.provider,
@@ -174,12 +297,32 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       vision: session.capabilityReport.vision,
       tools: session.capabilityReport.tools,
       remote: session.capabilityReport.endpoint.isRemote,
+      contextWindow: describeContextWindow(contextWindow),
+      // Never the transcript, never the summary: how much of each there is.
+      // `restored`, not `restoredMessages`: `@pilot/shared` redacts any key
+      // matching /messages/ as content, which would hide the count.
+      restored: options.restore?.messages.length ?? 0,
+      restoredSummary: options.restore?.compaction !== undefined,
+      durable: options.store !== undefined,
     });
     return {
       session,
       capability: { ok: true, report: session.capabilityReport },
       notebook,
       screenContext,
+      contextWindow,
+      lastCompaction: () => session.lastCompaction,
+      contextSummary: () => {
+        const context = session.activeContext();
+        return {
+          transcriptMessages: session.messages.length,
+          contextMessages: context.length,
+          contextImages: context.filter(containsImageBytes).length,
+        };
+      },
+      attachTelemetry: (sink: AgentTelemetrySink) => {
+        telemetry = sink;
+      },
       dispose: () => session.dispose(),
     };
   } catch (cause) {
@@ -199,6 +342,13 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       capability: { ok: false, error },
       notebook,
       screenContext,
+      contextWindow,
+      // A refused session has no Pi `Agent` and therefore no compaction
+      // controller. `undefined` is the same answer "nothing has compacted yet"
+      // gives, which is correct here too: nothing ever will.
+      lastCompaction: () => undefined,
+      contextSummary: () => null,
+      attachTelemetry: () => undefined,
       dispose: () => session.dispose(),
     };
   }

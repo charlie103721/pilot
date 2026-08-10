@@ -162,7 +162,26 @@ export interface ObservationRuntimeMetrics {
   readonly refusals: number;
   readonly framesIngested: number;
   readonly framesRejected: number;
+  /**
+   * Pointer samples the timeline admitted, on **both** paths (runbook
+   * follow-up 31, fixed by PR-036).
+   *
+   * Until PR-036 this reported `ObservationSession.metrics().pointerSamples`
+   * alone, which only the `session.samplePointer()` fallback increments — and
+   * the app takes the `groundFast` path, so the number read 0 however many
+   * samples had been taken. It cost nothing while nothing consumed it; PR-036's
+   * demo does, and a wrong number is worse than a missing one. Both paths are
+   * now counted, and {@link ObservationRuntimeMetrics.groundedPointerSamples}
+   * says how many came from the one this runtime drives.
+   */
   readonly pointerSamples: number;
+  /**
+   * Of {@link pointerSamples}, those admitted through
+   * `AccessibilityAdapter.groundFast`/`ground` — the one-round-trip path
+   * PR-028 chose for the 30 Hz cadence. Equal to `pointerSamples` on any
+   * platform that offers either method, and 0 on one that offers neither.
+   */
+  readonly groundedPointerSamples: number;
   /** Elements retained for question anchoring, never more than one per sample. */
   readonly pointerTargets: number;
 }
@@ -408,6 +427,8 @@ export function createObservationRuntime(options: ObservationRuntimeOptions): Ob
   let starts = 0;
   let stops = 0;
   let clears = 0;
+  /** Runbook follow-up 31. Counted here because only this path can count it. */
+  let groundedPointerSamples = 0;
 
   const applyConditions = (): void => {
     const conditions: ScreenContextConditions = {
@@ -483,6 +504,10 @@ export function createObservationRuntime(options: ObservationRuntimeOptions): Ob
         pointer: sample.pointer,
       });
       if (ingest.admitted) {
+        // Runbook follow-up 31. The same condition `ObservationSession`
+        // increments its own counter on — an *admitted* sample, not an attempt
+        // — so the two paths add up to one comparable number.
+        groundedPointerSamples += 1;
         targets.note({
           at: sample.at,
           windowId: current.window.windowId,
@@ -663,7 +688,12 @@ export function createObservationRuntime(options: ObservationRuntimeOptions): Ob
         refusals: screenContext.metrics.refusals,
         framesIngested: sessionMetrics.framesIngested,
         framesRejected: sessionMetrics.framesRejected,
-        pointerSamples: sessionMetrics.pointerSamples,
+        // Both paths. Exactly one of the two can be non-zero for a given
+        // platform — `groundFn` is chosen once, at construction — so this is a
+        // sum rather than a max only because that is the honest arithmetic if
+        // a future platform ever mixes them.
+        pointerSamples: sessionMetrics.pointerSamples + groundedPointerSamples,
+        groundedPointerSamples,
         pointerTargets: targets.size,
       };
     },

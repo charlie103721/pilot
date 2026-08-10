@@ -32,6 +32,7 @@
     "demo:speak": "pnpm --filter @pilot/desktop run demo:speak",
     "demo:flow": "pnpm --filter @pilot/desktop run demo:flow",
     "demo:interrupt-flow": "pnpm --filter @pilot/desktop run demo:interrupt-flow",
+    "demo:memory": "pnpm --filter @pilot/desktop run demo:memory",
     "demo:voice": "pnpm build && pnpm --filter @pilot/interaction run demo:voice",
     "demo:response": "pnpm build && pnpm --filter @pilot/interaction run demo:response",
     "demo:interrupt": "pnpm build && pnpm --filter @pilot/interaction run demo:interrupt",

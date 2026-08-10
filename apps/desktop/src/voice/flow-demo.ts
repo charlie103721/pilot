@@ -1069,8 +1069,13 @@ export async function runFlowDemo(): Promise<FlowDemoResult> {
       'the gate ran before any request and passed. The refusing direction is ' +
         'PR-020’s suite, not this trace.',
     ],
-    ['A-12', 'no', 'two turns is not a long conversation; that is PR-036.'],
-    ['A-13', 'no', 'no restart, and the ConversationStore is not wired yet (PR-036).'],
+    ['A-12', 'no', 'two turns is not a long conversation; that is `pnpm demo:memory`.'],
+    [
+      'A-13',
+      'no',
+      'no restart in this trace. The ConversationStore is wired (PR-036) but this ' +
+        'rig runs in memory; `pnpm demo:memory` is the one that relaunches.',
+    ],
     [
       'A-14',
       'partial',

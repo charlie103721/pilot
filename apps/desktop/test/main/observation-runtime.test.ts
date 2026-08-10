@@ -249,6 +249,29 @@ describe('2. frames reach the ring', () => {
     expect(sample?.pointer.normalizedPoint.x).toBeLessThan(1);
   });
 
+  it('counts the pointer samples it took (runbook follow-up 31)', async () => {
+    // Until PR-036 this read 0 on the shipping path however many samples had
+    // been taken: `ObservationSession` only increments its own counter on the
+    // `samplePointer()` fallback, and the app takes `groundFast`. It cost
+    // nothing while nothing consumed the metric; PR-036's telemetry does.
+    const current = await rig({ pointer: { x: 700, y: 480 } });
+    await watchFirstWindow(current);
+    expect(current.observation.metrics().pointerSamples).toBe(0);
+
+    expect(await current.observation.samplePointer()).toBe(true);
+    // One coalescing bucket apart: `PointerTimeline` keeps the last sample
+    // inside `DEFAULT_POINTER_MIN_INTERVAL_MS`, so two calls back to back are
+    // one admitted sample (runbook cross-lane issue 14).
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(await current.observation.samplePointer()).toBe(true);
+
+    expect(current.observation.metrics().pointerSamples).toBe(2);
+    expect(current.observation.metrics().groundedPointerSamples).toBe(2);
+    // The number the metric reports is the number of samples the timeline
+    // *admitted*, which is the same rule `ObservationSession` counts by.
+    expect(current.observation.core.pointer.samples()).toHaveLength(2);
+  });
+
   it('drops a frame from another window rather than delivering it', async () => {
     // PR-012's fourth frame guarantee, asserted where it matters: through the
     // desktop wiring into the real ring, not only in the adapter's own suite.
