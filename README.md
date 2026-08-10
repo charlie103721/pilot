@@ -1060,3 +1060,51 @@ startup: `real=true available=true` means there is a synthesiser with a voice,
 speaking them. On a plain `pnpm dev` on Linux there is no helper and therefore
 no synthesiser, so every answer is silent — the same code path a Mac with no
 installed voice takes.
+## Demo (PR-034 — the complete voice screen-grounding flow)
+
+```sh
+pnpm demo:flow                              # headless walkthrough, no display needed
+```
+
+**This PR adds no capability.** PR-028 through PR-033 built every boundary the
+MVP scenario needs; `docs/mvp-01-point-ask-hear.md` §2 asks whether they hold
+together, and this is that question answered as **one trace** through the
+shipping composition — not a bespoke harness. In order, in a single run:
+
+1. a window is **selected**, and only that window is watched (`capture.start`
+   read off the wire, and a frame stamped with the other window refused);
+2. the **pointer is anchored** at the moment of the question — after crossing
+   out of the window and over another application's window while the key is
+   held, which only a spoken question can produce;
+3. a **spoken question is transcribed**, partial by partial, into the panel;
+4. the model **calls `observe_screen`**, and the machine passes through
+   `observing-screen`;
+5. a **policy-checked image** reaches it — a 1280×800 window frame and a 640×640
+   pointer crop, really decoded, cropped and encoded;
+6. the answer **streams** into the panel;
+7. …and is **spoken in order**, sentence by sentence, as `<speechId>#0`, `#1`,
+   while the text is still arriving;
+8. a second press **interrupts it mid-answer**, and the follow-up is answered on
+   the same conversation with no stale chunk following.
+
+The §7 rows the trace walked are read back out of the recorded
+`PilotViewState` path rather than narrated, and six invariants are then checked
+**on that same trace**: selected-window-only, the capability gate (which ran
+before a single provider request), no image bytes in any log line or written
+anywhere under the repository, no accessibility target outside the selected
+window, the unknown-pointer sentinel never reaching the model as a coordinate,
+and the §16 text fallback. Section 3 is a refusal the user can carry on past —
+macOS crediting the grants to the helper, so voice is refused *and* the look is
+refused, and a typed question is still answered and still spoken.
+
+**Read section 4 of the output before quoting any of this.** It lists
+`docs/mvp-01-point-ask-hear.md` §18's acceptance rows one by one, and against
+the Node helper stub and Pi's scripted faux provider the honest answer is
+**A-01, A-03, A-08, A-11 and A-14 in part; the other ten not at all**. There is
+no macOS here, no key has been pressed, no microphone opened, no word spoken
+aloud, and no model chose to look. PR-043 owns running the matrix; this owns the
+single trace. The Mac run that settles it is `docs/handoff.md` §1 step 14.
+
+In the app, the same thing by hand: the PR-032 and PR-033 stub configurations
+above, combined — a scripted tap, a scripted recogniser and a synthesiser script
+that finishes — and then a question that needs the screen.

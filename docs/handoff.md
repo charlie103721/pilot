@@ -192,6 +192,42 @@ PILOT_HELPER_BINARY="$(pwd)/packages/platform-mac/native/.build/debug/PilotHelpe
 
 #    …and from inside the packaged `.app`, which is the layout that ships:
 open "$(packaged_app)"
+
+# 14. PR-034 — THE WHOLE THING, AS ONE TRACE. This is the MVP scenario
+#    (docs/mvp-01-point-ask-hear.md §2) and it is the run the product exists
+#    for. It PROMPTS (Screen Recording, Accessibility, Microphone and Speech
+#    Recognition), OPENS THE MICROPHONE and MAKES NOISE. Run it LAST, after
+#    steps 5, 7, 8, 9, 12 and 13, so that every prompt has already been
+#    answered and a failure here is a failure of the *flow* rather than of a
+#    grant.
+#
+#    First the stub-driven walkthrough, which already passes on Linux — so a
+#    difference on the Mac is a difference in the *platform*, not in the wiring:
+pnpm demo:flow
+
+#    Then the real thing, and the instructions matter, because this is the only
+#    step where all six pieces are on trial at once:
+#      - put ANOTHER APPLICATION IN FRONT before you touch the key;
+#      - PUT THE POINTER ON A SPECIFIC CONTROL inside the selected window — a
+#        button, a toggle, a labelled field — and leave it there;
+#      - HOLD RIGHT OPTION, ask "what is this?", and let go;
+#      - watch the panel and LISTEN at the same time.
+#    Four things have to be true together: the transcript is what you said, the
+#    answer is about the control you were pointing at (not the window in
+#    general), the text and the voice agree, and the first word is spoken before
+#    the last word is written.
+PILOT_HELPER_BINARY="$(pwd)/packages/platform-mac/native/.build/debug/PilotHelper" \
+  PILOT_LOG_LEVEL=debug pnpm dev
+
+#    Then, in the same session and without restarting: ask a FOLLOW-UP that does
+#    not need the screen ("can I turn that off?"), and then INTERRUPT an answer
+#    mid-sentence by holding the key again. The sound must stop before you have
+#    finished the first word of the new question, and the abandoned answer must
+#    never resume.
+#
+#    …and finally from inside the packaged `.app`, which is the only layout
+#    where TCC can plausibly attribute any of it to Pilot:
+open "$(packaged_app)"
 ```
 
 Notes:
@@ -662,6 +698,45 @@ is intelligible at the default rate. Pilot passes no `voice` and no `rate`, so
 it gets the system default; if that is unusable, a voice picker is a small
 addition and worth knowing about early.
 
+### What to look for in step 14 (PR-034)
+
+This is the whole product in one run, so the useful observations are the ones
+no single earlier step can make. Six, in order of what they would cost:
+
+1. **Is the answer about the thing you were pointing at?** Everything else here
+   is machinery; this is the product. Point at a *specific* control, ask "what
+   is this?", and judge the answer against the control — not against the window.
+   An answer that is confidently about the wrong control is the failure that a
+   transcript makes invisible, and nothing on Linux can produce it, because no
+   real model has ever read one of these crops. If it happens, capture the
+   pointer coordinates the panel shows and the screenshot, and say which control
+   you meant: that is a grounding case for PR-043's checklist.
+2. **Did the model choose to look?** `pnpm demo:flow` scripts the `observe_screen`
+   call. A real model decides. Watch whether it looks when it needs to, whether
+   it *stops* looking for a follow-up that does not need the screen, and whether
+   it looks again when the window has changed under it (system-design §11's
+   whole premise). Report all three; they are the largest remaining unknown in
+   the plan.
+3. **Does a spoken question survive the trip?** Every question in this repository
+   was typed by a test until PR-032, so it was spelled and punctuated. Say a UI
+   label, a proper noun and a version number out loud and see what the model was
+   actually asked.
+4. **Do the six pieces overlap the way they should?** The first word should be
+   spoken *before* the last word is written, the panel should show it looking at
+   the moment it looks, and the transcript, the answer and the voice should be
+   three renderings of one thing. Any of them arriving in a different order is
+   worth reporting even if nothing breaks.
+5. **The interruption, on a real speaker.** Hold the key mid-answer. §17 budgets
+   300 ms and the stub measures a few; what matters is whether the voice cuts
+   off before you have finished your first word, and whether the abandoned
+   answer ever resumes. It must not.
+6. **The pointer crossing an application border while you speak.** Move the
+   pointer off the selected window and back while the key is held — over a
+   notification, a palette or another app's window. Nothing Pilot says may ever
+   describe what was under the pointer while it was outside; on Linux that is
+   checked at the wire, and on a Mac it is the first time a real accessibility
+   tree could answer with something it should not.
+
 **Fallback in use:** Mac-gated code is written unverified and batched here
 (runbook amendment 8, user decision). Accepted risk: PR-011 through PR-015
 accumulate on top of an uncompiled helper. PR-011 additionally ships an
@@ -803,6 +878,18 @@ whether the model copes with a recogniser's rendering of a proper noun, a
 version number or a UI label — and for the failure that a transcript makes
 invisible, an answer that is confidently about a word the user did not say.
 
+**PR-034 joins all of those into one trace, and adds no new unknown of its own —
+which is worth saying plainly, because the trace is the thing most likely to be
+quoted.** `pnpm demo:flow` runs the MVP scenario end to end and everything holds
+together; what it establishes is exactly the union of what the pieces already
+established, and nothing more. In particular it does **not** show that a model
+decides to look, that it answers about the control you were pointing at, that a
+spoken question survives recognition, or that a single word was audible. Section
+4 of its own output lists the acceptance rows this way: **A-01, A-03, A-08, A-11
+and A-14 in part; the other ten not at all.** The one sentence to carry out of
+it is that Pilot's half of the flow is correct given a platform and a model that
+behave as macOS's and a real provider's do — and that neither has ever run.
+
 ---
 
 ## 3. Accepted gaps against the MVP definition of done
@@ -920,6 +1007,9 @@ reversible; raise any that look wrong.
 | **The fake hotkey and the fake recogniser stay on the build with no helper** (PR-032) | PR-028 chose the opposite for capture — no adapter at all rather than `FakeObservationAdapter`, because a fake that only produces a frame when a test calls `emitNext()` looks like it might work and never does (runbook cross-lane issue 10). Voice is not that shape: `FakeHotkeyAdapter` and `FakeSpeechInputAdapter` both *complete on their own* under the app's own calls (the fake recogniser finalises on `stop()`, which is the release of the key), so a Linux `pnpm dev` remains a usable dev loop instead of a dead shortcut. It also keeps PR-010's `PILOT_HOTKEY_FIXTURE` and `PILOT_SPEECH_DISCLOSURE` states reachable, which have nowhere else to live. The substitution happens at the composition root, in one visible block, and the boundary table at the top of `main/index.ts` says which build is which. |
 | **A denied microphone reaches §16 through `error`, not through onboarding** (PR-032) | Two different things are called "the microphone is denied". If the *permission gate* reports it, the machine rests in `needs-permission` and PR-008's onboarding — not the composer — is the way out; that is PR-006's design and PR-032 does not touch it. If the *recogniser* refuses at the moment of the press — TCC revoked since the last poll, or a disclosure that will not allow recording — the machine is in `listening`, the throw becomes `failure`, the table answers `error`, and the text box is live with the adapter's own sentence beside it. `pnpm demo:talk` §5 does not assert this; it types the question from `error` and gets it answered. |
 | **`LiveConversationDriver.speech` became optional** (PR-032) | The panel's "Replay" bar could make recognition fail because the recogniser was `FakeSpeechInputAdapter` and had an `emitError` control. A real one fails when the platform makes it fail. Rather than keep a fake beside the real adapter purely to drive one fixture, the option is now absent on a helper build and the `stt-failure` fixture says what to do instead — `PILOT_HELPER_STUB` with `speechInput.startFailsWith`, which reaches the same state through the real code path. A dev affordance that lies about which layer failed is worse than one that is honest about needing a scripted helper. |
+| **PR-034's refusal path is the attribution failure, not a denied permission** (PR-034) | The brief asked for one refusal the user can carry on past. A denied *required* permission is not that: `REQUIRED_PERMISSIONS` includes the microphone, so once the gate reports it the machine rests in `needs-permission`, where the table denies `submit-text` too — the user cannot continue by typing, and PR-008's onboarding is the only way out (which is PR-006's design, and correct). The refusal that leaves the flow usable is PR-011's verdict: every permission reads `granted`, macOS credits them to the helper, so the tap is never installed *and* the §10 conditions read `denied`, while the machine stays in `observing`. The user types the question, the tool refusal reaches the model as a typed result it can reason about, and the answer is still streamed and still spoken. It is also the plan's top structural risk, so it is the refusal most worth rehearsing. |
+| **PR-034 interrupts in `speaking`, and leaves `observing-screen` to PR-035** (PR-034) | The trace's interruption is `mvp-01` §7's `speaking + new push-to-talk → listening`, which is `interruptModeFor`'s `abort` branch and behaves: the synthesiser stops, no chunk of the abandoned answer follows, the follow-up is answered on the same conversation. Interrupting *during* `observing-screen` steers the run and then submits a second one — runbook follow-up 14 — which recovers but does not do what the user asked, and fixing it is a design decision PR-027 declined to take alone. Taking it inside an integration PR whose stated job is to add no capability would have been the wrong place. |
+| **The demo is `pnpm demo:flow`, and it derives its own claims** (PR-034) | Named for what it is (the whole flow) rather than for the PR, beside `demo:observe` / `demo:look` / `demo:ask` / `demo:talk` / `demo:speak`. Two things it deliberately does not do: it does not narrate which state transitions it took — it reads them back out of the recorded `PilotViewState` path, because a demo that describes itself proves nothing — and it does not assert wall-clock numbers, which runbook cross-lane issue 7 is about. |
 
 ---
 
@@ -944,6 +1034,7 @@ reversible; raise any that look wrong.
 | Phase 3 — integration (028…036) | In progress. **PR-031 is merged: point-and-ask works.** The §6 question anchor is resolved at submission from the real pointer timeline and handed to the same `PilotScreenContextService` the tool holds, so `moment: 'question'` answers from the frame that was on screen when the question was asked, `view: 'pointer'` crops around the anchor, and the element under it reaches the model as `targetRole`. `FakeQuestionAnchorSource` is gone from the real path and `ScreenContextInputs` has no unwired input left. It also fixed a real leak PR-028 left (runbook cross-lane issue 12). **Never once against macOS, and never once against a real model**: no real pointer has ever been read and no real accessibility element has ever been hit-tested (§1 step 9, §2). Speech, persistence and the model itself are still fake. |
 | Phase 3 — integration (028…036) | In progress. **PR-032 is merged: voice enters the conversation.** Holding the push-to-talk key opens a real recogniser, the live transcript grows partial by partial in the panel, releasing the key submits what was heard as the question, and the utterance's key-down/key-up instants reach PR-031's anchor — so `pointerSampleCount`, `pointerCrossedWindowBorder` and `sceneRevisedDuringUtterance` stop being degenerate with no change to the anchoring code. Voice is gated on PR-011's attribution verdict, and the §16 text box is proved reachable in every failure mode (dead tap, denied microphone, refused attribution, unavailable shortcut). **No key has ever been pressed and no audio has ever been recorded** (§1 step 12): every key transition and every transcript comes from the Node helper stub. Speech *output*, persistence and the model itself are still fake. |
 | Phase 3 — integration (028…036) | In progress. **PR-033 is merged: the voice loop is closed.** Pilot now answers out loud — the streamed answer is spoken sentence by sentence through `MacSpeechOutputAdapter` while its text fills the panel, and every platform adapter in system-design §5 is finally the real one. The silent stand-in is deleted. The property that took the work is §16's: a synthesiser failure costs the sound and never the answer, because the interaction table's `speech-failed` row aborts the run that is still writing it — so `main/speech-runtime.ts` turns every synthesiser failure into silence and the turn completes exactly as it would have. `createTimeoutScheduler()` is passed at last, so a model that goes quiet mid-sentence speaks what it already had. **Nothing has ever been spoken aloud** (§1 step 13): no `AVSpeechSynthesizer`, no voice, no audio device, and every speech callback in every test is the Node helper stub. Persistence and the model itself are still fake. |
+| Phase 3 — integration (028…036) | In progress. **PR-034 is merged: the MVP scenario runs as one trace.** `pnpm demo:flow` walks `docs/mvp-01-point-ask-hear.md` §2 through the shipping composition — window selected, pointer anchored at the question, spoken question transcribed, model calls `observe_screen`, policy-checked image returned, answer streamed into the panel and spoken sentence by sentence, then interrupted mid-answer by a second press and a follow-up answered on the same conversation. The §7 rows it walked are read back out of the recorded view-state path, and six invariants are checked on that same trace (selected-window-only, the capability gate, no image bytes to a log line or to disk, no accessibility target outside the selected window, the unknown-pointer sentinel, the §16 text fallback). **No boundary was replaced and no defect was found** — the pieces compose. What it does *not* establish is unchanged and is printed in the demo's own section 4: against the Node helper stub and a scripted faux provider it evidences A-01, A-03, A-08, A-11 and A-14 only in part, and the other ten not at all (§1 step 14, §2). |
 | Phase 4 — providers (037…039) | Not started. PR-037 (Codex) is the one the user's decision selects. |
 | Phase 5 — hardening and release (040…044) | Not started. |
 
