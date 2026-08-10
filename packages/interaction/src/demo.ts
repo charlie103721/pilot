@@ -134,6 +134,13 @@ export async function runInteractionDemo(): Promise<DemoResult> {
   agent.step();
   await record('agent turn', 'observe_screen, then the streamed answer');
 
+  // PR-026 speaks the answer a sentence at a time, so the synthesiser has to be
+  // advanced before the second sentence is handed over. Only the first is
+  // completed here: the interruption below must land while speech is still in
+  // flight.
+  speechOutput.finish();
+  await record('synthesiser finished #1', 'the second sentence starts speaking');
+
   const supersededRun = runIds[0];
   const supersededSpeech = controller.context.activeSpeechId;
 

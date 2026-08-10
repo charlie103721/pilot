@@ -24,6 +24,7 @@ import {
   type InteractionRejection,
   type TransitionRejectionReason,
 } from './rejection.js';
+import { DEFAULT_PHRASE_TIMEOUT_MS } from './segmentation.js';
 import { lookupRule, resolveTarget, type TransitionEnv } from './table.js';
 
 /** Injected time source. `FakeClock` from `@pilot/platform/fakes` satisfies it. */
@@ -58,6 +59,11 @@ export interface InteractionMachineOptions {
   readonly windows?: readonly ObservedWindow[];
   readonly selectedWindow?: ObservedWindow | null;
   readonly requiredPermissions?: readonly PermissionKind[];
+  /**
+   * PR-026: how long a fragment with no terminator may wait before it is
+   * spoken anyway. Measured against the injected `clock`, never a wall clock.
+   */
+  readonly phraseTimeoutMs?: number;
 }
 
 /**
@@ -117,12 +123,14 @@ export class InteractionMachine {
   readonly #clock: Clock;
   readonly #ids: IdFactory;
   readonly #required: readonly PermissionKind[];
+  readonly #phraseTimeoutMs: number;
   #context: InteractionContext;
 
   constructor(options: InteractionMachineOptions) {
     this.#clock = options.clock;
     this.#ids = options.ids ?? createIdFactory(options.idSource ?? createRandomIdSource());
     this.#required = options.requiredPermissions ?? REQUIRED_PERMISSIONS;
+    this.#phraseTimeoutMs = options.phraseTimeoutMs ?? DEFAULT_PHRASE_TIMEOUT_MS;
     this.#context = createInteractionContext({
       conversationId: options.conversationId ?? this.#ids.conversation(),
       now: this.#clock.now(),
@@ -165,6 +173,7 @@ export class InteractionMachine {
       ids: this.#ids,
       now: this.#clock.now(),
       required: this.#required,
+      phraseTimeoutMs: this.#phraseTimeoutMs,
     };
     const application = rule.apply(this.#context, input, env);
     if (application === undefined) {

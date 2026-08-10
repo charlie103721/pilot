@@ -19,18 +19,26 @@
  * active utterance" (§15) at the adapter layer as well as in the machine, and
  * making the typed fallback of §16 reach the same submission path as speech.
  *
- * What it deliberately does not own: sentence buffering into TTS (PR-026), the
- * end-to-end interruption integration (PR-027), and real STT/TTS (PR-014). Each
- * of those is a port with a fake behind it.
+ * PR-026 adds the response and TTS buffer: `segmentSpeech` decides when a
+ * streamed fragment is speakable, the machine drains completed sentences into
+ * `speak` effects under one stream id, and `SpeechOutputBinding` plays them in
+ * order and reports one completion for the whole answer.
+ *
+ * What it deliberately does not own: the end-to-end interruption integration
+ * (PR-027) and real STT/TTS (PR-014). Each of those is a port with a fake
+ * behind it.
  */
 export * from './inputs.js';
 export * from './effects.js';
 export * from './rejection.js';
 export * from './context.js';
+export * from './segmentation.js';
 export * from './table.js';
 export * from './machine.js';
 export * from './ports.js';
+export * from './voice-diagnostics.js';
 export * from './speech-binding.js';
+export * from './speech-output-binding.js';
 export * from './envelope.js';
 export * from './recordings.js';
 export * from './fakes.js';
