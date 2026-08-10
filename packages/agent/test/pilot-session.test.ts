@@ -72,6 +72,9 @@ describe('PiAgentSession', () => {
     expect(events.map((event) => event.type)).toEqual([
       'run-started',
       'tool-started',
+      // PR-021: the tool reports "looking at the window" through Pi's
+      // `onUpdate`, which becomes `tool_execution_update` → `tool-progress`.
+      'tool-progress',
       'tool-succeeded',
       ...events.filter((event) => event.type === 'text-delta').map(() => 'text-delta' as const),
       'run-completed',
@@ -196,9 +199,12 @@ describe('envelope and observation rendering', () => {
   });
 
   it('tells the model plainly when the pointer was outside the window', () => {
-    const text = describeObservation(observation({ pointer: { x: 1.4, y: -0.2 } }));
+    const text = describeObservation(observation({ pointer: { x: 1.4, y: -0.2 } }), {
+      view: 'pointer',
+      moment: 'question',
+    });
     expect(text).toContain('outside the selected window');
-    expect(text).not.toMatch(/Element under pointer/);
+    expect(text).not.toMatch(/pointer target:/);
   });
 });
 

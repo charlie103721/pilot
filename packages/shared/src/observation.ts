@@ -163,10 +163,25 @@ export function buildGroundedPointer(
   };
 }
 
-/** `observe_screen` input (system-design §9), verbatim. */
+/**
+ * `observe_screen` input (system-design §9), verbatim.
+ *
+ * The two enumerations are exported as `as const` tuples because the agent
+ * runtime has to state the *same* enumeration twice: once for Pilot (this zod
+ * schema) and once for Pi, which validates tool arguments against a TypeBox
+ * `TSchema` and accepts nothing else (`docs/pi-notes.md` §2.2). PR-021 builds
+ * its TypeBox schema from these tuples so there is exactly one place the
+ * allowed values are written down. Do not inline the literals again.
+ */
+export const OBSERVE_SCREEN_VIEWS = ['pointer', 'window', 'both'] as const;
+export const OBSERVE_SCREEN_MOMENTS = ['question', 'current', 'before-and-after'] as const;
+
+export type ObserveScreenView = (typeof OBSERVE_SCREEN_VIEWS)[number];
+export type ObserveScreenMoment = (typeof OBSERVE_SCREEN_MOMENTS)[number];
+
 export const observeScreenRequestSchema = z.strictObject({
-  view: z.enum(['pointer', 'window', 'both']),
-  moment: z.enum(['question', 'current', 'before-and-after']),
+  view: z.enum(OBSERVE_SCREEN_VIEWS),
+  moment: z.enum(OBSERVE_SCREEN_MOMENTS),
 });
 
 export type ObserveScreenRequest = z.infer<typeof observeScreenRequestSchema>;

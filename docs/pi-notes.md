@@ -149,6 +149,37 @@ new Agent({
   `tool_execution_end` event, and is **not** sent to the model. Good home for
   observation ids and scene metadata.
 
+#### 2.2.1 AMENDMENT (PR-021): "throw, do not encode" destroys `details`
+
+Reading `dist/agent-loop.js` rather than the `.d.ts` changes the advice above.
+A thrown error is converted by `createErrorToolResult(err.message)`, which is
+literally `{ content: [{ type: "text", text: message }], details: {} }`. So
+throwing **discards `details` entirely** — the `PilotError` code, retryability
+and remedy are flattened into one English sentence, and Pilot's `tool-failed`
+event has nothing typed to carry.
+
+`AgentOptions.afterToolCall` is the way out, and it is verified to run on
+*both* the success and the throw path (`finalizeExecutedToolCall` is called
+with whatever `executePreparedToolCall` produced). `AfterToolCallResult.isError`
+replaces the loop's flag. So a Pilot tool can return a normal result whose
+`details` declare failure, and a generic hook
+(`packages/agent/src/tool-result.ts`, `markFailedToolResults`) sets `isError`
+— the model, the transcript, `tool_execution_end` and the UI then agree, with
+`details` intact. That is what `observe_screen` does.
+
+Two more verified facts from the same file, both found by test:
+
+- **Abort pre-empts the tool entirely.** `prepareToolCall` checks
+  `signal?.aborted` three times and returns `createErrorToolResult("Operation
+  aborted")` without calling `execute`. A run aborted between
+  `tool_execution_start` and execution therefore produces a tool result the
+  tool never authored, with `details: {}`. Pilot maps that exact string to
+  `cancelled` (`PI_ABORTED_TOOL_TEXT`) so the UI does not report a capture
+  failure for a user cancellation.
+- **`onUpdate` is real and cheap.** The fourth `execute` parameter emits
+  `tool_execution_update` with the partial result attached; PR-021 uses it for
+  the "observing" state Pilot's `tool-progress` event carries.
+
 ### 2.3 Image tool results — VERIFIED [R][S]
 
 The content-block shape a tool returns for an image is:
@@ -549,19 +580,27 @@ unverifiable (§6.3).
   OAuth refresh inside `modify` under a lock.
 - Size still **M**. Mostly unaffected.
 
-### PR-021 — `observe_screen` tool
+### PR-021 — `observe_screen` tool — **LANDED**
 
-- ✅ Largely as planned, and mostly already done here:
-  `packages/agent/src/observe-screen.ts` has the TypeBox schema, the
-  `ScreenContextService` call, image/text result mapping, error mapping and
-  lifecycle events, with tests.
-- Change: schemas are **TypeBox**, not zod. The repo otherwise uses zod, so
-  `observe_screen` needs both — a TypeBox schema for Pi and the existing zod
-  `observeScreenRequestSchema` for Pilot's own validation. The implementation
-  parses with both so they cannot drift.
-- Decide `executionMode`. Default is `"parallel"`; concurrent captures of one
-  window are probably not what we want.
-- Size **M → S**. Most of it exists.
+- ✅ Delivered. `packages/agent/src/observe-screen.ts` has the TypeBox schema,
+  the `ScreenContextService` call, image/text result mapping, the full error
+  mapping and lifecycle events, with `packages/agent/test/observe-screen.test.ts`
+  covering every mapping, the abort path, the selected-window-only guarantee
+  and an adversarial untrusted-content fixture.
+- Schemas are **TypeBox**, not zod, so `observe_screen` states its enumeration
+  twice. Three guards, in the order that catches drift earliest: both schemas
+  are built from `OBSERVE_SCREEN_VIEWS`/`OBSERVE_SCREEN_MOMENTS` in
+  `@pilot/shared`; `SCHEMAS_ARE_IN_SYNC` is a compile-time equality assertion
+  that **fails `pnpm typecheck` and `pnpm build`** on divergence; and `execute`
+  re-parses Pi's validated arguments through zod. `typebox@1.3.7` is now a
+  direct, pinned dependency of `@pilot/agent` rather than reached through
+  pi-ai's re-export — a typebox bump changes what arguments reach the tool.
+- `executionMode: "sequential"` decided and set. Pi's default is `"parallel"`,
+  and two concurrent captures of one window produce frames the scene checks
+  cannot order.
+- The error path returns a typed result rather than throwing, for the reason in
+  §2.2.1.
+- Size **M → S**, as predicted.
 
 ### PR-022 — Visual context pruning and compaction
 
