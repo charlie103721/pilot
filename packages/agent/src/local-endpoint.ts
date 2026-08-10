@@ -1,5 +1,10 @@
 import { deflateSync } from 'node:zlib';
-import { PilotError, isLoopbackUrl } from '@pilot/shared';
+import {
+  PilotError,
+  isLoopbackUrl,
+  redactUrlCredentials,
+  scrubUrlCredentials,
+} from '@pilot/shared';
 import { z } from 'zod';
 
 /**
@@ -238,6 +243,9 @@ export interface NormalizedBaseUrl {
  */
 export function normalizeLocalBaseUrl(raw: string): NormalizedBaseUrl {
   const trimmed = raw.trim().replace(/\/+$/u, '');
+  // What the two refusals below quote back at the user. Identity for a string
+  // that is not a URL at all, which is the first of them (PR-041).
+  const shown = redactUrlCredentials(raw);
   let url: URL;
   try {
     url = new URL(trimmed);
@@ -249,10 +257,10 @@ export function normalizeLocalBaseUrl(raw: string): NormalizedBaseUrl {
       hasVersionPrefix: false,
       diagnosis: {
         code: 'base-url-invalid',
-        userMessage: `“${raw}” is not a valid address for a local model server.`,
+        userMessage: `“${shown}” is not a valid address for a local model server.`,
         remedy:
           'Enter the full address including the scheme and port, for example http://127.0.0.1:11434/v1.',
-        detail: `base URL ${JSON.stringify(raw)} did not parse as a URL`,
+        detail: `base URL ${JSON.stringify(shown)} did not parse as a URL`,
         fatal: true,
       },
     };
@@ -271,7 +279,7 @@ export function normalizeLocalBaseUrl(raw: string): NormalizedBaseUrl {
       diagnosis: {
         code: 'base-url-invalid',
         userMessage: missingScheme
-          ? `“${raw}” is missing the http:// prefix, so Pilot cannot tell what to connect to.`
+          ? `“${shown}” is missing the http:// prefix, so Pilot cannot tell what to connect to.`
           : `Pilot can only talk to a local model server over http or https, not ${url.protocol.replace(':', '')}.`,
         remedy:
           'Enter the full address including the scheme and port, for example http://127.0.0.1:11434/v1.',
@@ -446,15 +454,27 @@ function fetchFailureKind(error: unknown): 'timeout' | 'refused' | 'dns' | 'tls'
   return 'other';
 }
 
+/**
+ * A library's error text, made safe to put in front of a person (PR-041).
+ *
+ * `scrubUrlCredentials` and not merely the caller's own formatting, because the
+ * error is not Pilot's: Node's `fetch` refuses a URL that carries user
+ * information and reports it by quoting **the whole URL**, credentials and all.
+ * That text lands in a diagnosis `detail`, which becomes `PilotError.message`.
+ */
 function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return scrubUrlCredentials(error instanceof Error ? error.message : String(error));
 }
 
 function unreachableDiagnosis(
-  baseUrl: string,
+  rawBaseUrl: string,
   host: string | null,
   error: unknown,
 ): LocalDiagnosis {
+  // Every string below is read by a person — a log line, a panel sentence, or
+  // (through `blockedBy`) a durable transcript — so the address is shown
+  // without whatever user information it was configured with (PR-041).
+  const baseUrl = redactUrlCredentials(rawBaseUrl);
   const where = host ?? baseUrl;
   const detailSuffix = `: ${messageOf(error)}`;
   switch (fetchFailureKind(error)) {
@@ -560,7 +580,8 @@ interface ModelListOutcome {
   readonly diagnosis: LocalDiagnosis | null;
 }
 
-function parseModelList(baseUrl: string, status: number, body: string): ModelListOutcome {
+function parseModelList(rawBaseUrl: string, status: number, body: string): ModelListOutcome {
+  const baseUrl = redactUrlCredentials(rawBaseUrl);
   let parsed: unknown;
   try {
     parsed = JSON.parse(body);
@@ -802,6 +823,10 @@ export async function probeLocalEndpoint(
     );
   }
   const baseUrl = normalized.baseUrl;
+  // The address as a person will read it. `baseUrl` builds requests and keeps
+  // whatever user information was configured; `shownUrl` is what goes into a
+  // sentence, a log field or a transcript (PR-041).
+  const shownUrl = redactUrlCredentials(baseUrl);
 
   const call = async (path: string, init?: RequestInit): Promise<ChatOutcome> => {
     probeRequests += 1;
@@ -859,12 +884,12 @@ export async function probeLocalEndpoint(
   if (list.status === 401 || list.status === 403) {
     const diagnosis: LocalDiagnosis = {
       code: 'endpoint-unauthorized',
-      userMessage: `${normalized.host ?? baseUrl} refused Pilot’s request${settings.apiKey === undefined ? ' because it needs a key' : ' with the key it was given'}.`,
+      userMessage: `${normalized.host ?? shownUrl} refused Pilot’s request${settings.apiKey === undefined ? ' because it needs a key' : ' with the key it was given'}.`,
       remedy:
         settings.apiKey === undefined
           ? 'Set PILOT_LOCAL_API_KEY to the key your server expects. Many local servers accept any non-empty string.'
           : 'Check the key your server expects, or remove the key if the server does not want one.',
-      detail: `GET ${baseUrl}/models returned ${String(list.status)}`,
+      detail: `GET ${shownUrl}/models returned ${String(list.status)}`,
       fatal: true,
     };
     diagnoses.push(diagnosis);
@@ -878,9 +903,9 @@ export async function probeLocalEndpoint(
   if (list.status === 404 && !normalized.hasVersionPrefix) {
     const diagnosis: LocalDiagnosis = {
       code: 'endpoint-path-missing-v1',
-      userMessage: `${baseUrl} is answering, but there is no model list at that address.`,
-      remedy: `Most local servers put their OpenAI-compatible API under /v1. Try ${baseUrl}/v1.`,
-      detail: `GET ${baseUrl}/models returned 404 and the base URL has no version prefix`,
+      userMessage: `${shownUrl} is answering, but there is no model list at that address.`,
+      remedy: `Most local servers put their OpenAI-compatible API under /v1. Try ${shownUrl}/v1.`,
+      detail: `GET ${shownUrl}/models returned 404 and the base URL has no version prefix`,
       fatal: true,
     };
     diagnoses.push(diagnosis);
@@ -894,10 +919,10 @@ export async function probeLocalEndpoint(
   if (list.status < 200 || list.status >= 300) {
     const diagnosis: LocalDiagnosis = {
       code: 'endpoint-not-openai-compatible',
-      userMessage: `${baseUrl} answered with an error instead of a list of models.`,
+      userMessage: `${shownUrl} answered with an error instead of a list of models.`,
       remedy:
         'Check that the address is your model server’s OpenAI-compatible endpoint, usually ending in /v1.',
-      detail: `GET ${baseUrl}/models returned ${String(list.status)}: ${list.body.slice(0, 200).replace(/\s+/gu, ' ')}`,
+      detail: `GET ${shownUrl}/models returned ${String(list.status)}: ${list.body.slice(0, 200).replace(/\s+/gu, ' ')}`,
       fatal: true,
     };
     diagnoses.push(diagnosis);
@@ -922,10 +947,10 @@ export async function probeLocalEndpoint(
   if (parsed.ids.length === 0) {
     const diagnosis: LocalDiagnosis = {
       code: 'no-model-loaded',
-      userMessage: `Your model server at ${normalized.host ?? baseUrl} is running, but it has no model loaded.`,
+      userMessage: `Your model server at ${normalized.host ?? shownUrl} is running, but it has no model loaded.`,
       remedy:
         'Load a model in your server (for example `ollama pull` then `ollama run`, or open a model in LM Studio) and try again.',
-      detail: `GET ${baseUrl}/models returned an empty model list`,
+      detail: `GET ${shownUrl}/models returned an empty model list`,
       fatal: true,
     };
     diagnoses.push(diagnosis);
@@ -950,7 +975,7 @@ export async function probeLocalEndpoint(
       code: 'model-not-served',
       userMessage: `Your model server is running, but it is not serving a model called “${settings.model}”.`,
       remedy: `It is serving: ${shown}${parsed.ids.length > 8 ? `, and ${String(parsed.ids.length - 8)} more` : ''}. Pick one of those.`,
-      detail: `model ${JSON.stringify(settings.model)} is not among the ${String(parsed.ids.length)} ids at ${baseUrl}`,
+      detail: `model ${JSON.stringify(settings.model)} is not among the ${String(parsed.ids.length)} ids at ${shownUrl}`,
       fatal: true,
     };
     diagnoses.push(diagnosis);
@@ -1030,7 +1055,7 @@ export async function probeLocalEndpoint(
           code: 'probe-failed',
           userMessage: `Pilot could not check whether ${selectedModel} can see images.`,
           remedy: 'Check the server is still running, then try again.',
-          detail: `vision probe to ${baseUrl}/chat/completions failed: ${messageOf(visionCall.error)}`,
+          detail: `vision probe to ${shownUrl}/chat/completions failed: ${messageOf(visionCall.error)}`,
           fatal: true,
         },
       };
@@ -1124,7 +1149,7 @@ export async function probeLocalEndpoint(
           code: 'probe-failed',
           userMessage: `Pilot could not check whether ${selectedModel} can use tools.`,
           remedy: 'Check the server is still running, then try again.',
-          detail: `tool probe to ${baseUrl}/chat/completions failed: ${messageOf(toolCall.error)}`,
+          detail: `tool probe to ${shownUrl}/chat/completions failed: ${messageOf(toolCall.error)}`,
           fatal: true,
         },
       };

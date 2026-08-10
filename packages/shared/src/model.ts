@@ -72,6 +72,54 @@ export function isLoopbackUrl(baseUrl: string): boolean {
   return host !== null && LOOPBACK_HOSTNAMES.has(host);
 }
 
+/** What a redacted URL's user information is replaced with. */
+export const REDACTED_URL_USERINFO = '***';
+
+/**
+ * `scheme://user:password@` anywhere in a string.
+ *
+ * `[^/\s@]+` cannot cross a `/`, so `https://host/path?to=a@b` does not match
+ * and neither does `mailto:someone@example.com` — the pattern needs the `//`.
+ */
+const URL_USERINFO_PATTERN = /\b([a-z][a-z0-9+.-]*:\/\/)[^/\s@]+@/gi;
+
+/**
+ * Removes user information from every URL in a string (PR-041).
+ *
+ * `https://user:token@host/v1` is a credential wearing an address's clothes.
+ * `@pilot/shared`'s log redactor matches on the *key name* — `endpoint`, `line`,
+ * `baseUrl`, `url`, `reason` and `message` are none of its patterns — and a
+ * short URL is neither long enough nor base64 enough to trip the value rules, so
+ * an endpoint configured with user information reached the startup log, the
+ * `PROBLEM …` sentence the panel renders, and (through
+ * `AgentRuntimeOptions.blockedBy`, whose refusal answers *every* question with
+ * that sentence) the durable transcript on disk. PR-041's audit found it by
+ * scanning the emitted records rather than by asking the redactor.
+ *
+ * The subtler half is that **a library's own error text echoes the URL back**:
+ * Node's `fetch` refuses a URL with credentials, and says so by quoting the
+ * whole URL. So this takes a string rather than a URL, and everything that
+ * formats an address, a failure or a reason for a human passes through it.
+ *
+ * The value used to *build a request* does not, because stripping a credential
+ * the user configured would silently change where Pilot connects.
+ */
+export function scrubUrlCredentials(text: string): string {
+  return text.replace(
+    URL_USERINFO_PATTERN,
+    (_match, scheme: string) => `${scheme}${REDACTED_URL_USERINFO}@`,
+  );
+}
+
+/**
+ * The same rule for one base URL. An unparseable string is returned unchanged —
+ * a caller printing "which address did not parse" needs the address, and there
+ * is no user information to find in something that is not a URL.
+ */
+export function redactUrlCredentials(baseUrl: string): string {
+  return scrubUrlCredentials(baseUrl);
+}
+
 export interface EndpointDescription {
   /**
    * What the UI must act on. Fails closed: if the stored flag and the base URL

@@ -82,6 +82,20 @@ export interface DesktopShellOptions {
    */
   readonly codex?: CodexGate;
   readonly appInfo: DesktopShellAppInfo;
+  /**
+   * The composition root's own command entry point (PR-041).
+   *
+   * `main/index.ts` calls its `dispatchCommand` "the one way a command reaches
+   * the machine, whatever dispatched it", and it was not: the menu bar item's
+   * Pause and the renderer's `pilot:interaction/dispatch` both reached
+   * {@link DesktopShell.dispatch}, which went straight to the controller. That
+   * cost nothing until PR-040 made the retention occasion an *armed* fact — the
+   * §13 occasion for a clear is named on the way in — so a pause from the menu
+   * bar cleared its buffers under whichever occasion happened to be armed last.
+   * Optional and defaulting to the previous behaviour, so every existing caller
+   * and every existing test is unchanged (runbook cross-lane issue 8).
+   */
+  readonly dispatch?: (command: InteractionCommand) => void;
   readonly quit: () => void;
   /** Present only while the shell runs on the fake window adapter (PR-009). */
   readonly windowDemoDriver?: WindowDemoDriver;
@@ -205,9 +219,17 @@ export class DesktopShell {
    *
    * Routed through the conversation gate first so an abandoned answer is
    * counted once (system-design §17, "abort categories") whether the user
-   * abandoned it from the panel or from the menu bar.
+   * abandoned it from the panel or from the menu bar — and, since PR-041,
+   * through {@link DesktopShellOptions.dispatch} when the composition root
+   * supplied one, so the shell is not a second entry point with its own idea of
+   * what a command means.
    */
   dispatch(command: InteractionCommand): void {
+    const route = this.#options.dispatch;
+    if (route !== undefined) {
+      route(command);
+      return;
+    }
     this.conversation.noteCommand(command);
     this.#controller.dispatch(command);
   }

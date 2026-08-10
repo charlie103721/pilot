@@ -22,6 +22,7 @@ import {
 } from '../main/lifecycle-runtime.js';
 import {
   createObservationRuntime,
+  retentionEventForCommand,
   retentionEventForFeed,
   type ObservationRuntime,
 } from '../main/observation-runtime.js';
@@ -43,6 +44,7 @@ import {
 } from '@pilot/agent';
 import { asConversationId } from '@pilot/shared';
 import type { AgentRuntime } from '../main/agent-runtime.js';
+import type { InteractionCommand } from '@pilot/platform';
 
 /**
  * The shell's observation path, assembled exactly as `main/index.ts` assembles
@@ -248,6 +250,15 @@ export interface ObservationRig {
   readonly platform: PlatformRuntime;
   readonly observation: ObservationRuntime;
   readonly controller: PilotInteractionController;
+  /**
+   * The composition root's own command entry point (PR-041).
+   *
+   * `controller.dispatch` is the machine; this is the *app's* route to it — the
+   * one the panel, the menu bar item and push-to-talk all take, and the one
+   * that names the §13 retention occasion. A walkthrough that wants to prove
+   * what a user's Pause does drives this, not the controller.
+   */
+  readonly dispatch: (command: InteractionCommand) => void;
   readonly permissions: PermissionGate;
   readonly windows: WindowGate;
   readonly conversation: ConversationGate;
@@ -458,6 +469,27 @@ export async function createObservationRig(
     }
     return live;
   };
+  /**
+   * The one way a command reaches the machine, exactly as `main/index.ts`
+   * declares it — and, since PR-041, exactly as `main/index.ts` *implements* it.
+   *
+   * A function declaration so the voice runtime and the lifecycle runtime can
+   * be handed it before the conversation gate exists; nothing calls it until the
+   * rig is assembled. It is where the system-design §13 retention occasion is
+   * named, because it is the only place every surface passes through: PR-041
+   * found the arming living inside the wrapper `WindowGate` was given, which the
+   * menu bar item and the renderer's `pilot:interaction/dispatch` channel do not
+   * use.
+   */
+  function dispatchCommand(command: InteractionCommand): void {
+    conversation.noteCommand(command);
+    const occasion = retentionEventForCommand(command);
+    if (occasion !== null) {
+      observation.noteRetentionEvent(occasion);
+    }
+    liveController().dispatch(command);
+  }
+
   const lifecycle = createLifecycleRuntime({
     interaction: {
       snapshot: () => liveController().snapshot(),
@@ -466,8 +498,7 @@ export async function createObservationRig(
         liveController().send(event);
       },
       dispatch: (command) => {
-        conversation.noteCommand(command);
-        liveController().dispatch(command);
+        dispatchCommand(command);
       },
     },
     observation: {
@@ -529,10 +560,7 @@ export async function createObservationRig(
   // and `speechInput` as the disclosure source (follow-up 13).
   const voice = createVoiceRuntime({
     hotkey: hotkeyAdapter,
-    dispatch: (command) => {
-      conversation.noteCommand(command);
-      controller.dispatch(command);
-    },
+    dispatch: dispatchCommand,
     ...(platform.permissions.attribution === undefined
       ? {}
       : { attribution: platform.permissions.attribution.bind(platform.permissions) }),
@@ -553,17 +581,7 @@ export async function createObservationRig(
     windows: platform.windows,
     interaction: {
       ...observationInteraction,
-      dispatch: (command) => {
-        conversation.noteCommand(command);
-        if (command.type === 'pause') {
-          observation.noteRetentionEvent('pause');
-        } else if (command.type === 'select-window') {
-          observation.noteRetentionEvent('window-change');
-        } else if (command.type === 'set-observation-enabled' && !command.enabled) {
-          observation.noteRetentionEvent('observation-disabled');
-        }
-        observationInteraction.dispatch(command);
-      },
+      dispatch: dispatchCommand,
       report: (event) => {
         const retentionEvent = retentionEventForFeed(event);
         if (retentionEvent !== null) {
@@ -585,6 +603,7 @@ export async function createObservationRig(
     lifecycle,
     observation,
     controller,
+    dispatch: dispatchCommand,
     permissions,
     windows,
     conversation,

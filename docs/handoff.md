@@ -625,6 +625,109 @@ PILOT_MODEL_PROFILE=api-key \
 #    …and from inside the packaged `.app`, which is the only layout where
 #    safeStorage's Keychain item is created under Pilot's own identity:
 open "$(packaged_app)"
+
+# 21. PR-041 — THE MANUAL DISK INSPECTION. This is the half of the privacy
+#    audit that no machine without a Mac can run. `pnpm demo:privacy` checks
+#    twenty claims against artefacts, and its own section 10 lists the seven it
+#    cannot reach; these commands are that list, made runnable. It raises no TCC
+#    prompt, makes no sound, deletes nothing and costs nothing.
+#
+#    NOTHING IN THIS PROJECT HAS EVER WRITTEN A FILE UNDER
+#    ~/Library/Application Support/Pilot. Every path the audit inspected was a
+#    temporary directory. This step is the first time the real ones exist.
+#
+#    First the automated audit, which already passes on Linux. Run `pnpm build`
+#    first so it inspects the built bundle too; without it that one check
+#    reports UNPROVABLE rather than passing:
+pnpm build && pnpm demo:privacy
+
+#    Then the real thing. DO A REAL SESSION FIRST — steps 14 and 16 if you have
+#    not already — so there is something to find. Ask three or four screen
+#    questions, say something memorable out loud, quit from the menu bar item,
+#    and then work through (a) to (g). What a BAD answer looks like is written
+#    beside each one.
+#
+#      (a) WHAT PILOT ACTUALLY CREATED, AND HOW BIG IT IS.
+ls -laR ~/Library/Application\ Support/Pilot/
+du -sh  ~/Library/Application\ Support/Pilot/*
+#          EXPECT: `conversations/sessions.db` (plus `-wal`/`-shm`), and
+#          `credentials/model-credentials.json` only if you signed in or set a
+#          key. BAD: anything that looks like a frame store — a `frames/`,
+#          `captures/`, `cache/` or `Crashpad/` directory — or a database that
+#          is megabytes per conversation rather than kilobytes. A few hundred
+#          kilobytes of text is right; 50 MB is a picture.
+#
+#      (b) NO IMAGE AND NO AUDIO IN THE DATABASE. These are the scanners
+#          `pnpm demo:privacy` runs, by hand, against the real file:
+cd ~/Library/Application\ Support/Pilot
+grep -ac $'\x89PNG'     conversations/sessions.db* || echo "no PNG"
+grep -ac $'\xff\xd8\xff' conversations/sessions.db* || echo "no JPEG"
+grep -ac 'data:image'   conversations/sessions.db* || echo "no data: URI"
+grep -ac 'RIFF'         conversations/sessions.db* || echo "no WAVE"
+grep -ac 'caff'         conversations/sessions.db* || echo "no Core Audio"
+grep -aoE '[A-Za-z0-9+/]{120,}={0,2}' conversations/sessions.db* | head
+#          EXPECT: each of the five prints its "no …" message, and the last
+#          command prints nothing at all. BAD: any hit. Send the offset and the
+#          surrounding 200 bytes; it is a PR-023 defect in `ConversationStore`,
+#          the single choke point every durable write passes through.
+#
+#      (c) THE SAME THING WHILE IT IS STILL RUNNING. (b) reads the file after a
+#          quit; a write-ahead log is a different artefact from a closed
+#          database. Launch Pilot, ask two screen questions, leave it running,
+#          and run the six commands in (b) again from another terminal.
+#          EXPECT: the same answers. BAD: a hit that (b) does not show — that
+#          is images reaching the WAL and being removed later, which is a leak
+#          with a window rather than no leak.
+#
+#      (d) YOUR OWN WORDS ARE THERE, AND ONLY YOUR WORDS. §13 persists the
+#          transcript on purpose, so this is what proves (b) read a file with
+#          content in it rather than an empty one:
+grep -ac "a phrase you actually said" conversations/sessions.db
+#          EXPECT: a non-zero count. BAD: zero — then (b) proved nothing, and
+#          either the transcript is not persisting (runbook follow-up 20 (b))
+#          or this is the wrong file.
+#
+#      (e) THE CREDENTIAL, IF YOU HAVE ONE. Only after step 19 or step 20.
+ls -l@ credentials/model-credentials.json
+grep -ac "the token or key you used" credentials/model-credentials.json || echo "sealed"
+python3 -c "import json;print('protected:',json.load(open('credentials/model-credentials.json'))['protected'])"
+#          EXPECT: mode `-rw-------` (600) inside a `drwx------` (700)
+#          directory, `sealed`, and `protected: true`. BAD: `protected: false`
+#          on a Mac — Electron `safeStorage` refused and the token is in
+#          plaintext, which is the one case that must not ship. Say so: it is a
+#          PR-042 blocker, not a note.
+#
+#      (f) WHAT THE REST OF THE MAC KEPT. Pilot controls none of these and the
+#          audit cannot see any of them, which is exactly why they are here:
+ls -la ~/Library/Saved\ Application\ State/ | grep -i pilot || echo "no saved state"
+ls -la ~/Library/Application\ Support/CrashReporter/ | grep -iE 'pilot|helper' || echo "no crash reports"
+ls -la ~/Library/Logs/ | grep -i pilot || echo "no logs directory"
+mdfind -onlyin ~ "Pilot" | head -20
+log show --predicate 'process == "Pilot" OR process == "PilotHelper"' --last 30m --info | grep -aE 'data:image|[A-Za-z0-9+/]{120,}' | head
+#          EXPECT: the first three print their "no …" message; `mdfind` finds
+#          the app and the database and nothing that looks like a picture; the
+#          `log show` grep prints nothing. BAD: a base64 run or a `data:` URI in
+#          the unified log — that is §13's "never logged" broken through stdout
+#          rather than through a file, and it is invisible to every check the
+#          audit runs. Send the line.
+#
+#      (g) A CLEAR REALLY CLEARS, AND A LOGOUT NAMES ITSELF. This is the half
+#          of §13 only a real Mac can answer (runbook follow-up 37):
+#            · with Pilot watching, press Clear in the panel, quit, and run (b)
+#              and (d) again. (d) must now print zero.
+#            · relaunch, ask one question, and LOG OUT of macOS (Apple menu →
+#              Log Out) rather than quitting. Log back in, start Pilot with
+#              PILOT_LOG_LEVEL=debug, and look for the last `retention clear`:
+PILOT_LOG_LEVEL=debug pnpm dev 2>&1 | grep -a "retention clear"
+#          EXPECT: `event: logout` with `lineageReset: true`. ACCEPTABLE:
+#          `event: shutdown` — the fallback clear, which retains nothing either
+#          but loses the distinction. BAD: no `retention clear` at all before
+#          the process died, or one named `pause`/`observation-disabled` after
+#          a logout, which is PR-041's own defect returning.
+#
+#    …and all of it again from inside the packaged `.app`, which is the only
+#    layout where the paths above are the ones a user would actually have:
+open "$(packaged_app)"
 ```
 
 Notes:
@@ -1770,6 +1873,9 @@ reversible; raise any that look wrong.
 | **The capability probe spends one real provider request** (PR-038) | Tool support cannot be looked up — Pi's `Model` carries no tool metadata at all (`docs/pi-notes.md` §6.3) — so the only honest way to reach `toolSupport: 'verified'` is to offer a tool and see whether the model calls it. That costs one text-only request (a fixed sentence, no user or screen content) per verification, and a verification happens on selection, on a key change, and at launch. On a metered API that is a real, if tiny, cost. The alternative is the `'assumed'` default every profile carried before PR-038, which is how a user ends up with a confident answer about a screen the model never saw. **Say if you would rather the probe were opt-in.** |
 | **The profile is configured through the environment, not a settings window** (PR-038) | MVP 01's panel is a conversation surface and has no settings screen; `docs/product-spec.md` does not ask for one. `PILOT_MODEL_PROFILE` / `PILOT_API_PROVIDER` / `PILOT_API_MODEL` / `PILOT_API_KEY` are read **once** and the result persists, so the second launch needs no environment at all — the same shape as every other fixture switch in this app. A settings UI later calls `ApiKeyProfileManager.choose/saveKey/verify/forgetKey`, which are already the whole API. |
 | **No vendor SDK is bundled** (PR-038) | Measured rather than assumed: wiring `loadBuiltinApiKeyProviders()` into `main/api-key-runtime.ts` took `dist/main/index.js` from **1.66 MB to 5.97 MB**, because `electron.vite.config.ts` sets `ssr.noExternal: true` and `inlineDynamicImports: true`, so Pi's 38 built-in providers drag the Anthropic, OpenAI, Google, Mistral and Bedrock SDKs in whether or not anyone uses them. The function stays exported; the composition root does not call it. Which vendors ship is PR-042's decision, and `docs/handoff.md` §1 step 20 (b) is the one-line change that tries one before then. |
+| **The composition root now has one command route, and the menu bar item uses it** (PR-041) | `main/index.ts` has always called its `dispatchCommand` "the one way a command reaches the machine, whatever dispatched it", and it was not: `DesktopShell.dispatch` — the menu bar item's Pause, and the renderer's `pilot:interaction/dispatch` channel — went straight to the controller. That was free until PR-040 made the system-design §13 retention occasion an *armed* fact, at which point **a pause from the menu bar cleared its buffers under whichever occasion happened to be armed last** — `observation-disabled` at best, and `screen-lock` or `permission-loss` after one of those. The audit reads that log, so it was reading a lie. The fix is an additive optional `DesktopShellOptions.dispatch` (every existing caller and test is untouched) plus `retentionEventForCommand` beside PR-040's `retentionEventForFeed`, so the mapping exists once. **Nothing about what is cleared changed** — every occasion clears everything — only the name in the retention log, which is the whole of what an audit of §13 can read. |
+| **A base URL is shown without its user information, everywhere a person reads it** (PR-041) | `PILOT_LOCAL_BASE_URL=http://user:token@host/v1` is a realistic configuration (a proxy in front of Ollama; PR-039's own `endpoint-not-openai-compatible` diagnosis mentions one) and the credential in it reached **two log fields, the `PROBLEM …` sentence the panel renders, and — through `AgentRuntimeOptions.blockedBy`, whose refusal answers *every* question with that sentence — the durable transcript on disk.** `@pilot/shared`'s redactor never saw it: it matches on the key *name*, and `endpoint`, `line`, `reason` and `userMessage` are none of its patterns. `scrubUrlCredentials` (new, additive, in `@pilot/shared`) is now applied wherever an address is formatted for a human — including to **a library's own error text**, because Node's `fetch` refuses a credentialed URL and reports it by quoting the whole URL back. What you lose: an address printed as `http://***@127.0.0.1:11434/v1` is one step further from the string the user typed. The value used to *build requests* is untouched, because stripping a credential the user configured would silently change where Pilot connects. |
+| **The `retention clear` log line's field names changed** (PR-041) | It was emitting `clearedFrames: "[redacted:image]"`, `clearedPointerSamples: "[redacted:audio]"` and `imageCacheCleared: "[redacted:image]"` — three of six fields, and the three that are the evidence the buffers were emptied, in the one line an audit of §13 reads and the one `docs/handoff.md` §1 step 21 (g) asks you to send back from a real logout. `@pilot/shared`'s redactor matches on the key *name*, and `frames`, `samples` and `image` are all patterns; it had been shipping since PR-017 and `failure-demo.ts` had a comment about it rather than a fix. The line now reads `ringEntriesCleared`, `clearedBytes`, `pointerReadingsCleared` and `decodedCacheDropped`. **`RetentionClearReport`'s own field names are unchanged** — they are read by demos and by the diagnostics view and never pass through the redactor — so this is a change to what a log line looks like and to nothing else. If you have a log filter or a grep for `clearedFrames`, it needs updating. |
 
 ---
 
