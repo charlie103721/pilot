@@ -969,3 +969,33 @@ body {
     animation: none !important;
   }
 }
+
+/* The model-profile row (runbook follow-ups 46 and 33).
+   Always rendered, and told apart without reading: `critical` is the faux
+   development provider — not a language model — and it is the loudest thing on
+   the panel apart from a live failure, on purpose. */
+.model-status--normal {
+  border-color: var(--ok-border);
+  color: var(--ok-text);
+}
+
+.model-status--attention {
+  background: var(--warn-bg);
+  border-color: var(--warn-border);
+  color: var(--warn-text);
+}
+
+.model-status--critical {
+  background: var(--error-bg);
+  border: 2px solid var(--error-border);
+  color: var(--error-text);
+}
+
+.model-status--critical .banner__title {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.model-status--critical .banner__hint {
+  color: inherit;
+}

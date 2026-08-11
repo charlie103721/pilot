@@ -5,6 +5,7 @@ import {
   MAX_SUBMITTED_TEXT_LENGTH,
   type ConversationGateState,
   type ModelDataDisclosureView,
+  type ModelStatusView,
 } from '../ipc/schemas.js';
 import { readLifecycleGuidance, type LifecycleGuidanceView } from '../lifecycle/guidance.js';
 import {
@@ -414,6 +415,18 @@ export interface ConversationView {
    * say the same thing.
    */
   readonly modelDisclosure: ModelDataDisclosureView | null;
+  /**
+   * Which model profile is in force, for all four of them (runbook follow-ups
+   * 46 and 33). Passed through from the gate unchanged — `describeModelStatus`
+   * in `src/conversation/model-status.ts` is the one place that decides the
+   * wording, so the panel, the startup log and `pnpm smoke:launch` cannot
+   * drift, exactly as {@link modelDisclosure} does for PR-038's banner.
+   *
+   * Null only before the main process has answered. The shipping composition
+   * always sets it: there is always a profile, and when nothing is configured
+   * it is the faux development provider, which is not a language model.
+   */
+  readonly modelStatus: ModelStatusView | null;
   readonly lastError: SerializedPilotError | null;
   /**
    * Set when {@link lastError} is a refused observation (PR-030), whether the
@@ -504,6 +517,7 @@ export function buildConversationView(input: ConversationViewInput): Conversatio
     }),
     disclosure: buildDisclosure(input),
     modelDisclosure: input.gate.modelDisclosure,
+    modelStatus: input.gate.modelStatus,
     lastError: input.view.lastError,
     observationFailure: readObservationFailure(input.view.lastError),
     recovery: readLifecycleGuidance(input.view.lastError),

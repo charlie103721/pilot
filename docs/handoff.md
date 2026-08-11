@@ -1016,6 +1016,77 @@ open "$(packaged_app)"
 #    A-09 behaviour, the two scale results, the three timings, and the verdict
 #    you would give each of A-01…A-15. That last list replaces the Linux
 #    distribution in `pnpm acceptance`'s own output as the record of record.
+
+# 25. THE MODEL ROW — READ THE FIRST THING THE PANEL SAYS, ON A REAL FIRST
+#    LAUNCH (runbook follow-ups 46 and 33, hazard 28). Two minutes, no
+#    microphone, no money, and it is the only step in this section that checks
+#    something a user cannot avoid seeing. NO HUMAN HAS EVER LOOKED AT THIS ROW.
+#
+#    Do it in this order, because the first one is the defect and the rest are
+#    the fix not overshooting.
+#
+#    ## (a) THE DOUBLE-CLICK, WITH NO CONFIGURATION AT ALL
+#
+#    Package, install and start Pilot from Finder exactly as step 22 does, with
+#    NO `pilot.env` in `~/Library/Application Support/Pilot/` and nothing
+#    exported in any shell. Open the panel from the menu bar item.
+#    EXPECT, as the FIRST thing under the state badge and before you type
+#    anything:
+#      · a red-bordered alert reading, verbatim,
+#        `NOT A REAL MODEL — answers are placeholder text`;
+#      · under it: "No model provider is configured, so Pilot is answering with
+#        a built-in stand-in. It is not a language model, it never sees your
+#        screen, and nothing it says about your screen is true.";
+#      · `Model: Development stand-in · pilot-faux/faux-vision`;
+#      · `Screen images: Nothing is sent anywhere: there is no model to send it
+#        to.`;
+#      · and a remedy naming the ABSOLUTE PATH of your own `pilot.env`.
+#    SAY WHETHER IT IS ACTUALLY UNMISSABLE. It is written to be, and nobody has
+#    seen it. If it reads like a badge rather than a warning, that is the finding
+#    and it is worth more than the rest of this step.
+#    Then ask it a question anyway and confirm the answer is placeholder text —
+#    the row and the answer must agree.
+#
+#    ## (b) THE REMEDY, FOLLOWED LITERALLY
+#
+#    Do exactly what the row tells you: create the file at the path it printed,
+#    put `PILOT_MODEL_PROFILE=codex` in it, quit Pilot from the menu bar item and
+#    start it again from Finder. EXPECT the row to change to
+#    `ChatGPT subscription — Pilot cannot answer questions yet` (you have not
+#    signed in yet), and the alert to go. If the remedy does not work when
+#    followed literally, that is a release blocker: it is the only instruction a
+#    packaged Pilot gives a user who has no terminal.
+#
+#    ## (c) LIVENESS — SIGN IN AND OUT WITHOUT RELAUNCHING
+#
+#    Still on the Codex profile, do step 19's sign-in. EXPECT the row to become
+#    `Answering with your ChatGPT subscription` with
+#    `Screen images: Remote model — screen images are sent to …` WITHOUT
+#    quitting Pilot. Then press Sign out in the Model section and expect it to go
+#    back to "cannot answer questions yet" — again with no relaunch. Confirm the
+#    row and PR-037's own Codex section never disagree with each other; they are
+#    published from one subscription and are meant not to be able to.
+#
+#    ## (d) THE OTHER TWO PROFILES, AND THE ONE CLAIM THAT MUST FAIL CLOSED
+#
+#    With `PILOT_LOCAL_BASE_URL=http://localhost:11434/v1` (step 17), expect
+#    `Answering with your own local model` and
+#    `Screen images: Local model on this Mac (localhost)`, with NO warning
+#    colour. Then point the same variable at your own machine BY LAN ADDRESS
+#    (`http://192.168.x.x:11434/v1`). EXPECT the row to turn amber and read
+#    `Remote model — screen images are sent to 192.168.x.x`: a model on the
+#    network is not a model on this Mac, and the claim is allowed to err only in
+#    that direction. With step 20's API-key profile, expect
+#    `Answering with your own API key` and — the thing to actually check —
+#    CONFIRM WITH YOUR EYES THAT NO PART OF THE KEY APPEARS ANYWHERE in the row,
+#    in the Model section, or in `~/Library/Logs`. Tests assert this; a person
+#    should look once.
+#
+#    ## (e) WHAT TO SEND BACK
+#
+#    A screenshot of (a), a yes/no on "unmissable", whether (b) worked when
+#    followed literally, whether (c) needed a relaunch, and the two locality
+#    strings from (d).
 ```
 
 ## 1a. Clean-machine installation (PR-042)

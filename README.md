@@ -77,7 +77,46 @@ pnpm smoke:launch                               # the packaged bundle, with NO e
 environment down to what `launchd` gives a double-clicked `.app` — no `PILOT_*`
 of any kind — and asserts the app still boots, still creates its menu bar item
 (the only affordance a `LSUIElement` app has), reads its launch environment file,
-and refuses a credential written into that file without printing the credential.
+refuses a credential written into that file without printing the credential, and
+reports which model profile it fell through to (see below) — which with no
+environment at all is `NOT A REAL MODEL`.
+
+## Which model Pilot is talking to
+
+The panel's first row, above everything else and before you ask anything, says
+which of the four model profiles is in force and whether your screen leaves the
+machine to reach it (system-design §14). It is always present — until this
+existed, the only provider surface was the Codex sign-in section, which is
+hidden unless `PILOT_MODEL_PROFILE=codex`.
+
+| profile | what the row says | screen images |
+| --- | --- | --- |
+| `PILOT_MODEL_PROFILE=codex` | `Answering with your ChatGPT subscription` | `Remote model — screen images are sent to chatgpt.com` |
+| `PILOT_MODEL_PROFILE=api-key` | `Answering with your own API key` | `Remote model — screen images are sent to <your provider's host>` |
+| `PILOT_LOCAL_BASE_URL=…` | `Answering with your own local model` | `Local model on this Mac (localhost)` |
+| nothing configured | **`NOT A REAL MODEL — answers are placeholder text`** | `Nothing is sent anywhere: there is no model to send it to.` |
+
+The last row is the one that matters. With no provider configured — which is
+what a double-clicked `.app` gets, since Finder supplies no environment — Pilot
+answers with Pi's built-in faux provider. It is not a language model; it returns
+fixed placeholder text and never sees your screen. The row is a red alert
+rather than a badge, and it names the `pilot.env` file you can create to point
+Pilot at a real model.
+
+Three details worth knowing:
+
+- **the locality claim fails closed.** A profile that records itself as local
+  while its base URL points at the network (`http://192.168.1.40:11434/v1`) is
+  shown as **remote**. The claim is allowed to err only towards "your screen
+  leaves this machine".
+- **it is live.** Signing in to ChatGPT, signing out, or an API key that stops
+  working mid-conversation changes the row without a relaunch.
+- **no credential can appear in it.** Every string is a provider id, a model id,
+  a host name or fixed wording, and each one is stripped of URL user
+  information (`https://user:token@host/v1` renders as `https://***@host/v1`).
+
+The same status is printed at startup as the `model status` log line, so a bug
+report carries it.
 
 ### Build layout
 
@@ -182,7 +221,10 @@ Rules, all enforced by `apps/desktop/src/main/launch-env.ts`:
   in the same directory.
 
 The startup log line `launch environment file` reports the path, what was
-applied, and what was refused and why.
+applied, and what was refused and why. The panel's model row (above) names this
+file by its absolute path whenever no provider is configured, so the remedy for
+"this is not a real model" is reachable without reading either the log or this
+document.
 
 ### The native macOS helper
 

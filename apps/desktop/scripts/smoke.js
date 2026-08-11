@@ -53,7 +53,13 @@ import { findBundle } from './verify-bundle.js';
  *   4. a `PILOT_API_KEY` in that file is refused, **and its value never appears
  *      in the output**. A plaintext credential in a config file would undo
  *      PR-038's sealing, so the refusal is a privacy property, not a
- *      convenience.
+ *      convenience;
+ *   5. the app says **which model profile it fell through to**, and that it is
+ *      `NOT A REAL MODEL` (runbook follow-up 46, hazard 28). This is the one
+ *      claim about the product rather than the packaging: with no selector
+ *      present the `??` chain reaches Pi's faux provider, which answers
+ *      questions and is not a language model, and the panel's Model row is
+ *      built from the same status this line prints.
  *
  * The renderer round trip is deliberately NOT asserted here: opening the panel
  * needs `PILOT_OPEN_PANEL_ON_START`, which is exactly the kind of variable a
@@ -204,9 +210,29 @@ const timer = setTimeout(
   TIMEOUT_MS,
 );
 
-/** The four claims of `--no-inherit-env`. Each names what its absence means. */
+/** The five claims of `--no-inherit-env`. Each names what its absence means. */
 function checkEmptyEnvironmentLaunch() {
   const failures = [];
+  // Runbook follow-up 46 / hazard 28, and it is the only claim here about the
+  // *product* rather than the packaging. With none of the three provider
+  // selectors present, the `??` chain in `main/index.ts` falls through to Pi's
+  // faux provider — which answers questions and is not a language model. The
+  // app must therefore compute, and hand the panel, a status that says so; this
+  // asserts the same wording the Model row renders, from the shipping
+  // composition, in the launch nobody can read stderr from.
+  if (!output.includes('"message":"model status"')) {
+    failures.push(
+      'the app did not report which model profile is in force. A Finder launch that ' +
+        'reaches the faux provider and says nothing is exactly hazard 28.',
+    );
+  }
+  if (!output.includes('"realModel":false') || !output.includes('NOT A REAL MODEL')) {
+    failures.push(
+      'a launch with no provider selector did not report itself as NOT A REAL MODEL. ' +
+        'Either the fall-through changed, or the panel is about to present a stand-in ' +
+        'as if it were a model.',
+    );
+  }
   if (!output.includes('"trayAvailable":true')) {
     failures.push(
       'the menu bar item was not created. With LSUIElement there is no Dock icon and no ' +
@@ -243,7 +269,8 @@ const onData = (chunk) => {
         failures.length === 0 ? 0 : 1,
         failures.length === 0
           ? 'OK: the packaged app starts from an empty, launchd-like environment, keeps its menu ' +
-              'bar item, reads its launch file and refuses a credential in it'
+              'bar item, reads its launch file, refuses a credential in it, and reports on ' +
+              'screen that the model it fell through to is NOT A REAL MODEL'
           : `FAIL:\n  - ${failures.join('\n  - ')}`,
       );
     }

@@ -50,6 +50,10 @@ export const INITIAL_CONVERSATION_GATE_STATE: ConversationGateState = {
   // PR-038. Null until the main process says which model is configured; a
   // panel that has not been told must show nothing rather than guess "local".
   modelDisclosure: null,
+  // Follow-up 46. Null until the main process says which profile is in force.
+  // The panel shows nothing rather than guessing, and the gap is one IPC round
+  // trip — the shipping composition always answers, for all four profiles.
+  modelStatus: null,
 };
 
 export function useConversation(): ConversationShell {

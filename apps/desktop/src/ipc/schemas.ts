@@ -595,6 +595,72 @@ export const modelDataDisclosureSchema = z.strictObject({
 
 export type ModelDataDisclosureView = z.infer<typeof modelDataDisclosureSchema>;
 
+/**
+ * Which term of `main/index.ts`'s four-way `??` chain chose the model
+ * (`codex.source ?? apiKeyProfile.source ?? local.source ?? development`).
+ *
+ * Provider-neutral on purpose, and exhaustive: a fifth profile added to that
+ * chain without a row in `src/conversation/model-status.ts` is a compile error
+ * rather than a panel that says nothing, which is the defect runbook follow-up
+ * 46 records.
+ */
+export const MODEL_PROFILE_KINDS = ['codex', 'api-key', 'local', 'development'] as const;
+
+export type ModelProfileKind = (typeof MODEL_PROFILE_KINDS)[number];
+
+export const modelProfileKindSchema = z.enum(MODEL_PROFILE_KINDS);
+
+/**
+ * Which model Pilot is talking to, always present, rendered before the user
+ * asks anything (runbook follow-ups 46 and 33; system-design §14).
+ *
+ * > "Show whether the configured provider is local or remote **before
+ * > observation begins**."
+ *
+ * Built by `describeModelStatus` in `src/conversation/model-status.ts`, which
+ * imports `@pilot/shared` and nothing else so no Pi type reaches Chromium. It
+ * sits *beside* PR-038's {@link modelDataDisclosureSchema} rather than
+ * replacing it: the disclosure is the API-key profile's verification and
+ * credential-storage banner, and this is the row that exists for every profile
+ * including the one with no disclosure at all — the development stand-in.
+ *
+ * **No field here can hold a credential.** Every string is a provider id, a
+ * model id, a host name, a `PilotError.userMessage` or fixed vocabulary, and
+ * every one of them is passed through `scrubUrlCredentials` on the way out
+ * (runbook follow-up 42). No key name below matches `@pilot/shared`'s redactor
+ * either, so the whole object logs intact — asserted in
+ * `test/conversation/model-status.test.ts` against `redactedPaths`.
+ */
+export const modelStatusSchema = z.strictObject({
+  profile: modelProfileKindSchema,
+  /** "ChatGPT subscription", "Your own API key", "Your own local endpoint", … */
+  profileLabel: z.string().min(1),
+  /** `provider/model`, e.g. `pilot-faux/faux-vision`. */
+  modelLabel: z.string().min(1),
+  /**
+   * **False only for the development stand-in**, and it is the one bit this
+   * whole surface exists to carry: Pi's faux provider answers questions and is
+   * not a language model.
+   */
+  realModel: z.boolean(),
+  /** §14's local-vs-remote bit, from `describeEndpoint`, which fails closed. */
+  sendsScreenOffDevice: z.boolean(),
+  /** Host name, the provider id when there is no base URL, or `nowhere`. */
+  destination: z.string().min(1),
+  /** One line about where screen images go. */
+  localityLabel: z.string().min(1),
+  headline: z.string().min(1),
+  detail: z.string().min(1),
+  /** How loudly to say it. `critical` is the stand-in and only the stand-in. */
+  severity: z.enum(['critical', 'attention', 'normal']),
+  /** Why Pilot cannot answer with this profile right now, or null. */
+  blockedReason: z.string().nullable(),
+  /** How to reach a real model, or null when Pilot is already on one. */
+  remedy: z.string().nullable(),
+});
+
+export type ModelStatusView = z.infer<typeof modelStatusSchema>;
+
 export const conversationGateStateSchema = z.strictObject({
   telemetry: telemetryBufferSchema,
   /** Whether the developer diagnostics surface is open. Off by default. */
@@ -618,6 +684,14 @@ export const conversationGateStateSchema = z.strictObject({
    * untouched.
    */
   modelDisclosure: modelDataDisclosureSchema.nullable(),
+  /**
+   * Which model profile is in force (follow-ups 46 and 33). Null only before
+   * the main process has said — the shipping composition always sets it,
+   * because there is always a profile: when nothing else is configured it is
+   * the development stand-in, and that is precisely the case a user must not
+   * have to read stderr to discover.
+   */
+  modelStatus: modelStatusSchema.nullable(),
 });
 
 export type ConversationGateState = z.infer<typeof conversationGateStateSchema>;
