@@ -4,13 +4,26 @@ macOS desktop assistant that observes one user-selected window, follows the
 pointer, accepts push-to-talk spoken questions, and answers aloud grounded in
 the screen.
 
+> **Status: MVP 01 release candidate, and it is not shippable yet.** Every one
+> of the 44 planned PRs is merged and every gate on this machine is green — but
+> this project has never run on a Mac, never compiled its Swift helper, never
+> spoken to a language model, never opened a microphone, never made a sound and
+> never captured a real pixel. **Read `docs/release-candidate.md` first**: it is
+> the clause-by-clause state of MVP 01, what has never been verified, and what
+> only the user can do. `docs/known-issues.md` is the list of what is wrong with
+> it.
+
 Design and delivery documents live in `docs/` and `dp/`. Start with
-`docs/runbook.md`.
+`docs/release-candidate.md`, then `docs/runbook.md`.
 
 ## Toolchain
 
-- **Node 24** (`nvm use` — pinned in `.nvmrc`)
-- **pnpm only** — never `npm` or `npx`; use `pnpm dlx` in place of `npx`
+- **Node 24** (`nvm use` — pinned in `.nvmrc`; `engines` is `>=24 <25`)
+- **pnpm 10.33** — never `npm` or `npx`; use `pnpm dlx` in place of `npx`
+- **Every direct dependency is pinned to an exact version** (PR-044). The
+  lockfile is committed and `pnpm install --frozen-lockfile` is the supported
+  install. Nothing floats except transitive dependencies, which the lockfile
+  fixes; see `docs/release-candidate.md` for what is frozen and what is not.
 - TypeScript strict, ESM (`NodeNext`), Vitest, ESLint flat config + Prettier
 
 ## Workspace layout
@@ -39,12 +52,16 @@ Run from the repository root. These commands are the only gate — there is no C
 workflow (runbook §5, amendment 5).
 
 ```sh
-pnpm install
+pnpm install --frozen-lockfile
 pnpm lint       # eslint + prettier --check
 pnpm typecheck  # tsc over every package's src and test files
 pnpm test       # vitest, including a clean build + packaged-bundle check
 pnpm build      # shared libraries (tsc) + the three Electron bundles
 ```
+
+On this tree that is **2 309 tests across 157 files**, all passing. The wider
+list a release runs — packaging, the three smoke checks, `pnpm acceptance` and
+all eight walkthroughs — is `docs/runbook.md` §6, "The release checklist".
 
 ## Running the app
 
@@ -152,8 +169,8 @@ and the real resources directory rather than trusting the configuration, because
 a packaging config can be wrong in ways every build step reports as success.
 PR-036's defect is the reference case: a dependency read its schema off disk,
 the bundler inlined it, and the packaged app started, answered questions and
-persisted nothing while lint, typecheck, 1 874 tests, every demo and `pnpm
-build` were green. What it checks now:
+persisted nothing while lint, typecheck, the 1 874 tests there were at the
+time, every demo and `pnpm build` were all green. What it checks now:
 
 | Check | What it catches |
 | --- | --- |
@@ -1814,9 +1831,11 @@ here, because none can be**. Grounding accuracy is a property of a model's
 no language model, no microphone, no speaker and no pixels (runbook §5 amendment
 8). A percentage computed against a scripted provider would be a measurement of
 the script. The suite prints its verdict distribution first, for exactly that
-reason, and today it reads **0 verified, 12 verified in part, 1 failed, 2
-blocked** — 45 pass-condition checks, 30 of them executed here and 15 waiting on
-a Mac (10), a real model (4) or both (1).
+reason, and today it reads **0 verified, 13 verified in part, 0 failed, 2
+blocked-on-mac** — 51 pass-condition checks, 35 of them executed here and 16
+waiting on a Mac (10), a real model (5) or both (1). It read *12 in part, 1
+failed* over 45 checks from PR-043 until PR-044 closed A-09, which both widened
+the row and moved it.
 
 Three things it does establish, none of which a Mac would make more true:
 
@@ -1946,3 +1965,32 @@ pnpm demo:failure   # case 3, with the envelope lines above
 Settings revocation under a running session, and whether a model given a picture,
 a point and the `reduced grounding:` line answers about the right control **and
 repeats the uncertainty to the user**.
+
+## Where MVP 01 actually stands (PR-044 — release candidate)
+
+Every planned PR is merged. On this machine everything is green: 2 309 tests
+across 157 files, lint, typecheck, build, `pnpm package`, all three smoke
+checks, `pnpm verify:package`, `pnpm acceptance` exiting 0, and all eight
+walkthroughs — reproduced from a fresh `git clone` with no `node_modules`.
+
+**That is not the same as working.** The acceptance suite reports *0 of 15
+criteria verified*. There is no macOS in this project's history, no compiled
+Swift helper, no language model, no microphone, no speaker and no real pixel;
+the two questions the product turns on — does a model look when it needs to,
+and does it answer about the control you were pointing at — have never been
+asked.
+
+| Question | Where the answer is |
+| --- | --- |
+| Where does MVP 01 stand, and what do I have to do? | `docs/release-candidate.md` |
+| What is wrong with it? | `docs/known-issues.md` |
+| What can only be done on the user's Mac, exactly? | `docs/handoff.md` §1 (25 steps) |
+| How do I sign in to a model? | `docs/handoff.md` §2 |
+| What did each PR land, and what broke while merging? | `docs/runbook.md` §8 |
+| How do I cut a release artefact? | `docs/runbook.md` §6 |
+| Is it acceptable yet? | `pnpm acceptance` — read the banner, not the exit code |
+
+Versions are frozen: every direct dependency is an exact version, `engines` is
+`node >=24 <25` and `pnpm >=10.33 <11`, the Pi packages are
+`@earendil-works/pi-agent-core`, `pi-ai` and `pi-session-backend-sqlite-node`
+all at `0.84.1`, Electron is `43.3.0`, and `pnpm-lock.yaml` is committed.

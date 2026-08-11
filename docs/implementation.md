@@ -509,6 +509,18 @@ PR-040 and PR-041 may begin after the provider-neutral flow in PR-036 while PR-0
 - All acceptance evidence is committed.
 - There are no known privacy, data-retention, or unsafe stale-output defects.
 
+**Verdict (PR-044, 2026-08-11).** Clause 1 is discharged as *"documents an
+explicitly accepted exception"* and not otherwise: the packaged application does
+**not** meet the MVP definition of done, and cannot on a machine with no macOS.
+The exceptions are enumerated in `docs/known-issues.md` §1 — eight of them.
+Clause 2 holds: the evidence is `pnpm acceptance` plus the thirty grounding
+cases as committed data, and it re-derives from a clean clone. Clause 3 holds,
+with the audit's own limits stated rather than assumed
+(`docs/known-issues.md` §3). **Phase 5 is complete as work and unproven as
+product**: no Mac, no compiled helper, no model, no microphone, no speaker and
+no real pixel has ever been part of it. `docs/release-candidate.md` is the
+clause-by-clause reading and the thing to hand a reader who has ten minutes.
+
 ## Parallel execution map
 
 ```mermaid

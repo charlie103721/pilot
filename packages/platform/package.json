@@ -22,10 +22,10 @@
     "dist"
   ],
   "engines": {
-    "node": ">=24"
+    "node": ">=24 <25"
   },
   "dependencies": {
     "@pilot/shared": "workspace:*",
-    "zod": "^4.4.3"
+    "zod": "4.4.3"
   }
 }
