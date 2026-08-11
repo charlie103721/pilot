@@ -89,6 +89,7 @@ and refuses a credential written into that file without printing the credential.
 | `pnpm package` | `build:app`, then electron-builder `--dir`, then both checks below |
 | `pnpm --filter @pilot/desktop run verify:bundle` | opens the produced bundle and asserts what is in it |
 | `pnpm verify:package` | reads the macOS packaging *configuration* and reports what it says |
+| `pnpm acceptance` | walks mvp-01 §18's A-01…A-15 and thirty grounding cases; see the last section |
 
 electron-vite bundles all three Electron processes from TypeScript source
 (`apps/desktop/electron.vite.config.ts`). It does not typecheck — `pnpm
@@ -1748,3 +1749,78 @@ Electron `safeStorage` has never run, and "no audio bytes anywhere" is proved fo
 a run in which no audio existed. `docs/handoff.md` §1 step 21 is the manual disk
 inspection that closes it — what to look at on the Mac, where, and what a bad
 answer looks like.
+
+## Acceptance and grounding suite (PR-043)
+
+```sh
+pnpm acceptance                             # headless, no display needed, ~30 s
+```
+
+Walks `docs/mvp-01-point-ask-hear.md` §18's **A-01 through A-15** and a curated
+checklist of **thirty grounding cases**, at both display scales, and reports one
+verdict per criterion out of a closed set — `verified`, `verified-in-part`,
+`failed`, `blocked-on-mac`, `blocked-on-model`, `not-implemented`. Each scenario
+builds its own rig from the shipping composition
+(`apps/desktop/src/observation/observe-rig.ts`, the same one every walkthrough
+since PR-028 uses) and reads its evidence off the objects `main/index.ts` builds.
+
+**Read the banner at the top of the output before quoting any of it.** The
+plan's demo for this PR is "recorded acceptance results with at least 90%
+grounding accuracy on the curated checklist", and **no such number is produced
+here, because none can be**. Grounding accuracy is a property of a model's
+*answer* about a *real screen*, and this machine has neither: there is no macOS,
+no language model, no microphone, no speaker and no pixels (runbook §5 amendment
+8). A percentage computed against a scripted provider would be a measurement of
+the script. The suite prints its verdict distribution first, for exactly that
+reason, and today it reads **0 verified, 12 verified in part, 1 failed, 2
+blocked** — 45 pass-condition checks, 30 of them executed here and 15 waiting on
+a Mac (10), a real model (4) or both (1).
+
+Three things it does establish, none of which a Mac would make more true:
+
+1. **A criterion with no evidence cannot report as passing.** The verdict is
+   never written down; it is derived by `acceptanceVerdict` in
+   `apps/desktop/src/acceptance/verdict.ts` from the checks that actually ran. No
+   pass-condition check at all is `not-implemented`; none of them *executed* is
+   `blocked-on-…` however much supporting evidence is green; an executed check
+   that did not hold is `failed` and outranks both. `executed()` throws on empty
+   evidence and `pending()` on an empty reason, so an unfalsifiable claim cannot
+   be constructed. `apps/desktop/test/acceptance/verdict.test.ts` is that rule,
+   pinned.
+2. **The thirty cases measure Pilot's input to the model.** Per case: the
+   anchor's normalised point against the geometry module's own arithmetic, whether
+   the point is inside the window, the accessibility role and label retained or
+   refused, the crop rectangle §10 step 5 computes, whether the thing under the
+   pointer is *inside the picture the model receives*, what the rendered
+   `<context>` envelope said, and — for the two foreign-window cases — that no
+   label read off another application appears anywhere in the request. Twenty-three
+   of the thirty are grounding-*accuracy* cases whose verdict waits on a model;
+   the other seven are tool-contract cases (image counts, the comparison-frame
+   budget, the full-frame edge limit) and are fully decided here.
+3. **Standard and Retina.** Ten pointer positions run at 1× and 2×. Until this PR
+   every walkthrough in the repository ran at 2× only, so the 1× path through
+   `packages/shared/src/geometry.ts` had unit tests and had never been exercised
+   by the assembled application.
+
+**It found two things.** A-09 **fails**: losing Accessibility takes Pilot to
+`needs-permission` rather than the degraded visual mode §16 and A-09 both ask for
+(runbook follow-up 35 — recorded since PR-040, never demonstrated against the
+assembled application until now). And the 1×/2× pairing shows that the pointer
+crop covers **640 pt of the window on a standard display and about 533 pt on a
+Retina one**, because `pointerCropPixels` is a constant in *captured* pixels
+while the capture size is not (runbook follow-up 48).
+
+The latency spot checks are against `docs/system-design.md` §17 and each says
+which half of its budget has never run: image preprocessing is measured on the
+real pipeline (real decode, crop, resize and encode) but on synthetic pixels on
+an idle Linux box; the interruption number is Pilot's half only, up to the pipe,
+because **nothing in this project has ever made a sound**.
+
+**`pnpm acceptance` exits non-zero today, and that is the design.** The exit code
+is 0 only when no criterion has an *executed* check that did not hold; a blocked
+criterion is not a failure, and A-09 is. Read the distribution, not the exit
+code, for how much is left.
+
+`docs/handoff.md` §1 step 23 is the other half — the same fifteen criteria and
+the same thirty cases written as a runnable procedure for a Mac with a model
+behind it.

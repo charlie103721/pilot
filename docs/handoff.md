@@ -880,6 +880,142 @@ log show --predicate 'process == "Pilot"' --last 5m --info | grep -a "permission
 #        `requestSingleInstanceLock` step 16 (d) checks, in the layout where the
 #        two processes are genuinely different builds.
 ps ax | grep -c "[P]ilot.app"
+
+# 23. PR-043 — THE ACCEPTANCE MATRIX AND THE GROUNDING CHECKLIST, FOR REAL.
+#    This is the step the whole plan has been deferring to. It is the LAST of
+#    this section and it depends on almost all of it: run it after steps 5, 7,
+#    8, 9, 12, 13, 14, 16, 22 and — this is the one that matters most — after
+#    17 or 20, because without a real model NONE of the grounding half can be
+#    answered. It PROMPTS FOR EVERYTHING, OPENS THE MICROPHONE, MAKES NOISE and
+#    (with step 20's profile) COSTS MONEY.
+#
+#    NOTHING IN THIS PROJECT HAS EVER SCORED A GROUNDING CASE. `pnpm acceptance`
+#    executes what Pilot SENDS — the anchor, the crop, the element, the envelope
+#    — and reports every "does the answer describe the right thing?" as pending.
+#    The number the plan asks for (≥90% on ~30 curated static-UI cases) does not
+#    exist and cannot be computed anywhere but here.
+#
+#    First the Linux suite, which already passes and which prints, per criterion,
+#    exactly what it did and did not establish. Run it once so a difference on
+#    the Mac is a difference in the PLATFORM, not in the wiring:
+pnpm acceptance
+
+#    Its verdict distribution today is: 0 verified, 12 verified in part, 1
+#    FAILED (A-09 — see (c) below), 2 blocked. 45 pass-condition checks, 30 of
+#    them executed on Linux and 15 waiting on this Mac and a model.
+#
+#    Then the real thing, with the real helper and a real provider. Pick ONE
+#    provider and record which:
+PILOT_HELPER_BINARY="$(pwd)/packages/platform-mac/native/.build/debug/PilotHelper" \
+  PILOT_LOCAL_BASE_URL=http://127.0.0.1:11434/v1 \
+  PILOT_LOG_LEVEL=debug pnpm dev
+
+#    …and finally from inside the packaged `.app`, which is the only layout
+#    where A-15 can be answered at all and the only one where TCC can plausibly
+#    attribute anything to Pilot:
+open "$(packaged_app)"
+#    (`packaged_app()` and `packaged_helper()` are defined at the top of this
+#    section; do not hardcode `mac-arm64` — an Intel Mac produces `mac-x64`.)
+#
+#    ## (a) THE THIRTY GROUNDING CASES — the reason this step exists
+#
+#    `pnpm acceptance` §3 prints all thirty with, per case, what the pointer was
+#    on and what grounding was expected. Do the same thirty by hand against
+#    REAL applications — System Settings, Safari, Mail, Notes; the accepted gap
+#    in §3 of this document is "real apps rather than a purpose-built test app",
+#    and this is that decision being paid for. For each one:
+#
+#      1. select the window, put the pointer ON the named kind of target and
+#         LEAVE IT THERE;
+#      2. ask "what is this?" — typed is fine, held is better;
+#      3. score the ANSWER, not the picture: does it describe the control under
+#         the pointer, or the window in general, or something else entirely?
+#      4. write down `correct` / `wrong` / `refused`, and for every `wrong` copy
+#         the `<context>` block out of the debug log — it is the exact text the
+#         model was given, and a wrong answer over a right envelope is a MODEL
+#         problem while a wrong answer over a wrong envelope is a PILOT problem.
+#         That distinction is the whole value of this step.
+#
+#    The cases to reproduce, which are the ten positions `pnpm acceptance` runs
+#    at both scales plus the ten edge cases:
+#      · an ordinary labelled button; a list/outline item in a sidebar;
+#      · each of the FOUR CORNERS of a window, on nothing in particular;
+#      · exactly on the window's left border;
+#      · empty canvas with no element under it;
+#      · a notification or floating palette STACKED OVER the selected window
+#        (nothing about the other application may appear in the answer);
+#      · the pointer OUTSIDE the selected window entirely (the answer must say
+#        so and must not invent a target — see (b) below);
+#      · a control with NO accessibility element (a canvas-drawn toggle, a web
+#        page's custom widget) — this is the case where the crop is all the
+#        model has;
+#      · a PASSWORD FIELD (the answer must not contain the password, and
+#        `redactionsApplied` in the log must be ≥ 1);
+#      · a question with the pointer parked off-screen before you speak;
+#      · "what changed?" after flipping something, which must produce at most
+#        two comparison frames;
+#      · a window LARGER than 1440 px on its longest edge, which must arrive
+#        reduced.
+#
+#    ≥90% correct across the thirty is the release gate (§19). RECORD THE
+#    FRACTION AND THE FAILURES. If it is below 90%, the failures are the input
+#    to PR-044, and the envelope you copied says which lane owns each one.
+#
+#    ## (b) THE ONE ANSWER ONLY YOUR EYES CAN GIVE
+#
+#    With the pointer OUTSIDE the selected window, `view: both` still produces a
+#    pointer crop — of the window corner nearest the pointer, because
+#    `pointerCropRect` shifts the rectangle inside the frame rather than
+#    refusing. The envelope says "outside the selected window; no element was
+#    identified", so the model is TOLD; whether it nevertheless describes that
+#    corner as if you had pointed at it is unknown, and it is runbook follow-up
+#    49. Ask the outside-window question three times and say whether the answer
+#    ever talks about the corner.
+#
+#    ## (c) A-09 ALREADY FAILS, AND YOU ARE CHECKING WHETHER IT FAILS THE SAME
+#
+#    `pnpm acceptance` reports A-09 as **failed**, not blocked: with
+#    Accessibility denied and Screen Recording granted, Pilot goes to
+#    `needs-permission` instead of the degraded visual mode system-design §16
+#    and A-09 both describe (runbook follow-up 35). On the Mac, do the real
+#    revocation from step 18 (a) and confirm the same thing happens to a RUNNING
+#    session — and say whether the panel at least explains itself. This is a
+#    known release-blocking defect for PR-044 to decide on, not a surprise.
+#
+#    ## (d) STANDARD AND RETINA — TWO DISPLAYS, OR ONE AND A SETTING
+#
+#    §19 wants the matrix on "at least one standard-DPI and one Retina/
+#    display-scaled setup". On a modern Mac the Retina half is free; the
+#    standard-DPI half needs either an external 1× monitor or
+#    System Settings → Displays → a scaled resolution that reports
+#    `backingScaleFactor` 1. Run at least the ten pointer positions on each and
+#    check TWO things:
+#      · the answers are as good on one as on the other;
+#      · and the thing `pnpm acceptance` §4 found: the pointer crop is a
+#        constant 640 CAPTURED pixels, so it covers ~640 pt of window at 1× and
+#        ~533 pt at 2×. Say whether the tighter Retina crop actually loses
+#        context a model needed — it is a policy question §10 never asked
+#        (runbook follow-up 48) and only a real model can settle it.
+#
+#    ## (e) THE LATENCY BUDGETS, WITH A STOPWATCH
+#
+#    §17 budgets image preprocessing under 150 ms and TTS interruption under
+#    300 ms. Linux measures ~70 ms of real pipeline on synthetic pixels and
+#    ~1 ms of Pilot's half of the interruption. Here:
+#      · read `observation` timings out of the debug log for a REAL
+#        ScreenCaptureKit frame at 2× — a 2400×1600 surface is nearly three
+#        times the pixels the Linux number was measured on;
+#      · TIME THE INTERRUPTION BY EAR (step 15 (b)). The voice must stop before
+#        you finish the first word of the next question.
+#      · and time the whole thing once, end to end: key down → sound. That
+#        number appears nowhere in this repository and is the one a user feels.
+#
+#    ## (f) WHAT TO SEND BACK
+#
+#    The thirty-case fraction, every `<context>` block for a wrong answer, the
+#    A-09 behaviour, the two scale results, the three timings, and the verdict
+#    you would give each of A-01…A-15. That last list replaces the Linux
+#    distribution in `pnpm acceptance`'s own output as the record of record.
 ```
 
 ## 1a. Clean-machine installation (PR-042)
@@ -1961,7 +2097,9 @@ Recorded so they are not discovered at release time.
 | No macOS bundle has ever been built, signed, installed or launched | There is no Mac. Every line under `mac:` in `electron-builder.yml`, both entitlements files, the helper's embedded `Info.plist` and the whole darwin branch of the signing hook are configuration that has never executed. `pnpm verify:package` checks they are *internally consistent*, which is a much weaker claim and the only one available here. | §1 step 22 |
 | The packaged app cannot be pointed at a real provider from its own UI | Provider selection is by environment variable, and Finder supplies none. PR-042 added a launch environment file (`~/Library/Application Support/Pilot/pilot.env`) so a double-clicked Pilot can be configured without a terminal, but there is still no model picker in the panel and nothing on screen says which provider is in use. Runbook follow-ups 33, 39, 40 and 46. | PR-044 |
 | No CI | User decision. The five local commands in `docs/runbook.md` §6 are the only gate, run before every merge. | — |
-| Grounding metric is a manual checklist | User decision — real apps rather than a purpose-built test app. ~30 cases, ≥90% required. | PR-043 |
+| Grounding metric is a manual checklist | User decision — real apps rather than a purpose-built test app. ~30 cases, ≥90% required. **PR-043 built the checklist and executed all thirty, but only the input side.** `pnpm acceptance` §3 pins, per case, the anchor's normalised point, the accessibility target retained or refused, the crop rectangle and whether the thing under the pointer is inside it, and the rendered envelope. The 90% is about *answers* and no answer has ever been scored: 23 of the 30 cases report their verdict as pending a model. §1 step 23 (a) is the procedure, and the fraction it produces is the number this row is about. | §1 step 23 |
+| A-09 does not hold: losing Accessibility stops Pilot instead of degrading it | system-design §16 asks for "continue with visual pointer coordinates and disclose reduced grounding"; `REQUIRED_PERMISSIONS` lists all four permissions, so losing any one resolves to `needs-permission`. Recorded as runbook follow-up 35 since PR-040 and **demonstrated against the assembled application by PR-043**, which reports A-09 as `failed` rather than blocked so it cannot be filed with the missing machines. | PR-044 |
+| No acceptance criterion is fully verified | 0 of 15 `verified`, 12 `verified-in-part`, 1 `failed`, 2 `blocked`; 45 pass-condition checks, 30 executed on Linux and 15 waiting on a Mac (10), a real model (4) or both (1). This is the honest state of §19's gate and it is re-derivable at any time with `pnpm acceptance`. | §1 step 23 |
 
 ---
 
@@ -1972,6 +2110,10 @@ reversible; raise any that look wrong.
 
 | Decision | Reasoning |
 | --- | --- |
+| **The acceptance evidence is an executable harness, not two checked-in markdown files** (PR-043) | `docs/runbook.md` §6 promised `docs/acceptance.md` (an A-01…A-15 run log) and `docs/grounding-checklist.md` (~30 cases). Both were written instead as `pnpm acceptance` over `apps/desktop/src/acceptance/`. A checked-in run log is stale the day after it is written, cannot be re-derived, and — the reason that matters here — is exactly the artefact that lets a criterion nobody checked read as passing. The harness derives every verdict from checks that ran and refuses to construct a claim with no evidence beside it. The run log *is* its output; the checklist *is* `grounding-cases.ts`. Reversible in an afternoon if a static file is wanted for the release tag. |
+| **The plan's "≥90% grounding accuracy" is reported as not computed rather than computed against a fake** (PR-043) | `docs/implementation.md`'s PR-043 line asks for it and §19 makes it a release gate. Every provider in this repository is a recorded fake or Pi's faux provider, so the answer a case would be scored on is the answer this repository scripted; a percentage over that measures the script and would be the single most misleading number the project could publish. The thirty cases were built and executed anyway, against the half that *is* real — Pilot's input to the model — and 23 of the 30 report their verdict as pending. §1 step 23 (a) is where the real fraction comes from. |
+| **A-09 is reported `failed` rather than `blocked-on-mac`** (PR-043) | Accessibility denied takes Pilot to `needs-permission` instead of system-design §16's degraded visual mode, and that is decidable here — the permission states, the resting state and the observation conditions are all readable without a Mac. Filing it with the blocked rows would have hidden a known release-blocking defect (runbook follow-up 35) among the rows that are merely waiting for a machine. The consequence is that `pnpm acceptance` exits non-zero, on purpose. |
+| **Follow-ups 48 and 49 were recorded, not fixed** (PR-043) | The 1×/2× pairing showed the pointer crop covers a different amount of window at each scale, and that a pointer outside the selected window still yields a crop of the nearest corner. Both are §10 *policy* questions rather than defects, both need a real model to settle, and changing the shipped crop behaviour inside an acceptance PR would have moved every earlier walkthrough's recorded byte counts for a reason unrelated to acceptance. |
 | **PR-022 split into 022a/022b** | The PR-005 spike found compaction far larger than planned: Pi has no orchestrator, `AgentHarness.compact` is a stub, and the primitives operate on session `Entry[]` rather than the `AgentMessage[]` the agent holds. Pruning (022a) is nearly done; compaction (022b) is close to a full PR on its own. |
 | **PR-007 sequenced after PR-002** | Both own root config and `apps/desktop`. Running them in parallel worktrees guaranteed a conflict in exactly the files PR-007 restructures. Cost: nothing on the critical path. |
 | **PR-008 held until PR-007 landed** | Same collision, same reasoning — PR-007 rewrote the bundler under `apps/desktop` while PR-008 builds UI in it. |
@@ -2126,6 +2268,7 @@ reversible; raise any that look wrong.
 | Phase 4 — providers (037…039) | In progress. **PR-038 is merged: Pilot can be configured with an API key, and it will not pretend that a configured key means a working model.** The key is sealed with Electron `safeStorage` (the macOS Keychain) into `~/Library/Application Support/Pilot/model-profile/credentials.json`, mode 600, and if `safeStorage` is unavailable Pilot stores nothing rather than falling back to plaintext. Provider and model selection read Pi's live catalogue. A four-stage capability probe decides which model is used: a text-only model is refused with **zero** provider requests, a model that will not call tools is refused after **one text-only** request, and neither ever sees an image — `CapabilityProbeOutcome.imageBlocksSent` is the literal `0` in the type. Only a probe that passed produces a `ModelSource`, so `main/index.ts` boots on the development source in every other state and logs why. An invalid key is detected both at probe time and mid-conversation, is distinguished from a rate limit and from an unreachable host, and its message is scrubbed — a 401 body that echoes the key back reaches no log, no panel and no crash dump. The panel shows where screen images go before the first question. **No API key exists in this environment, no request has ever left this machine, and `safeStorage` has never run** (§1 step 20): the vendor is `createRecordedApiKeyProvider` and the cipher is AES-256-GCM over a process-local key. No vendor SDK is bundled — measured at 1.66 MB → 5.97 MB of main bundle — so trying a real provider is the one-line change in step 20 (b), and shipping one is PR-042's. |
 | Phase 5 — hardening and release (040…044) | Not started. |
 | Phase 5 — hardening and release (040…044) | In progress. **PR-042 is merged: the macOS application is packaged, and the honest half of that sentence is that none of the macOS part has ever run.** What is verified on Linux: `pnpm package` produces a bundle whose asar is opened and checked eleven ways (entry points, `main` resolution, no `node_modules`, no external imports, no executable inside the archive, the CSP byte for byte, no `crossorigin`, a size budget against hazard 24, the helper as a real file that matches its manifest); the helper resolves in all three layouts, `pnpm dev` included, which it did not before; the signing hook runs on every build and declines by name; and **the packaged app starts from an empty, `launchd`-like environment** (`pnpm smoke:launch`), keeps its menu bar item, reads a launch environment file and refuses a credential written into it without printing it. What is configured and unverified: the entitlements (app and helper), the hardened runtime, the ad-hoc `codesign` invocation, the TCC usage strings, `LSMinimumSystemVersion`, `NSSupportsSuddenTermination`, the helper's embedded `Info.plist` and the `zip` target. **No `.app` has ever been produced, signed, installed or launched, and the Swift helper has still never been compiled** (§1 step 22, §1a). The finding that mattered: a Finder launch reaches the **faux** provider, because every provider selector is an environment variable — the launch file is the fix, and nothing on screen still says which model is in use (follow-up 46). |
+| Phase 5 — hardening and release (040…044) | In progress. **PR-043 is merged: the acceptance matrix is now a re-runnable harness rather than a paragraph, and it reports that the gate is not met.** `pnpm acceptance` walks A-01…A-15 with a scenario per criterion — a pause, an Accessibility revocation, a Screen Recording revocation, a relaunch over a real SQLite store, a non-vision model, a twelve-turn conversation, an interruption — and derives one verdict per row from the checks that actually ran: **0 verified, 12 verified in part, 1 failed, 2 blocked**, over 45 pass-condition checks of which 30 executed here and 15 wait on a Mac or a model. The rule the PR exists for is that a criterion with no executed pass-condition check *cannot* report as passing — `not-implemented` if nothing checks it, `blocked-on-…` however much supporting evidence is green — and it is pinned by its own unit test. Thirty curated grounding cases run at **both 1× and 2×**, the first time the assembled application has run at anything but 2×, and pin what Pilot SENDS: the anchor's normalised point against the geometry module's arithmetic, the element retained or refused, the crop rectangle, whether the thing under the pointer is inside the picture the model receives, and the envelope verbatim. **The plan's 90% grounding accuracy is not computed and cannot be** — 23 of the 30 report their verdict as pending a model, which is the whole of that metric. It found two things: **A-09 fails** (losing Accessibility stops Pilot instead of degrading it — follow-up 35, now demonstrated rather than merely recorded), and the pointer crop covers ~640 pt of window at 1× but ~533 pt at 2× because `pointerCropPixels` is a constant in captured pixels (follow-up 48). §1 step 23 is the Mac-and-model half, written as a runnable procedure. |
 
 Last full regression on `main` (after PR-017 and PR-022a): 997 tests across 66
 files, and **all twelve demos executed green** — observation, scene, policy,
