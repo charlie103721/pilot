@@ -23,6 +23,7 @@ import type {
   ConversationFixtureName,
   ConversationGateState,
   ModelDataDisclosureView,
+  ModelStatusView,
   PushToTalk,
 } from '../ipc/schemas.js';
 import { TelemetryRing, type TelemetryRingOptions } from './telemetry.js';
@@ -90,6 +91,15 @@ export interface ConversationGateOptions {
    * {@link ConversationGate.setModelDisclosure} when the profile changes.
    */
   readonly modelDisclosure?: ModelDataDisclosureView | null;
+  /**
+   * Which model profile is in force (runbook follow-ups 46 and 33). Set by the
+   * shipping composition for **every** profile, including the development
+   * stand-in — the panel's only provider surface used to be `CodexStatus`,
+   * which renders nothing unless the Codex profile is selected. Update it with
+   * {@link ConversationGate.setModelStatus} when a sign-in, a sign-out or a
+   * failed key changes the answer.
+   */
+  readonly modelStatus?: ModelStatusView | null;
   readonly telemetry?: TelemetryRingOptions;
   readonly logger?: Logger;
   readonly now?: () => number;
@@ -170,6 +180,8 @@ export class ConversationGate {
   #fixture: ConversationFixtureName | null = null;
   /** PR-038. Set at construction and whenever the model profile changes. */
   #modelDisclosure: ModelDataDisclosureView | null = null;
+  /** Follow-up 46. Same lifetime, same publication, one field further. */
+  #modelStatus: ModelStatusView | null = null;
   #disposed = false;
 
   /** Transition bookkeeping for the derived timings. Numbers only. */
@@ -188,6 +200,7 @@ export class ConversationGate {
     this.#speech = options.speech;
     this.#demoFixtures = options.demoFixtures ?? false;
     this.#modelDisclosure = options.modelDisclosure ?? null;
+    this.#modelStatus = options.modelStatus ?? null;
     this.#logger = options.logger ?? nullLogger;
     this.#now = options.now ?? (() => Date.now());
     this.telemetry = new TelemetryRing({
@@ -233,6 +246,7 @@ export class ConversationGate {
       fixture: this.#fixture,
       demoFixtures: this.#demoFixtures,
       modelDisclosure: this.#modelDisclosure,
+      modelStatus: this.#modelStatus,
     };
   }
 
@@ -245,6 +259,20 @@ export class ConversationGate {
    */
   setModelDisclosure(disclosure: ModelDataDisclosureView | null): void {
     this.#modelDisclosure = disclosure;
+    this.#publish();
+  }
+
+  /**
+   * Replaces the model-profile row (runbook follow-up 46).
+   *
+   * The liveness half of the fix: signing in to ChatGPT, signing out again, or
+   * a key that stops working mid-conversation must all change what the panel
+   * says **without a relaunch**. Every caller is a subscription that already
+   * existed — `CodexRuntime.subscribe` and the API-key manager's `run-failed`
+   * handler — so there is one publication path to the renderer, not a second.
+   */
+  setModelStatus(status: ModelStatusView | null): void {
+    this.#modelStatus = status;
     this.#publish();
   }
 

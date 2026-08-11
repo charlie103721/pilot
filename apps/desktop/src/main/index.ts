@@ -11,6 +11,10 @@ import { FakeHotkeyAdapter, FakeSpeechInputAdapter } from '@pilot/platform/fakes
 import { createTimeoutScheduler, type PilotInteractionController } from '@pilot/interaction';
 import { createDevelopmentModelSource, resolveDevelopmentModelFixture } from '@pilot/agent';
 import { IPC_TRANSPORT } from '../ipc/channels.js';
+// Runbook follow-ups 46 and 33: which model is in force, said on screen.
+// Imports `@pilot/shared` and nothing else, so it is safe in Chromium too.
+import { describeModelStatus, describeModelStatusLine } from '../conversation/model-status.js';
+import type { ModelProfileKind, ModelStatusView } from '../ipc/schemas.js';
 import { createAgentRuntime } from './agent-runtime.js';
 // PR-039 (additive import).
 import { resolveLocalModelSource } from './local-model.js';
@@ -303,6 +307,18 @@ if (!singleInstance.isPrimary) {
       createDevelopmentModelSource({
         fixture: resolveDevelopmentModelFixture(process.env['PILOT_MODEL_FIXTURE']),
       });
+    // Which term of the chain above won, as data rather than as a nested
+    // ternary repeated at each call site (it was already spelled out twice
+    // below). This is what the panel's Model row switches on — runbook
+    // follow-up 46 — and it is exhaustive, so a fifth `??` term must add a row
+    // in `src/conversation/model-status.ts` or fail to compile.
+    const modelProfileKind: ModelProfileKind = codex.source
+      ? 'codex'
+      : apiKeyProfile.source
+        ? 'api-key'
+        : local.source
+          ? 'local'
+          : 'development';
     // Logged rather than assumed: a build that is not talking to a real model —
     // or that is configured for one it has not signed in to — must say so where
     // anyone can see it.
@@ -314,13 +330,7 @@ if (!singleInstance.isPrimary) {
     // `restored` (not `restoredMessages`).
     logger.info('model source', {
       description: modelSource.description,
-      profile: codex.source
-        ? 'codex'
-        : apiKeyProfile.source
-          ? 'api-key'
-          : local.source
-            ? 'local'
-            : 'development',
+      profile: modelProfileKind,
       // Why the user-configured API-key profile is not in use, when it is not.
       profileReason: apiKeyProfile.reason === '' ? 'in use' : apiKeyProfile.reason,
     });
@@ -382,6 +392,57 @@ if (!singleInstance.isPrimary) {
       // question with the reason, instead of looking like a working model.
       ...(local.blockedBy === null ? {} : { blockedBy: local.blockedBy }),
       logger,
+    });
+
+    // WHICH MODEL PILOT IS TALKING TO, ON SCREEN (runbook follow-ups 46 and 33,
+    // hazard 28; system-design §14).
+    //
+    // Everything needed was already computed by the twenty lines above and
+    // logged — and a log line is exactly what a `launchd` or Finder launch
+    // discards. PR-042 measured that against the packaged bundle with `env -i`:
+    // the app boots, the tray appears, and it answers questions using Pi's faux
+    // provider, which **is not a language model**. The only surface that named a
+    // provider was `CodexStatus`, which renders `null` for the other three.
+    //
+    // So the same facts become one always-rendered row. Built here rather than
+    // beside the `??` chain because the capability gate runs inside
+    // `createAgentRuntime` above, and "the model Pilot chose has been refused"
+    // belongs in the same sentence as "this is the model Pilot chose".
+    //
+    // A function, not a value: the three things that can change the answer
+    // without a relaunch — a ChatGPT sign-in, a sign-out, a key that stops
+    // working mid-conversation — each rebuild it from the same inputs, so there
+    // is one wording and no drift.
+    const modelStatusFor = (blockedReason: string | null): ModelStatusView =>
+      describeModelStatus({
+        kind: modelProfileKind,
+        profile: modelSource.profile,
+        blockedReason,
+        // The terminal-free half of this fix (PR-042). The remedy names the
+        // file the user can actually create, and only the variables that file
+        // is allowed to set — `PILOT_API_KEY` is refused by `LAUNCH_ENV_ALLOWED`
+        // and the sentence says so instead of letting them find out.
+        launchFile: launchEnv.path,
+      });
+    // Ranked, not concatenated: a model the capability gate refused outranks a
+    // sign-in that is missing, which outranks an endpoint that failed its probe.
+    // This is the same order `controller.send({ type: 'failure' })` uses below,
+    // so the row and the banner never disagree about what is wrong.
+    const startupBlockedReason = !agentRuntime.capability.ok
+      ? agentRuntime.capability.error.userMessage
+      : (codex.startupError()?.userMessage ?? local.blockedBy?.userMessage ?? null);
+    const modelStatus = modelStatusFor(startupBlockedReason);
+    // Logged as well as shown, because the log is what a bug report carries.
+    // NOTE THE FIELD NAMES, as everywhere else in this file: none of them
+    // matches `@pilot/shared`'s redactor, so this line survives intact — the
+    // trap that ate three fields of the `retention clear` line (hazard 25) — and
+    // no field can hold a credential in the first place.
+    logger.info('model status', {
+      line: describeModelStatusLine(modelStatus),
+      profile: modelStatus.profile,
+      realModel: modelStatus.realModel,
+      offDevice: modelStatus.sendsScreenOffDevice,
+      headline: modelStatus.headline,
     });
 
     // The question anchor (PR-031). The last unwired input on the observation
@@ -704,6 +765,10 @@ if (!singleInstance.isPrimary) {
       // the development source is not a third party and claiming a destination
       // for it would be a lie in the other direction.
       modelDisclosure: apiKeyProfile.disclosure,
+      // Runbook follow-up 46, and unlike the line above it is NEVER null: there
+      // is always a model profile, and the one a packaged launch falls through
+      // to is the one the user most needs told about.
+      modelStatus,
       now: () => replayClock.now(),
       logger,
     });
@@ -721,8 +786,25 @@ if (!singleInstance.isPrimary) {
         }
         const status = apiKeyManager.noteRunFailure(event.error.message);
         conversation.setModelDisclosure(status.disclosure);
+        // Follow-up 46's liveness half, on the subscription PR-038 already
+        // opened rather than on a second one. A key that stops working mid
+        // conversation must stop the Model row saying "Answering with your own
+        // API key" in the present tense.
+        conversation.setModelStatus(
+          modelStatusFor(status.usable ? null : (status.failure?.userMessage ?? status.summary)),
+        );
       });
     }
+
+    // …and the same for a ChatGPT sign-in or sign-out, through
+    // `CodexRuntime.subscribe` — the mechanism `CodexStatus` already renders
+    // from (`main/codex-gate.ts`), so a signed-in state reaches the Model row
+    // and the Codex section from one publication and cannot disagree with it.
+    // `startupError()` reads the live auth snapshot, so this is the current
+    // answer rather than the one boot computed.
+    codex.subscribe(() => {
+      conversation.setModelStatus(modelStatusFor(codex.startupError()?.userMessage ?? null));
+    });
     // §17's three capture-side numbers — capture-to-observation latency, image
     // bytes and the active image count — are the ones PR-010 deliberately left to
     // this PR, because none of them can be seen from the view-state stream.

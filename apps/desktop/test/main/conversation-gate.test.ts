@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { asUtteranceId, PilotError } from '@pilot/shared';
+import { asModelProfileId, asUtteranceId, PilotError } from '@pilot/shared';
 import { FIXTURE_WINDOW_RETINA } from '@pilot/platform/fakes';
 import type { TelemetryMetric, TelemetrySample } from '../../src/ipc/schemas.js';
 import { conversationGateStateSchema } from '../../src/ipc/schemas.js';
+import { describeModelStatus } from '../../src/conversation/model-status.js';
 import { conversationHarness } from './support.js';
 
 /**
@@ -327,5 +328,58 @@ describe('conversation gate — the wire', () => {
       needsAttention: true,
     });
     expect(seen).toEqual(['verified', 'unverified']);
+  });
+
+  // Runbook follow-up 46. Appended, additive, and on the same publication path:
+  // one `pilot:conversation/changed` event carries both, so the Model row and
+  // PR-038's banner cannot disagree about which model is in force.
+  it('carries which model profile is in force, and republishes when it changes', () => {
+    const { gate } = conversationHarness();
+    expect(gate.snapshot().modelStatus).toBeNull();
+
+    const seen: (string | null)[] = [];
+    gate.subscribe((state) => seen.push(state.modelStatus?.profile ?? null));
+
+    const faux = describeModelStatus({
+      kind: 'development',
+      profile: {
+        id: asModelProfileId('profile-faux'),
+        provider: 'pilot-faux',
+        model: 'faux-vision',
+        authMode: 'local',
+        baseUrl: 'http://localhost:0',
+        supportsVision: true,
+        supportsTools: true,
+        isRemote: false,
+      },
+      launchFile: '/tmp/pilot/pilot.env',
+    });
+    gate.setModelStatus(faux);
+    expect(gate.snapshot().modelStatus?.realModel).toBe(false);
+    // It has to survive the wire, which is the only reason it is a schema.
+    expect(conversationGateStateSchema.parse(gate.snapshot()).modelStatus?.headline).toBe(
+      'NOT A REAL MODEL — answers are placeholder text',
+    );
+
+    // A ChatGPT sign-in, mid-session. Without this the panel would keep warning
+    // about a stand-in the app stopped using — the mirror of the defect.
+    gate.setModelStatus(
+      describeModelStatus({
+        kind: 'codex',
+        profile: {
+          id: asModelProfileId('codex:gpt-5.3-codex'),
+          provider: 'openai-codex',
+          model: 'gpt-5.3-codex',
+          authMode: 'subscription',
+          baseUrl: 'https://chatgpt.com/backend-api/codex',
+          supportsVision: true,
+          supportsTools: true,
+          isRemote: true,
+        },
+        launchFile: '/tmp/pilot/pilot.env',
+      }),
+    );
+    expect(gate.snapshot().modelStatus?.realModel).toBe(true);
+    expect(seen).toEqual(['development', 'codex']);
   });
 });

@@ -4,6 +4,7 @@ import {
   CONVERSATION_FIXTURES,
   type ConversationFixtureName,
   type ModelDataDisclosureView,
+  type ModelStatusView,
 } from '../ipc/schemas.js';
 import {
   conversationControl,
@@ -182,6 +183,61 @@ function ModelDisclosure({ disclosure }: { disclosure: ModelDataDisclosureView }
   );
 }
 
+/**
+ * Which model Pilot is talking to (runbook follow-ups 46 and 33).
+ *
+ * Rendered **always** and **first**, above the error banner and above both
+ * disclosures, because it is the only thing on this panel that is true before
+ * the user does anything: which provider is in force, and whether their screen
+ * leaves the machine to reach it (system-design §14, "before observation
+ * begins").
+ *
+ * The `critical` branch is the whole point. A packaged Pilot that has never
+ * been given a `pilot.env` answers questions with Pi's faux provider, which is
+ * not a language model, and said so only in a stderr line a Finder launch
+ * discards. It is a `role="alert"` with its own class and its own heading, not
+ * a subtle badge — a user who does not read the small print of an answer must
+ * still be unable to miss it.
+ *
+ * Every string comes from `describeModelStatus` in the main process; nothing is
+ * worded here, and nothing here can hold a credential.
+ */
+function ModelStatus({ status }: { status: ModelStatusView }) {
+  const critical = status.severity === 'critical';
+  return (
+    <section
+      className={`banner model-status model-status--${status.severity}`}
+      data-testid="model-status"
+      data-profile={status.profile}
+      data-real-model={status.realModel ? 'true' : 'false'}
+      data-remote={status.sendsScreenOffDevice ? 'true' : 'false'}
+      data-severity={status.severity}
+      role={critical ? 'alert' : 'note'}
+      aria-label="Model"
+    >
+      <div className="banner__title" data-testid="model-status-headline">
+        {status.headline}
+      </div>
+      <p className="banner__message" data-testid="model-status-detail">
+        {status.detail}
+      </p>
+      <dl className="banner__meta">
+        <dt>Model</dt>
+        <dd data-testid="model-status-model">
+          {status.profileLabel} · {status.modelLabel}
+        </dd>
+        <dt>Screen images</dt>
+        <dd data-testid="model-status-locality">{status.localityLabel}</dd>
+      </dl>
+      {status.remedy === null ? null : (
+        <p className="banner__hint" data-testid="model-status-remedy">
+          {status.remedy}
+        </p>
+      )}
+    </section>
+  );
+}
+
 function Control({
   id,
   view,
@@ -303,6 +359,10 @@ export function ConversationPanel({
       data-activity={view.activity}
     >
       <StateBadge view={view} />
+
+      {/* First, and never conditional on a profile being selected: the panel
+          used to show a Model section only when `PILOT_MODEL_PROFILE=codex`. */}
+      {view.modelStatus === null ? null : <ModelStatus status={view.modelStatus} />}
 
       {view.lastError === null ? null : (
         <div
