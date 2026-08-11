@@ -262,10 +262,14 @@ export interface AccessibilityGroundingTarget {
 /**
  * Why an accessibility target was or was not identified (PR-013).
  *
- * `QuestionAnchor.targetAvailability` (system-design §8) admits only `reported`
- * and `none`; the extra members here record *why* it is `none`, which the
- * envelope carries in its `note` instead. Map with
- * `outcome === 'reported' ? 'reported' : 'none'`.
+ * `QuestionAnchor.targetAvailability` (system-design §8) admits `reported`,
+ * `none` and — since PR-044 — `unavailable`; the extra members here record
+ * *why* it is one of the latter two, which the envelope carries in its `note`
+ * instead. `accessibility-denied` maps to `'unavailable'`, which is §16's
+ * degraded mode and the one case a model must not read as "the pointer is over
+ * blank space"; every other non-`reported` outcome maps to `'none'`. Note that
+ * the envelope does **not** derive it from this field: it reads the permission
+ * snapshot, so an element sampled *before* a revocation is refused too.
  */
 export const ACCESSIBILITY_TARGET_OUTCOMES = [
   /** An element was identified and is described by `target`. */

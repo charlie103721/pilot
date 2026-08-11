@@ -13,6 +13,8 @@ import {
 import { lastRequest, settleRun } from '../observation/ask-demo.js';
 import { openConversationStoreRuntime } from '../main/conversation-store.js';
 import { DEMO_WINDOWS } from '../observation/observe-rig.js';
+import { buildObservationView } from '../observation/view-model.js';
+import { buildPermissionOnboardingView } from '../permissions/view-model.js';
 import { asConversationId } from '@pilot/shared';
 import { buildFrame, BASE64_RUN, openAcceptanceRig } from './rig-support.js';
 import { criterion, executed, pending, type Check, type CriterionResult } from './verdict.js';
@@ -37,13 +39,18 @@ import { criterion, executed, pending, type Check, type CriterionResult } from '
  * left open on a Mac or on a model. Where a row moves, the reason is in its
  * checks.
  *
- * ## The one row that fails
+ * ## The row that used to fail
  *
- * A-09 does not hold, and the suite says so rather than marking it blocked.
- * Losing Accessibility mid-session takes Pilot to `needs-permission` instead of
- * the degraded visual mode §16 and A-09 both ask for; that is runbook follow-up
- * 35, recorded since PR-040 and never demonstrated against the assembled
- * application until now.
+ * A-09 read `failed` from PR-043 until PR-044: losing Accessibility mid-session
+ * took Pilot to `needs-permission` instead of the degraded visual mode §16 and
+ * A-09 both ask for (runbook follow-up 35). The scenario was not weakened to
+ * close it — it was **widened**, because §16's row has two halves and the
+ * original check read only the first. It now drives a revocation into a
+ * watching Pilot, asks a question through it, reads the rendered envelope the
+ * model was given and the two view models the user is shown, and then grants
+ * the permission back and reads the next envelope. Two of its pass conditions
+ * are still pending — a real TCC revocation, and what a model does with a
+ * picture and a point — so the row is `verified-in-part`, not `verified`.
  */
 
 export interface CriterionContext {
@@ -106,6 +113,25 @@ async function ask(
 /** Waits out §10's two-per-second observation window rather than reconfiguring it. */
 async function cool(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 600));
+}
+
+/** One step of a scripted model turn, as `createScriptedModelSource` takes it. */
+type ScriptedTurn =
+  | { readonly say: string }
+  | {
+      readonly observe: {
+        readonly view: 'pointer' | 'window' | 'both';
+        readonly moment: 'question' | 'current';
+      };
+    };
+
+/** What one question actually sent, for A-09's before/during/after comparison. */
+interface AskRecord {
+  /** The rendered envelope: exactly the text the model read. */
+  readonly context: string;
+  readonly images: number;
+  /** The element the anchor identified, or null when none could be. */
+  readonly targetRole: string | null;
 }
 
 /**
@@ -800,58 +826,199 @@ export async function checkA08(
 // A-09 — Accessibility revoked
 // ---------------------------------------------------------------------------
 
+/**
+ * A-09 is the whole of §16's Accessibility row, in one running session.
+ *
+ * The row asks for two things and both are read here. **"Visual mode remains
+ * usable"**: the revocation lands on a Pilot that is watching, and Pilot keeps
+ * watching — same window, same capture, a question asked and answered
+ * afterwards with a real frame. **"…with degraded-target notice"**: two
+ * audiences have to be told, and the harness reads both. The *model* is told in
+ * the rendered envelope, where the target line must name the permission rather
+ * than say "none reported" (which is what a pointer over blank space says). The
+ * *user* is told in the two view models the panel draws from.
+ *
+ * The third read is the one PR-040 warned about from the other direction:
+ * granting Accessibility back must upgrade the same session. Nothing is
+ * relaunched, no window is re-selected, and the very next question carries the
+ * element again.
+ */
 export async function checkA09(context: CriterionContext): Promise<CriterionResult> {
   const model = createScriptedModelSource({
     script: [
-      { observe: { view: 'window', moment: 'question' } },
-      { say: 'I can see the window but not what is under your pointer.' },
+      { observe: { view: 'both', moment: 'question' } },
+      { say: 'That is the Update payment method button.' },
     ],
   });
   const opened = await openAcceptanceRig({
     scaleFactor: 2,
     stub: {
       pointer: OVER_THE_BUTTON,
-      permissions: {
-        'screen-recording': 'granted',
-        accessibility: 'denied',
-        microphone: 'granted',
-        'speech-recognition': 'granted',
-      },
+      // Read 1 is `openAcceptanceRig`'s own refresh (everything granted, which
+      // is the state the revocation happens *to*); read 2 revokes Accessibility
+      // mid-session; read 3 grants it back.
+      permissionsScript: [{}, { accessibility: 'denied' }, { accessibility: 'granted' }],
     },
     rig: { modelSource: model, logger: context.logger },
   });
-  const { rig } = opened;
+  const { rig, window, captureSize } = opened;
+
+  /** Pushes a frame, samples the pointer, asks, and returns what was sent. */
+  const askOnce = async (id: string, script: readonly ScriptedTurn[]): Promise<AskRecord> => {
+    await cool();
+    rig.observation.session.ingestFrame(
+      await buildFrame(window, {
+        id,
+        capturedAt: Date.now(),
+        size: captureSize,
+        scaleFactor: 2,
+      }),
+    );
+    await rig.observation.samplePointer();
+    model.setScript(script);
+    await ask(opened, 'What is this?');
+    const provider = lastRequest(model);
+    return {
+      context: provider?.context ?? '',
+      images: provider?.images.length ?? 0,
+      targetRole: rig.anchoring.lastAnchor()?.targetRole ?? null,
+    };
+  };
+
+  const observing = [
+    { observe: { view: 'both', moment: 'question' } as const },
+    { say: 'Answering.' as const },
+  ];
+
   try {
-    const state = rig.controller.snapshot().state;
+    const granted = await askOnce('a09-granted', observing);
+    const stateBefore = rig.controller.snapshot();
+
+    // The revocation, on the shipping path: the gate publishes the new
+    // snapshot and the table's `permissions-changed` row decides what it means.
+    await rig.permissions.refresh();
+    await rig.controller.settled();
+    const revoked = rig.controller.snapshot();
+    const degraded = await askOnce('a09-degraded', observing);
+
+    const permissionView = buildPermissionOnboardingView(rig.permissions.snapshot());
+    const observationView = buildObservationView({
+      gate: rig.windows.snapshot(),
+      view: rig.controller.snapshot(),
+      permissions: permissionView,
+    });
+
+    // …and back again, without a relaunch.
+    await rig.permissions.refresh();
+    await rig.controller.settled();
+    const regranted = await askOnce('a09-regranted', observing);
     const conditions = rig.observation.status();
+
+    /** The grounding lines of the rendered envelope, verbatim, for the evidence. */
+    const quote = (record: AskRecord): string =>
+      record.context
+        .split('\n')
+        .filter((line) => line.startsWith('pointer') || line.startsWith('reduced grounding'))
+        .join(' / ') || '(no pointer line)';
 
     return row('A-09', [
       executed(
         'pass-condition',
-        'visual mode remains usable with Accessibility denied',
-        state !== 'needs-permission',
-        `the machine rests in "${state}" with screen-recording=granted and ` +
-          `accessibility=denied. system-design §16 asks for "continue with visual ` +
-          `pointer coordinates and disclose reduced grounding"; REQUIRED_PERMISSIONS in ` +
-          `packages/interaction/src/context.ts lists all four permissions, so losing any ` +
-          `one resolves to needs-permission. This is runbook follow-up 35, recorded ` +
-          `since PR-040 and demonstrated against the assembled application here.`,
+        'losing Accessibility mid-session does not stop Pilot',
+        revoked.state !== 'needs-permission' &&
+          revoked.observationEnabled &&
+          revoked.selectedWindow?.windowId === window.windowId,
+        `the machine went "${stateBefore.state}" → "${revoked.state}" when Accessibility ` +
+          `was refused under a watching Pilot; observationEnabled=` +
+          `${String(revoked.observationEnabled)}, the selected window is still ` +
+          `${String(revoked.selectedWindow?.windowId ?? 'none')}. system-design §16 asks ` +
+          `for "continue with visual pointer coordinates and disclose reduced grounding". ` +
+          `REQUIRED_PERMISSIONS (packages/interaction/src/context.ts) is Screen Recording ` +
+          `alone since PR-044; it listed all four until then, which is why this row read ` +
+          `"failed" from PR-043 until runbook follow-up 35 was closed.`,
+      ),
+      executed(
+        'pass-condition',
+        'visual mode still answers: a question after the revocation gets a real frame',
+        degraded.images >= 1,
+        `the question asked after the revocation carried ${String(degraded.images)} image(s) ` +
+          `to the provider, from the same capture of the same window`,
+      ),
+      executed(
+        'pass-condition',
+        'the model is told the target is unavailable, and why — never "none reported"',
+        degraded.context.includes('pointer target: unavailable') &&
+          degraded.context.includes('Accessibility is not permitted') &&
+          degraded.context.includes('reduced grounding:') &&
+          !degraded.context.includes('none reported') &&
+          !degraded.context.includes('AXButton'),
+        `the rendered envelope's pointer lines were: ${quote(degraded)}`,
+      ),
+      executed(
+        'pass-condition',
+        'the envelope still carries the pointer coordinates §16 asks Pilot to continue with',
+        /pointer: 0\.\d+, 0\.\d+ \(window-relative, inside the selected window\)/u.test(
+          degraded.context,
+        ) && degraded.targetRole === null,
+        `the pointer line is a real position and the anchor's targetRole is ` +
+          `${String(degraded.targetRole)} — a picture and a point, with nothing named`,
+      ),
+      executed(
+        'pass-condition',
+        'the user is told, on both surfaces the panel draws from',
+        permissionView.readiness === 'degraded' &&
+          permissionView.groundingDisclosure !== null &&
+          observationView.grounding === 'reduced' &&
+          observationView.groundingNote !== null &&
+          observationView.allowed,
+        `permission onboarding: readiness=${permissionView.readiness}, ` +
+          `disclosure=${JSON.stringify(permissionView.groundingDisclosure?.slice(0, 60))}…; ` +
+          `observation surface: grounding=${observationView.grounding}, allowed=` +
+          `${String(observationView.allowed)}, indicator="${observationView.indicatorLabel}" — ` +
+          `"${observationView.indicatorDetail}"`,
+      ),
+      executed(
+        'pass-condition',
+        'granting Accessibility again upgrades the same session, with no relaunch',
+        regranted.targetRole === 'AXButton' &&
+          regranted.context.includes('pointer target:') &&
+          !regranted.context.includes('unavailable'),
+        `after the grant the next question named the element again ` +
+          `(targetRole=${String(regranted.targetRole)}); its pointer lines were: ` +
+          `${quote(regranted)}. Nothing was relaunched and the window was never re-selected.`,
       ),
       executed(
         'supporting',
-        'the observation conditions still report Screen Recording as granted',
+        'the same question before the revocation named the element',
+        granted.targetRole === 'AXButton' && granted.context.includes('AXButton'),
+        `targetRole=${String(granted.targetRole)}; pointer lines: ${quote(granted)} — ` +
+          `so the degraded envelope above is a difference this run produced, not a ` +
+          `scenario that never had a target to lose`,
+      ),
+      executed(
+        'supporting',
+        'the observation conditions still report Screen Recording as granted throughout',
         conditions.permissions?.screenRecording === 'granted',
         `screenRecording=${String(conditions.permissions?.screenRecording)} ` +
-          `accessibility=${String(conditions.permissions?.accessibility)} — the pixels are ` +
-          `available; it is the interaction machine that refuses to proceed`,
+          `accessibility=${String(conditions.permissions?.accessibility)} — Screen Recording ` +
+          `is the one permission whose loss is still a hard stop (A-10)`,
       ),
       pending(
         'pass-condition',
-        'a real mid-session Accessibility revocation behaves the same way',
+        'a real TCC revocation, and a real AX hit test refusing under it',
         'mac',
-        'the permission states above came from the Node stub at construction, not from ' +
-          'TCC changing under a running session. docs/handoff.md §1 step 18 (a) is the ' +
-          'real revocation.',
+        'the permission states above came from the Node stub advancing a scripted ' +
+          'snapshot, not from TCC changing under a running session, and no ' +
+          'AXUIElementCopyElementAtPosition has ever been called. docs/handoff.md §1 ' +
+          'step 18 (a) is the real revocation and step 24 is the degraded read.',
+      ),
+      pending(
+        'pass-condition',
+        'the answer a model gives from a picture and a point, and whether it says so',
+        'model',
+        'every reply in this suite is scripted. That the reduced-grounding line in the ' +
+          'envelope actually changes what a model says — and that it repeats the ' +
+          'uncertainty to the user — has never been observed. docs/handoff.md §1 step 24.',
       ),
     ]);
   } finally {

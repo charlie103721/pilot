@@ -110,12 +110,19 @@ export const LIFECYCLE_GUIDANCE: Readonly<Record<LifecycleFailure, LifecycleGuid
     remedy:
       'Allow Screen Recording for Pilot in System Settings — Pilot starts watching again by itself once you do. Everything it had buffered was cleared.',
   },
+  // §16's degraded row, and the only `recovered` in this table that costs the
+  // user something (PR-044). Pilot keeps watching and keeps answering; what it
+  // loses is the ability to name the control under the pointer, so the message
+  // says what is now less reliable rather than announcing a stop that did not
+  // happen. `recovered` is "Pilot kept working, possibly with less" — this is
+  // the case that phrase was written for.
   'accessibility-revoked': {
     failure: 'accessibility-revoked',
-    disposition: 'safe-terminal',
-    userMessage: 'Accessibility is no longer allowed, so Pilot cannot tell what you point at.',
+    disposition: 'recovered',
+    userMessage:
+      'Accessibility is no longer allowed. Pilot is still watching and will still answer, but it now works out what you are pointing at from the picture alone.',
     remedy:
-      'Allow Accessibility for Pilot in System Settings. Your conversation is kept either way.',
+      'Allow Accessibility for Pilot in System Settings to get precise answers back — no restart needed. Your conversation is kept either way.',
   },
   'screen-locked': {
     failure: 'screen-locked',

@@ -95,7 +95,11 @@ export const INTERACTION_STATE_PRESENTATION: Readonly<
   },
   'needs-permission': {
     label: 'Needs permission',
-    detail: 'Pilot needs screen and microphone access before it can help.',
+    // Screen Recording only, since PR-044: it is the one permission whose
+    // absence reaches this state (`REQUIRED_PERMISSIONS`, system-design §16).
+    // Naming the microphone here sent a user with a refused microphone to the
+    // wrong row — and Pilot answers typed questions perfectly well without one.
+    detail: 'Pilot needs Screen Recording access before it can look at a window.',
     tone: 'blocked',
     activity: 'halted',
     busy: false,

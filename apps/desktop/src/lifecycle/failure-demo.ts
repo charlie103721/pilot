@@ -32,6 +32,8 @@ import {
 } from '../observation/observe-rig.js';
 import { GRANTED, pressKey, recordPanel, waitFor, type PanelTrace } from '../voice/flow-demo.js';
 import { planRetry } from '../main/request-retry.js';
+import { buildObservationView } from '../observation/view-model.js';
+import { buildPermissionOnboardingView } from '../permissions/view-model.js';
 import { readLifecycleGuidance, type RecoveryDisposition } from './guidance.js';
 
 /**
@@ -311,32 +313,61 @@ export async function runFailureDemo(): Promise<FailureDemoResult> {
 
       heading('3. ACCESSIBILITY REVOKED WHILE PILOT IS WATCHING');
       say('   system-design §16 asks for a *degraded* mode here — "continue with');
-      say('   visual pointer coordinates and disclose reduced grounding". That is');
-      say('   not what the shipped machine does, and this case is how the demo');
-      say('   says so rather than hiding it: `REQUIRED_PERMISSIONS` lists all');
-      say('   four, so losing Accessibility stops Pilot exactly as losing Screen');
-      say('   Recording does. Safe, visible and explained — but not §16’s row.');
+      say('   visual pointer coordinates and disclose reduced grounding" — and');
+      say('   since PR-044 that is what happens. It ends `recovered`, and this');
+      say('   is the case that phrase was written for: "Pilot kept working,');
+      say('   possibly with less". `REQUIRED_PERMISSIONS` is Screen Recording');
+      say('   alone, so the table’s `permissions-changed` row records the new');
+      say('   snapshot and leaves the session running; what changes is what the');
+      say('   model is told and what the panel says. Degrading QUIETLY would be');
+      say('   the defect — the two lines of evidence below are why it is not.');
+      say('   (It listed all four until PR-044: runbook follow-up 35, and why');
+      say('   A-09 read `failed`.)');
       say();
       await rig.permissions.refresh();
       await rig.controller.settled();
       const accessibilityView = rig.controller.snapshot();
+      const degradedPermissions = buildPermissionOnboardingView(rig.permissions.snapshot());
+      const degradedObservation = buildObservationView({
+        gate: rig.windows.snapshot(),
+        view: accessibilityView,
+        permissions: degradedPermissions,
+      });
       evidence('state:', accessibilityView.state);
-      evidence('the user sees:', whatTheUserSees(accessibilityView.lastError));
+      evidence('still watching:', String(accessibilityView.observationEnabled));
+      evidence('onboarding readiness:', degradedPermissions.readiness);
+      evidence('grounding:', degradedObservation.grounding);
+      evidence('the user sees:', degradedPermissions.groundingDisclosure ?? '(nothing)');
       evidence(
         'lifecycle record:',
         rig.lifecycle.records.map((entry) => entry.failure).join(', ') || '(none)',
       );
       evidence('left behind:', describeLeftBehind(leftBehind(rig)));
+      say();
+      say('     And what the MODEL is told, which is the half a permission row');
+      say('     cannot show: the envelope’s target line names the permission');
+      say('     rather than reading "none reported", because "none reported" is');
+      say('     what a pointer over blank space looks like.');
+      say('       | pointer target: unavailable — Accessibility is not permitted, …');
+      say('       | reduced grounding: work out what is at the pointer position');
+      say('       |   from the captured window alone, and say in your answer that');
+      say('       |   you could not confirm the control by name.');
       cases.push({
         id: '3',
         what: 'Accessibility revoked mid-session',
-        sees: 'permission onboarding, with the Accessibility row refused',
-        disposition: 'safe-terminal',
+        sees: degradedPermissions.groundingDisclosure ?? '(nothing)',
+        disposition: 'recovered',
         leftBehind: describeLeftBehind(leftBehind(rig)),
-        notes: ['§16 asks for a degraded mode; the table stops instead — see §14'],
+        notes: ['§16’s degraded row: keeps watching, discloses reduced grounding'],
       });
-      // Put it back, so the lock case starts from a watching Pilot.
+      // Put it back. Nothing is relaunched and the window is never re-selected;
+      // the grant alone restores full grounding for the next question.
       await rig.permissions.refresh();
+      await rig.controller.settled();
+      evidence(
+        'after the grant:',
+        buildPermissionOnboardingView(rig.permissions.snapshot()).readiness,
+      );
       await rig.windows.act({ type: 'start' });
       await rig.controller.settled();
 

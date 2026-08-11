@@ -361,6 +361,33 @@ describe('permissions', () => {
     expect(test.lifecycle.records.at(-1)?.failure).toBe('accessibility-revoked');
   });
 
+  /**
+   * PR-044, system-design §16. Losing Accessibility is a *degradation*, and the
+   * retention occasion is armed for the clear a hard stop is about to perform.
+   * No clear follows a degradation, so arming one here would leave
+   * `permission-loss` waiting to mislabel whatever clear came next — the exact
+   * defect this arming was introduced to fix, one revocation later.
+   */
+  it('does not arm a retention occasion for a revocation that stops nothing', () => {
+    const test = harness();
+
+    test.lifecycle.notePermissions(FIXTURE_PERMISSIONS_GRANTED);
+    test.lifecycle.notePermissions(revoked('accessibility'));
+
+    expect(test.retention).toEqual([]);
+    expect(test.lifecycle.records.at(-1)?.disposition).toBe('recovered');
+  });
+
+  it('still arms it for Screen Recording, which does stop everything', () => {
+    const test = harness();
+
+    test.lifecycle.notePermissions(FIXTURE_PERMISSIONS_GRANTED);
+    test.lifecycle.notePermissions(revoked('screen-recording'));
+
+    expect(test.retention).toEqual(['permission-loss']);
+    expect(test.lifecycle.records.at(-1)?.disposition).toBe('safe-terminal');
+  });
+
   it('says nothing about the first snapshot it ever sees', () => {
     const test = harness();
 

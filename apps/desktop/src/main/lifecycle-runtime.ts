@@ -31,6 +31,7 @@ import type {
 } from '@pilot/platform-mac';
 import {
   lifecycleError,
+  LIFECYCLE_GUIDANCE,
   readLifecycleGuidance,
   withLifecycleGuidance,
   type LifecycleFailure,
@@ -71,7 +72,8 @@ import { planRetry, type RetryBudget, type RetryPlan } from './request-retry.js'
  *
  * | condition | how it arrives | what happens |
  * | --- | --- | --- |
- * | permission revoked | `PermissionGate` snapshot | retention occasion `permission-loss` armed, then the table's own `permissions-changed` row tears down, stops capture and clears |
+ * | Screen Recording revoked | `PermissionGate` snapshot | retention occasion `permission-loss` armed, then the table's own `permissions-changed` row tears down, stops capture and clears |
+ * | Accessibility revoked | `PermissionGate` snapshot | **nothing stops** (system-design §16, PR-044): typed guidance whose disposition is `recovered`, the retained accessibility labels dropped by `ObservationRuntime.notePermissions`, the frame ring kept |
  * | screen locked / unlocked | window feed, or Electron `powerMonitor` | the table's `screen-locked` row; occasion `screen-lock` |
  * | logout | Electron `powerMonitor` `shutdown` | occasion `logout` — **terminal**, so the scene lineage goes too — then the same stop-and-clear |
  * | selected window closed | window feed | the table's `window-closed` row (typed error already) |
@@ -483,17 +485,30 @@ export function createLifecycleRuntime(options: LifecycleRuntimeOptions): Lifecy
         if (!isGranted(previous[kind]) || isGranted(snapshot[kind])) {
           continue;
         }
-        // Armed *before* the machine's own row runs, so the clear it is about to
-        // ask for is logged as what it is. `permission-loss` had no caller in
-        // the product until this line: every revocation cleared its buffers
-        // under whichever occasion happened to be armed last.
-        options.observation?.noteRetentionEvent('permission-loss');
+        // Not every revocation is a stop, since PR-044. Screen Recording still
+        // tears the session down, so the retention occasion is armed *before*
+        // the machine's own row runs and the clear it is about to ask for is
+        // logged as what it is — `permission-loss` had no caller in the product
+        // until this line, and every revocation used to clear its buffers under
+        // whichever occasion happened to be armed last.
+        //
+        // Accessibility does not stop anything (system-design §16), so no
+        // whole-buffer clear follows and arming one here would leave
+        // `permission-loss` waiting to mislabel the *next* clear, whatever
+        // caused it. The elements that genuinely must not survive the
+        // revocation — the accessibility labels already in the pointer-target
+        // log — are dropped by `ObservationRuntime.notePermissions`, which owns
+        // that log and drops it *without* taking the frame ring with it.
+        const stops = LIFECYCLE_GUIDANCE[failure].disposition === 'safe-terminal';
+        if (stops) {
+          options.observation?.noteRetentionEvent('permission-loss');
+        }
         record(
           failure,
           'permission-denied',
           'notice',
           `permission-revoked:${kind}`,
-          'safe-terminal',
+          LIFECYCLE_GUIDANCE[failure].disposition,
         );
       }
     },

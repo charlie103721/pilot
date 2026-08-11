@@ -1,5 +1,6 @@
 import {
   isAttributionFailure,
+  isGranted,
   nullLogger,
   toPilotError,
   type Logger,
@@ -747,7 +748,32 @@ export function createObservationRuntime(options: ObservationRuntimeOptions): Ob
       applyConditions();
     },
     notePermissions: (snapshot: PermissionSnapshot | null) => {
+      const previous = permissions;
       permissions = snapshot;
+      // PR-044, system-design §13 and §16. Losing Accessibility no longer stops
+      // Pilot — §16 asks it to continue on the picture and the pointer — so the
+      // whole-buffer clear a hard stop used to bring no longer happens, and the
+      // accessibility elements already in the pointer-target log would simply
+      // stay there. They were read under a permission the user has just taken
+      // away, so they are dropped on their own: the frames stay (Screen
+      // Recording is untouched and the product needs them), the labels go.
+      //
+      // Deliberately narrower than `clearThrough`, which empties the ring as
+      // well and would take the degraded mode's remaining grounding with it.
+      // Only a *transition* out of granted drops them; a snapshot that merely
+      // arrives with Accessibility already refused has nothing to drop, and a
+      // permission still being read is not a refusal (runbook hazard 22).
+      if (previous !== null && snapshot !== null) {
+        const lost = isGranted(previous.accessibility) && !isGranted(snapshot.accessibility);
+        if (lost) {
+          const dropped = targets.clear();
+          inputs.setAnchor(null);
+          logger.info('accessibility withdrawn: retained elements dropped', {
+            pointerTargets: dropped.recordCount,
+            framesKept: screenContext.status().buffer.frameCount,
+          });
+        }
+      }
       applyConditions();
     },
     noteRetentionEvent: (event: RetentionEvent) => {

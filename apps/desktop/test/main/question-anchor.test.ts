@@ -99,6 +99,8 @@ async function watching(
     readonly pointerScript?: readonly { x: number; y: number }[];
     readonly vision?: boolean;
     readonly record?: boolean;
+    /** Successive permission snapshots, advanced by each `permissions.refresh()`. */
+    readonly permissionsScript?: readonly Record<string, string>[];
   } = {},
 ): Promise<Harness> {
   const lines: string[] = [];
@@ -115,6 +117,9 @@ async function watching(
       axElements: AX_ELEMENTS,
       ...(options.pointer === undefined ? {} : { pointer: options.pointer }),
       ...(options.pointerScript === undefined ? {} : { pointerScript: options.pointerScript }),
+      ...(options.permissionsScript === undefined
+        ? {}
+        : { permissionsScript: options.permissionsScript }),
     },
     modelSource: model,
     ...(options.record === true ? { recordRequests: true } : {}),
@@ -510,6 +515,90 @@ describe('7. retention drops the anchor and the retained elements with the ring'
     // when the pixels do, in the same call, so there is no window in which the
     // ring is empty and a label read off it is still in memory.
     expect(harness.rig.anchoring.active()).toBeNull();
+  }, 60_000);
+});
+
+/**
+ * PR-044 — system-design §16, "Accessibility denied: continue with visual
+ * pointer coordinates and disclose reduced grounding" (runbook follow-up 35).
+ *
+ * The stub's accessibility hit test does not consult the permission snapshot —
+ * `axTrusted` and the TCC state are separate switches on the far end of the
+ * pipe, as they are separate APIs on a real Mac — so it keeps offering the
+ * button after the revocation. That makes this the sharpest form of the test:
+ * an element is available and Pilot refuses to use it, on both routes to the
+ * model.
+ */
+describe('9. Accessibility refused: a picture and a point, and nothing named', () => {
+  it('names no element in the envelope or in the tool result, and says why', async () => {
+    const harness = await watching({
+      script: [LOOK_BOTH, { say: 'Something near the middle of the window.' }],
+      pointer: OVER_THE_BUTTON,
+      permissionsScript: [{}, { accessibility: 'denied' }],
+    });
+    await pointAt(harness, 'frame-a');
+
+    // Sampled while the permission was granted, so the log holds the element —
+    // this is the case the second defence exists for.
+    expect(harness.rig.observation.metrics().pointerTargets).toBeGreaterThan(0);
+
+    await harness.rig.permissions.refresh();
+    await harness.rig.controller.settled();
+    // Pilot did not stop, and the frames are still there: Screen Recording is
+    // untouched and §16 asks Pilot to go on using them.
+    expect(harness.rig.controller.snapshot().state).toBe('observing');
+    expect(harness.rig.observation.core.status().buffer.frameCount).toBeGreaterThan(0);
+    // The labels, however, were read under a permission the user has withdrawn.
+    expect(harness.rig.observation.metrics().pointerTargets).toBe(0);
+
+    await pointAt(harness, 'frame-b');
+    await ask(harness);
+
+    // Route 1: the question envelope.
+    const context = lastRequest(harness.model)?.context ?? '';
+    expect(context).toContain('(window-relative, inside the selected window)');
+    expect(context).toContain('pointer target: unavailable');
+    expect(context).toContain('Accessibility is not permitted');
+    expect(context).toContain('reduced grounding:');
+    expect(context).not.toContain('none reported');
+
+    // Route 2: the `observe_screen` tool result, which carries the anchor's own
+    // element. A crop labelled "AXButton — Update payment method" would be the
+    // same leak by another door.
+    expect(harness.rig.anchoring.lastAnchor()?.targetRole).toBeNull();
+    expect(harness.rig.observation.lastObservation()?.targetRole).toBeNull();
+    // …and the picture and the point survived, which is the mode's whole point.
+    expect(harness.rig.observation.lastObservation()?.pointerKnown).toBe(true);
+    expect(harness.rig.observation.lastObservation()?.pointerInsideWindow).toBe(true);
+    expect(harness.rig.observation.lastObservation()?.images.length ?? 0).toBeGreaterThan(0);
+
+    // Nothing anywhere in the provider traffic names the control.
+    expect(promptOf(harness.model)).not.toContain('Update payment method');
+    expect(promptOf(harness.model)).not.toContain('AXButton');
+  }, 60_000);
+
+  it('names the element again as soon as the permission comes back', async () => {
+    const harness = await watching({
+      script: [LOOK_BOTH, { say: 'The Update payment method button.' }],
+      pointer: OVER_THE_BUTTON,
+      permissionsScript: [{}, { accessibility: 'denied' }, { accessibility: 'granted' }],
+    });
+    await harness.rig.permissions.refresh();
+    await harness.rig.controller.settled();
+    await harness.rig.permissions.refresh();
+    await harness.rig.controller.settled();
+
+    await pointAt(harness, 'frame-a');
+    await ask(harness);
+
+    const context = lastRequest(harness.model)?.context ?? '';
+    expect(context).toContain('pointer target: AXButton — Update payment method');
+    expect(context).not.toContain('unavailable');
+    expect(harness.rig.anchoring.lastAnchor()?.targetRole).toBe('AXButton');
+    // No relaunch and no re-selection: the same rig, the same selected window.
+    expect(harness.rig.controller.snapshot().selectedWindow?.windowId).toBe(
+      harness.window.windowId,
+    );
   }, 60_000);
 });
 

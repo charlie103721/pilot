@@ -9,6 +9,8 @@ import {
   type PermissionSnapshot,
 } from '@pilot/shared';
 import { encodePng, renderSyntheticScreen } from '@pilot/observation';
+import { FIXTURE_PERMISSIONS_GRANTED } from '@pilot/platform/fakes';
+import { AX_ELEMENTS, OVER_THE_BUTTON } from '../../src/observation/ask-demo.js';
 import { observationPermissionConditions } from '../../src/main/observation-runtime.js';
 import { CAPTURE_ENCODING, describePlatformChoice } from '../../src/main/platform-runtime.js';
 import {
@@ -455,6 +457,57 @@ describe('6. a permission state that refuses', () => {
     expect(state.lastError?.code).toBe('permission-denied');
     expect(current.controller.snapshot().selectedWindow).toBeNull();
     expect(current.observation.metrics().starts).toBe(0);
+  });
+
+  /**
+   * PR-044, system-design §13 and §16. A revocation used to be followed by the
+   * machine's own whole-buffer clear, which took the retained accessibility
+   * elements with it. Losing Accessibility no longer stops anything, so nothing
+   * clears — and labels read under a permission the user has just withdrawn
+   * would simply stay in the pointer-target log. They are dropped on their own,
+   * and the ring is deliberately *not*: §16's degraded mode is the picture plus
+   * the point, and emptying the ring would take the picture away.
+   */
+  it('drops the retained accessibility elements when Accessibility is withdrawn, and keeps the frames', async () => {
+    const current = await rig({ axElements: AX_ELEMENTS, pointer: OVER_THE_BUTTON });
+    await watchFirstWindow(current);
+    await drain(current, 2);
+    await current.observation.samplePointer();
+
+    expect(current.observation.metrics().pointerTargets).toBeGreaterThan(0);
+    const framesBefore = current.observation.core.status().buffer.frameCount;
+    expect(framesBefore).toBeGreaterThan(0);
+
+    current.observation.notePermissions({
+      ...FIXTURE_PERMISSIONS_GRANTED,
+      accessibility: { kind: 'accessibility', state: 'denied', canRequest: false },
+    });
+
+    expect(current.observation.metrics().pointerTargets).toBe(0);
+    expect(current.observation.core.status().buffer.frameCount).toBe(framesBefore);
+    // The observation itself is still permitted — Screen Recording is untouched.
+    await expect(
+      current.observation.port.observe(asObservationId('obs-degraded')),
+    ).resolves.not.toThrow();
+  });
+
+  it('drops nothing when Accessibility was already refused, or is merely unknown', async () => {
+    const current = await rig({ axElements: AX_ELEMENTS, pointer: OVER_THE_BUTTON });
+    await watchFirstWindow(current);
+    await drain(current, 2);
+    await current.observation.samplePointer();
+    const targets = current.observation.metrics().pointerTargets;
+    expect(targets).toBeGreaterThan(0);
+
+    // Hazard 22: an unknown permission is not a refusal, and neither snapshot
+    // here is a *transition* out of granted.
+    current.observation.notePermissions(null);
+    expect(current.observation.metrics().pointerTargets).toBe(targets);
+    current.observation.notePermissions({
+      ...FIXTURE_PERMISSIONS_GRANTED,
+      accessibility: { kind: 'accessibility', state: 'unknown', canRequest: true },
+    });
+    expect(current.observation.metrics().pointerTargets).toBe(targets);
   });
 });
 

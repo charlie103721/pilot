@@ -10,8 +10,10 @@ import {
   type QuestionAnchorTarget,
   type QuestionEnvelope,
   type QuestionGrounding,
+  type QuestionTargetAvailability,
   type SceneState,
 } from '@pilot/shared';
+import type { PointerTargetGrounding } from './context.js';
 import type {
   PointerAnchorSample,
   QuestionAnchorSource,
@@ -305,14 +307,34 @@ export class PilotQuestionEnvelopeFactory implements QuestionEnvelopeFactory {
             ? 'pointer-in-window'
             : 'pointer-outside-window';
 
-    // Outside the selected window, whatever is under the pointer belongs to a
-    // window Pilot is not observing. No target is summarized from it.
+    // §16's degraded mode. `unavailable` says no hit test was possible at all;
+    // `none` says one ran (or would have) and named nothing. Only a refusal or
+    // a policy restriction produces the first — see `accessibilityGroundingOf`.
+    const accessibility: PointerTargetGrounding = request.accessibilityGrounding ?? 'unknown';
+
+    // Two independent reasons to summarise no element, and both are enforced
+    // here rather than trusted to the sampler.
+    //
+    //  1. **Outside the selected window**, whatever is under the pointer
+    //     belongs to a window Pilot is not observing (PR-013, PR-024, PR-031).
+    //  2. **Accessibility is not permitted** (PR-044). A sample may still carry
+    //     an element — it may have been taken before the user revoked the
+    //     permission, and `PointerTargetLog` retains elements for up to the
+    //     ring's lifetime — but naming a control Pilot is no longer allowed to
+    //     read would be both a §16 violation and a permission leak. The
+    //     platform adapter already refuses at source (`MacAccessibilityAdapter`
+    //     answers `targetOutcome: 'accessibility-denied'` with a null element);
+    //     this is the second, independent defence, and it is the one that
+    //     covers an element sampled *before* the revocation.
     const target =
-      sample !== null && grounding === 'pointer-in-window'
+      sample !== null && grounding === 'pointer-in-window' && accessibility !== 'unavailable'
         ? summarizeAccessibilityTarget(sample, this.#maxTextChars)
         : null;
 
-    const note = noteFor(grounding, anchored, target);
+    const targetAvailability: QuestionTargetAvailability =
+      target !== null ? 'reported' : accessibility === 'unavailable' ? 'unavailable' : 'none';
+
+    const note = noteFor(grounding, anchored, target, targetAvailability);
 
     const anchor: QuestionAnchor = {
       grounding,
@@ -328,7 +350,7 @@ export class PilotQuestionEnvelopeFactory implements QuestionEnvelopeFactory {
       sceneRevisedDuringUtterance: facts.revisedDuringUtterance,
       observationStale: scene === null ? true : !isSceneObserved(scene),
       ...(target === null ? {} : { target }),
-      targetAvailability: target === null ? 'none' : 'reported',
+      targetAvailability,
       ...(note === null ? {} : { note }),
     };
 
@@ -411,6 +433,16 @@ type AnchorAttempt =
     };
 
 /**
+ * The one sentence §16's degraded mode adds to an envelope.
+ *
+ * States the *cause* — the permission — rather than the symptom, because the
+ * symptom (no target) is indistinguishable from a pointer over blank space.
+ */
+export const ACCESSIBILITY_UNAVAILABLE_NOTE =
+  'Accessibility is not permitted, so no element under the pointer can be identified; ' +
+  'the captured window and the pointer position are the only grounding available.';
+
+/**
  * Why the grounding is what it is, in one sentence.
  *
  * Every non-obvious grounding gets a note, so a reader of the envelope — human
@@ -420,7 +452,17 @@ function noteFor(
   grounding: QuestionGrounding,
   anchored: AnchorAttempt,
   target: QuestionAnchorTarget | null,
+  targetAvailability: QuestionTargetAvailability,
 ): string | null {
+  // §16's degraded mode outranks every other reason there is no target: when
+  // Accessibility is refused, nothing on the screen can be named, so "no
+  // element was reported under the pointer" would describe the wrong cause and
+  // read as though the pointer were over blank space.
+  if (targetAvailability === 'unavailable') {
+    return grounding === 'pointer-in-window'
+      ? ACCESSIBILITY_UNAVAILABLE_NOTE
+      : `${noteFor(grounding, anchored, target, 'none') ?? ''} ${ACCESSIBILITY_UNAVAILABLE_NOTE}`.trim();
+  }
   switch (grounding) {
     case 'no-selected-window':
       return 'No window is selected, so the question has no screen anchor.';
@@ -504,6 +546,19 @@ export function renderAnchoredQuestionEnvelope(envelope: QuestionEnvelope): stri
   if (pointer.targetRole !== undefined || pointer.targetLabel !== undefined) {
     lines.push(
       `pointer target: ${[pointer.targetRole, pointer.targetLabel].filter(Boolean).join(' — ')}`,
+    );
+  } else if (anchor?.targetAvailability === 'unavailable') {
+    // system-design §16, "Accessibility denied": continue with visual pointer
+    // coordinates and disclose reduced grounding. Both halves are here. The
+    // first line refuses to imply a target — it names the *permission* as the
+    // reason, which "none reported" would not — and the second tells the model
+    // what it is expected to do with a picture and a point, including that the
+    // user must be told the answer is less certain than usual.
+    lines.push(
+      'pointer target: unavailable — Accessibility is not permitted, so the name and role of the control under the pointer cannot be read.',
+    );
+    lines.push(
+      'reduced grounding: work out what is at the pointer position from the captured window alone, and say in your answer that you could not confirm the control by name.',
     );
   } else if (anchor?.grounding === 'pointer-in-window') {
     lines.push('pointer target: none reported');

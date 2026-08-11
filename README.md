@@ -1489,7 +1489,7 @@ active runs and files on disk.
 | ---: | --- | --- |
 | 1 | Screen Recording revoked mid-session | stopped safely |
 | 2 | …and granted again | recovered, after the user acts |
-| 3 | Accessibility revoked mid-session | stopped safely |
+| 3 | Accessibility revoked mid-session | **kept working, degraded** (system-design §16) |
 | 4 | Screen locked, then unlocked | recovered |
 | 5 | Logout | stopped safely |
 | 6 | Selected window closed | stopped safely |
@@ -1844,10 +1844,11 @@ Three things it does establish, none of which a Mac would make more true:
    `packages/shared/src/geometry.ts` had unit tests and had never been exercised
    by the assembled application.
 
-**It found two things.** A-09 **fails**: losing Accessibility takes Pilot to
+**It found two things.** A-09 **failed**: losing Accessibility took Pilot to
 `needs-permission` rather than the degraded visual mode §16 and A-09 both ask for
 (runbook follow-up 35 — recorded since PR-040, never demonstrated against the
-assembled application until now). And the 1×/2× pairing shows that the pointer
+assembled application until PR-043). **PR-044 fixed it**; see *Degraded grounding*
+below. And the 1×/2× pairing shows that the pointer
 crop covers **640 pt of the window on a standard display and about 533 pt on a
 Retina one**, because `pointerCropPixels` is a constant in *captured* pixels
 while the capture size is not (runbook follow-up 48).
@@ -1858,11 +1859,90 @@ real pipeline (real decode, crop, resize and encode) but on synthetic pixels on
 an idle Linux box; the interruption number is Pilot's half only, up to the pipe,
 because **nothing in this project has ever made a sound**.
 
-**`pnpm acceptance` exits non-zero today, and that is the design.** The exit code
-is 0 only when no criterion has an *executed* check that did not hold; a blocked
-criterion is not a failure, and A-09 is. Read the distribution, not the exit
-code, for how much is left.
+**`pnpm acceptance` exits 0 only when no criterion has an *executed* check that
+did not hold.** A blocked criterion is not a failure; a criterion nobody checked
+is not a pass. It exited non-zero from PR-043 until PR-044 closed A-09, which was
+the design working. Read the distribution, not the exit code, for how much is
+left: today it is **0 verified, 13 verified in part, 2 blocked**, over 51
+pass-condition checks of which 35 execute here.
 
 `docs/handoff.md` §1 step 23 is the other half — the same fifteen criteria and
 the same thirty cases written as a runnable procedure for a Mac with a model
 behind it.
+
+## Degraded grounding when Accessibility is refused (PR-044)
+
+`docs/system-design.md` §16 has one row for Accessibility being denied:
+
+> Continue with visual pointer coordinates and disclose reduced grounding.
+
+Until PR-044 Pilot stopped instead. `REQUIRED_PERMISSIONS` in
+`packages/interaction/src/context.ts` listed all four permissions, so
+`restingState` resolved to `needs-permission` the moment any one of them went
+missing, and losing Accessibility was indistinguishable from losing Screen
+Recording. It is now **Screen Recording alone** — without frames there is no
+product; the other three each have their own, narrower handling.
+
+**What Pilot still has** without Accessibility: the selected window and its
+frames, the pointer's coordinates, and therefore the crop. **What it loses** is
+the *name* of the thing under the pointer — the AX role and label that
+`observe_screen` and the question envelope would otherwise carry.
+
+**What the model is told.** The envelope's target line names the permission
+rather than saying "none reported", because "none reported" is what a pointer
+over blank space looks like:
+
+```text
+pointer: 0.500, 0.500 (window-relative, inside the selected window)
+pointer target: unavailable — Accessibility is not permitted, so the name and
+  role of the control under the pointer cannot be read.
+reduced grounding: work out what is at the pointer position from the captured
+  window alone, and say in your answer that you could not confirm the control
+  by name.
+```
+
+`QuestionAnchor.targetAvailability` gained a third value, `'unavailable'`,
+beside `'reported'` and `'none'`, so the distinction is a typed fact rather than
+a sentence a reader has to parse. It is set **only** from a `denied` or
+`restricted` permission — a permission still being read, or one nobody has been
+asked for, is neither (a tri-state read as a boolean has already cost this
+project one user-visible bug).
+
+**What the user sees.** The Accessibility row turns red and keeps offering
+*Open System Settings* — degraded is not "we stopped asking". Under it, the
+reduced-grounding disclosure the permission onboarding has carried since PR-008.
+Beside the window picker, the observation indicator still reads *Watching this
+window* and adds "Accessibility is not allowed, so it is working from the
+picture alone." If the permission is revoked mid-session the banner says what
+changed rather than announcing a stop:
+
+> Accessibility is no longer allowed. Pilot is still watching and will still
+> answer, but it now works out what you are pointing at from the picture alone.
+> → Allow Accessibility for Pilot in System Settings to get precise answers
+> back — no restart needed.
+
+**Granting it back upgrades the same session.** Nothing is relaunched, no window
+is re-selected: the next question carries the element again.
+
+**Two things a revocation still takes with it.** The accessibility labels
+already retained for question anchoring are dropped — they were read under a
+permission the user has withdrawn — while the frame ring is deliberately kept,
+because it is the degraded mode's remaining grounding. And an element sampled
+*before* the revocation can never reach the model: the envelope refuses to
+summarise it and the anchor refuses to attach it to an `observe_screen` result,
+independently.
+
+**Screen Recording is unchanged.** Revoking it still stops capture, clears the
+buffers under the `permission-loss` retention occasion, and tells the user Pilot
+stopped watching. `pnpm demo:failure` case 1 is that ending and case 3 is this
+one, side by side.
+
+```sh
+pnpm acceptance     # A-09, "Visual mode remains usable with degraded-target notice"
+pnpm demo:failure   # case 3, with the envelope lines above
+```
+
+`docs/handoff.md` §1 step 24 is the half no Linux box can run: a real System
+Settings revocation under a running session, and whether a model given a picture,
+a point and the `reduced grounding:` line answers about the right control **and
+repeats the uncertainty to the user**.

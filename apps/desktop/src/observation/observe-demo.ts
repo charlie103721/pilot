@@ -92,9 +92,10 @@ export async function runObserveDemo(): Promise<ObserveDemoResult> {
   // -------------------------------------------------------------------------
   const rig = await createObservationRig({
     stub: {
-      // All four: `@pilot/interaction`'s `REQUIRED_PERMISSIONS` keeps the
-      // machine in `needs-permission` until every one is granted, and the two
-      // voice permissions are not observation's business but are the machine's.
+      // All four. Only `screen-recording` is in `REQUIRED_PERMISSIONS` since
+      // PR-044 — losing Accessibility degrades rather than stops (§16) — but
+      // this walkthrough is about the *full* observation path, so it grants
+      // everything and leaves the degraded mode to `pnpm demo:failure` case 3.
       permissions: {
         'screen-recording': 'granted',
         accessibility: 'granted',
