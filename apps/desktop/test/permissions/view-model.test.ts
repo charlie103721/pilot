@@ -9,7 +9,9 @@ import {
   FIXTURE_PERMISSIONS_SCREEN_DENIED,
   FIXTURE_PERMISSIONS_UNKNOWN,
 } from '@pilot/platform/fakes';
+import { permissionsSatisfied, REQUIRED_PERMISSIONS } from '@pilot/interaction';
 import type { PermissionGateState } from '../../src/ipc/schemas.js';
+import { PERMISSION_COPY } from '../../src/permissions/catalog.js';
 import {
   buildPermissionOnboardingView,
   permissionsAllowObservation,
@@ -275,5 +277,75 @@ describe('readiness', () => {
       'unknown',
       'restricted',
     ]);
+  });
+});
+
+/**
+ * PR-044 — the two definitions of "Pilot cannot work at all", tied together.
+ *
+ * `PERMISSION_COPY[kind].consequence === 'blocks'` is the desktop catalogue's
+ * answer and drives `permissionsAllowObservation`, which `App.tsx`,
+ * `WindowGate` and the observation surface all read.
+ * `@pilot/interaction`'s `REQUIRED_PERMISSIONS` is the machine's answer and
+ * decides `needs-permission`. They were different sets until PR-044, and the
+ * difference *was* runbook follow-up 35: the panel offered the controls, the
+ * machine refused every command, and nothing said why.
+ */
+describe('the interaction contract and the catalogue agree', () => {
+  it('lists exactly the same blocking permissions', () => {
+    const blocks = PERMISSION_KINDS.filter(
+      (kind) => PERMISSION_COPY[kind].consequence === 'blocks',
+    );
+    expect([...blocks].sort()).toEqual([...REQUIRED_PERMISSIONS].sort());
+  });
+
+  it('never lets the panel allow what the machine would refuse, or the reverse', () => {
+    for (const kind of PERMISSION_KINDS) {
+      const snapshot: PermissionSnapshot = {
+        ...FIXTURE_PERMISSIONS_GRANTED,
+        [kind]: { kind, state: 'denied', canRequest: false },
+      } as PermissionSnapshot;
+      const allowed = permissionsAllowObservation(
+        buildPermissionOnboardingView(gateState({ snapshot })),
+      );
+      const satisfied = permissionsSatisfied(snapshot);
+      expect(allowed, kind).toBe(satisfied);
+    }
+  });
+
+  it('goes on asking for Accessibility while degraded — it is not "we stopped asking"', () => {
+    const view = buildPermissionOnboardingView(
+      gateState({
+        snapshot: FIXTURE_PERMISSIONS_ACCESSIBILITY_DENIED,
+        settings: SETTINGS_AVAILABLE,
+      }),
+    );
+    const row = view.rows.find((entry) => entry.kind === 'accessibility');
+
+    expect(view.readiness).toBe('degraded');
+    // Still on screen, still unsatisfied, and still offering the one control
+    // that can move it forward (PR-008/PR-009).
+    expect(row?.satisfied).toBe(false);
+    expect(row?.action.kind).toBe('open-settings');
+    expect(row?.action.kind === 'open-settings' && row.action.enabled).toBe(true);
+    expect(row?.impact).not.toBe('');
+    expect(view.degrading).toEqual(['accessibility']);
+  });
+
+  it('upgrades to ready the moment Accessibility is granted, with no other change', () => {
+    const degraded = buildPermissionOnboardingView(
+      gateState({ snapshot: FIXTURE_PERMISSIONS_ACCESSIBILITY_DENIED }),
+    );
+    const ready = buildPermissionOnboardingView(
+      gateState({ snapshot: FIXTURE_PERMISSIONS_GRANTED }),
+    );
+
+    expect(degraded.readiness).toBe('degraded');
+    expect(ready.readiness).toBe('ready');
+    expect(ready.groundingDisclosure).toBeNull();
+    // Observation was allowed throughout — nothing had to be restarted for the
+    // disclosure to go away.
+    expect(permissionsAllowObservation(degraded)).toBe(true);
+    expect(permissionsAllowObservation(ready)).toBe(true);
   });
 });

@@ -6,18 +6,21 @@ import {
   asUtteranceId,
   asWindowId,
   buildGroundedPointer,
+  envelopeGroundingReduced,
   envelopePointerInsideWindow,
   envelopePointerKnown,
   normalizedToScreen,
   questionEnvelopeSchema,
   UNKNOWN_SCENE_ID,
   type ObservedWindow,
+  type PermissionState,
   type QuestionEnvelope,
   type SceneState,
 } from '@pilot/shared';
 import {
   FIXTURE_ACCESSIBILITY_NODE,
   FIXTURE_GEOMETRY_RETINA,
+  FIXTURE_PERMISSIONS_GRANTED,
   FIXTURE_SECURE_NODE,
   FIXTURE_WINDOW_RETINA,
   FIXTURE_WINDOW_SECONDARY,
@@ -38,10 +41,12 @@ import {
   RECORDED_UTTERANCES,
   RECORDING_UTTERANCE_ENDED_AT,
   RECORDING_UTTERANCE_STARTED_AT,
+  accessibilityGroundingOf,
   assertNoImageBytes,
   recordPointerPath,
   renderAnchoredQuestionEnvelope,
   type PointerAnchorSample,
+  type PointerTargetGrounding,
   type QuestionEnvelopeFactoryOptions,
   type RecordedUtterance,
 } from '@pilot/interaction';
@@ -58,6 +63,7 @@ const CONVERSATION_ID = asConversationId('conv-envelope-test');
 function build(
   recorded: RecordedUtterance,
   options: Partial<QuestionEnvelopeFactoryOptions> = {},
+  grounding?: PointerTargetGrounding,
 ): QuestionEnvelope {
   const factory = new PilotQuestionEnvelopeFactory({
     anchors: new FakeQuestionAnchorSource({ scene: recorded.scene, samples: recorded.samples }),
@@ -70,6 +76,7 @@ function build(
     selectedWindow: recorded.window,
     utteranceStartedAt: recorded.utteranceStartedAt,
     askedAt: recorded.askedAt,
+    ...(grounding === undefined ? {} : { accessibilityGrounding: grounding }),
   });
 }
 
@@ -508,6 +515,119 @@ describe('rendering for the model', () => {
       pointer: { normalizedX: 0.5, normalizedY: 0.5 },
     });
     expect(renderAnchoredQuestionEnvelope(legacy)).toContain('pointer: 0.500, 0.500');
+  });
+});
+
+/**
+ * PR-044 — system-design §16, "Accessibility denied: continue with visual
+ * pointer coordinates and disclose reduced grounding" (runbook follow-up 35).
+ *
+ * Every case here uses `RECORDED_POINT_AND_ASK`, whose samples *do* carry an
+ * accessibility node. That is the point: the recording is the same one that
+ * produces a fully grounded envelope above, so what changes is Pilot's own
+ * refusal, not the input.
+ */
+describe('degraded grounding when Accessibility is not permitted (§16)', () => {
+  it('refuses to name an element it is no longer allowed to read', () => {
+    const envelope = build(RECORDED_POINT_AND_ASK, {}, 'unavailable');
+    const anchor = anchorOf(envelope);
+
+    // The pointer survives — that is the half §16 asks Pilot to continue with.
+    expect(anchor.grounding).toBe('pointer-in-window');
+    expect(envelopePointerKnown(envelope)).toBe(true);
+    expect(envelopePointerInsideWindow(envelope)).toBe(true);
+
+    // The name does not, even though the sample carries one.
+    expect(RECORDED_POINT_AND_ASK.samples.at(-1)?.pointer.accessibilityTarget).toBeDefined();
+    expect(anchor.target).toBeUndefined();
+    expect(envelope.pointer.targetRole).toBeUndefined();
+    expect(envelope.pointer.targetLabel).toBeUndefined();
+    expect(JSON.stringify(envelope)).not.toContain('AXCheckBox');
+    expect(JSON.stringify(envelope)).not.toContain('Auto Renew');
+  });
+
+  it('distinguishes "could not look" from "looked and found nothing"', () => {
+    const denied = anchorOf(build(RECORDED_POINT_AND_ASK, {}, 'unavailable'));
+    const empty = anchorOf(build(RECORDED_NO_ACCESSIBILITY_TARGET, {}, 'available'));
+
+    expect(denied.targetAvailability).toBe('unavailable');
+    expect(empty.targetAvailability).toBe('none');
+    // A model told "none" may reasonably read the pointer as over blank space.
+    expect(denied.note).toMatch(/Accessibility is not permitted/u);
+    expect(empty.note).toMatch(/No accessibility element/u);
+    expect(envelopeGroundingReduced(build(RECORDED_POINT_AND_ASK, {}, 'unavailable'))).toBe(true);
+    expect(envelopeGroundingReduced(build(RECORDED_NO_ACCESSIBILITY_TARGET, {}, 'available'))).toBe(
+      false,
+    );
+  });
+
+  it('treats "not decided yet" as neither granted nor refused (hazard 22)', () => {
+    // Three tri-state readings, and only one of them is the degraded mode.
+    for (const grounding of ['unknown', 'available'] as const) {
+      const anchor = anchorOf(build(RECORDED_NO_ACCESSIBILITY_TARGET, {}, grounding));
+      expect(anchor.targetAvailability, grounding).toBe('none');
+      expect(anchor.note ?? '', grounding).not.toContain('Accessibility is not permitted');
+    }
+    // Omitted entirely — a caller written before §16's degraded mode existed —
+    // is the same as `unknown`, and the envelope is byte-for-byte what it was.
+    expect(build(RECORDED_POINT_AND_ASK, {}, undefined)).toEqual(
+      build(RECORDED_POINT_AND_ASK, {}, 'unknown'),
+    );
+    expect(build(RECORDED_POINT_AND_ASK, {}, undefined)).toEqual(build(RECORDED_POINT_AND_ASK));
+  });
+
+  it('reads the permission snapshot into a grounding, tri-state intact', () => {
+    const of = (state: PermissionState): PointerTargetGrounding =>
+      accessibilityGroundingOf({
+        ...FIXTURE_PERMISSIONS_GRANTED,
+        accessibility: { kind: 'accessibility', state, canRequest: false },
+      });
+    expect(of('granted')).toBe('available');
+    expect(of('denied')).toBe('unavailable');
+    expect(of('restricted')).toBe('unavailable');
+    // Never asked for, and no snapshot at all: not a refusal.
+    expect(of('unknown')).toBe('unknown');
+    expect(accessibilityGroundingOf(null)).toBe('unknown');
+  });
+
+  it('tells the model the reason, and what to do with a picture and a point', () => {
+    const text = renderAnchoredQuestionEnvelope(build(RECORDED_POINT_AND_ASK, {}, 'unavailable'));
+
+    // The coordinates §16 asks Pilot to continue with, unchanged.
+    expect(text).toMatch(
+      /pointer: 0\.\d+, 0\.\d+ \(window-relative, inside the selected window\)/u,
+    );
+    // The disclosure, naming the permission.
+    expect(text).toContain(
+      'pointer target: unavailable — Accessibility is not permitted, so the name and role of the control under the pointer cannot be read.',
+    );
+    expect(text).toContain(
+      'reduced grounding: work out what is at the pointer position from the captured window alone, and say in your answer that you could not confirm the control by name.',
+    );
+    // And nothing that would imply a target it does not have.
+    expect(text).not.toContain('none reported');
+    expect(text).not.toContain('AXCheckBox');
+    expect(text).not.toContain('Auto Renew');
+    expect(text).not.toContain('-1.000');
+  });
+
+  it('says the permission is the reason even when the pointer was outside the window', () => {
+    const anchor = anchorOf(build(RECORDED_POINTER_OUTSIDE_WINDOW, {}, 'unavailable'));
+    expect(anchor.grounding).toBe('pointer-outside-window');
+    expect(anchor.targetAvailability).toBe('unavailable');
+    // Both facts, in that order: the pointer was elsewhere, *and* nothing could
+    // have been named anyway.
+    expect(anchor.note).toMatch(/not over the selected window/u);
+    expect(anchor.note).toMatch(/Accessibility is not permitted/u);
+  });
+
+  it('still refuses to carry image bytes in the degraded envelope', () => {
+    expect(() =>
+      assertNoImageBytes(build(RECORDED_POINT_AND_ASK, {}, 'unavailable')),
+    ).not.toThrow();
+    expect(() =>
+      questionEnvelopeSchema.parse(build(RECORDED_POINT_AND_ASK, {}, 'unavailable')),
+    ).not.toThrow();
   });
 });
 

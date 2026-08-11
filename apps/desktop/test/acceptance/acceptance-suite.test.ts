@@ -18,9 +18,11 @@ import { VERDICTS } from '../../src/acceptance/verdict.js';
  *  2. **The suite cannot report a green acceptance run.** The headline says so
  *     in words, the distribution is printed before anything else, and the
  *     plan's 90% is named as not computed.
- *  3. **A-09 is reported as `failed`, not as blocked.** It is a real defect
- *     (runbook follow-up 35) and filing it with the missing machines would hide
- *     it.
+ *  3. **A-09 executes every claim §16's Accessibility row makes**, and none of
+ *     them is red. PR-043 pinned this row as `failed` — it was the one real
+ *     defect the suite found (runbook follow-up 35). PR-044 closed it, and the
+ *     assertion that replaces "reported as failed" names the claims rather than
+ *     the verdict, so the row cannot be made to pass by checking less.
  *  4. **Every executed grounding case passes on the input side** — that half is
  *     Pilot's own and there is no excuse for it being red — and the count that
  *     waits on a model is printed as a fraction, not as a score.
@@ -87,13 +89,29 @@ describe('pnpm acceptance', () => {
     // …and none is silently unchecked.
     expect(result.criteria.filter((one) => one.verdict === 'not-implemented')).toHaveLength(0);
 
-    // --- 3. A-09 is a defect, not a blocker --------------------------------
+    // --- 3. A-09 holds, on §16's own two halves ----------------------------
+    // PR-043 pinned this row as `failed` — it was the one real defect the suite
+    // found. PR-044 fixed it, and what replaces that assertion is not "A-09 is
+    // green now" but the *claims* the row must go on executing, so a later
+    // change cannot make it pass by checking less. Both halves of §16's row are
+    // here: continue with visual pointer coordinates, and disclose.
     const a09 = result.criteria.find((one) => one.id === 'A-09');
-    expect(a09?.verdict).toBe('failed');
+    expect(a09?.verdict).toBe('verified-in-part');
+    const a09Executed = (a09?.checks ?? []).filter(
+      (check) => check.state === 'executed' && check.kind === 'pass-condition',
+    );
+    expect(a09Executed.every((check) => check.passed)).toBe(true);
+    const a09Claims = a09Executed.map((check) => check.claim).join('\n');
+    expect(a09Claims).toContain('losing Accessibility mid-session does not stop Pilot');
+    expect(a09Claims).toContain('the model is told the target is unavailable');
+    expect(a09Claims).toContain('the envelope still carries the pointer coordinates');
+    expect(a09Claims).toContain('the user is told');
+    expect(a09Claims).toContain('granting Accessibility again upgrades the same session');
+    // …and it is not closed on a Mac or on a model.
     expect(
-      a09?.checks.find((check) => check.state === 'executed' && !check.passed)?.claim,
-    ).toContain('visual mode remains usable');
-    expect(result.failed).toBe(1);
+      (a09?.checks ?? []).filter((check) => check.state === 'pending').length,
+    ).toBeGreaterThanOrEqual(2);
+    expect(result.failed).toBe(0);
 
     // --- 4. the grounding checklist ----------------------------------------
     expect(result.grounding).toHaveLength(30);

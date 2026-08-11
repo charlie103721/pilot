@@ -900,9 +900,10 @@ ps ax | grep -c "[P]ilot.app"
 #    the Mac is a difference in the PLATFORM, not in the wiring:
 pnpm acceptance
 
-#    Its verdict distribution today is: 0 verified, 12 verified in part, 1
-#    FAILED (A-09 — see (c) below), 2 blocked. 45 pass-condition checks, 30 of
-#    them executed on Linux and 15 waiting on this Mac and a model.
+#    Its verdict distribution today is: 0 verified, 13 verified in part, 0
+#    failed, 2 blocked. 51 pass-condition checks, 35 of them executed on Linux
+#    and 16 waiting on this Mac (10), a real model (5) or both (1). (It reported 1 FAILED until PR-044
+#    closed A-09 — see (c) below and step 24.)
 #
 #    Then the real thing, with the real helper and a real provider. Pick ONE
 #    provider and record which:
@@ -972,15 +973,14 @@ open "$(packaged_app)"
 #    49. Ask the outside-window question three times and say whether the answer
 #    ever talks about the corner.
 #
-#    ## (c) A-09 ALREADY FAILS, AND YOU ARE CHECKING WHETHER IT FAILS THE SAME
+#    ## (c) A-09 USED TO FAIL, AND YOU ARE CHECKING THE FIX ON A REAL TCC
 #
-#    `pnpm acceptance` reports A-09 as **failed**, not blocked: with
-#    Accessibility denied and Screen Recording granted, Pilot goes to
+#    `pnpm acceptance` reported A-09 as **failed** from PR-043 until PR-044:
+#    with Accessibility denied and Screen Recording granted, Pilot went to
 #    `needs-permission` instead of the degraded visual mode system-design §16
-#    and A-09 both describe (runbook follow-up 35). On the Mac, do the real
-#    revocation from step 18 (a) and confirm the same thing happens to a RUNNING
-#    session — and say whether the panel at least explains itself. This is a
-#    known release-blocking defect for PR-044 to decide on, not a surprise.
+#    and A-09 both describe (runbook follow-up 35, now closed). It now reads
+#    `verified-in-part` on Linux. Step 24 is the whole of the Mac-and-model half
+#    of that row and is where the degraded mode gets its first real read.
 #
 #    ## (d) STANDARD AND RETINA — TWO DISPLAYS, OR ONE AND A SETTING
 #
@@ -1017,6 +1017,96 @@ open "$(packaged_app)"
 #    you would give each of A-01…A-15. That last list replaces the Linux
 #    distribution in `pnpm acceptance`'s own output as the record of record.
 
+# 24. PR-044 — DEGRADED GROUNDING WITH ACCESSIBILITY REFUSED, ON A REAL TCC.
+#    system-design §16: "Accessibility denied → continue with visual pointer
+#    coordinates and disclose reduced grounding". Runbook follow-up 35 is closed
+#    and A-09 now reads `verified-in-part` on Linux, but every permission state
+#    in that run came from the Node stub advancing a scripted snapshot, and
+#    `AXUIElementCopyElementAtPosition` HAS NEVER BEEN CALLED. Two of A-09's
+#    pass conditions are still pending and this step is both of them.
+#
+#    Do it in the packaged app, where TCC can plausibly attribute anything to
+#    Pilot at all. `packaged_app()`/`packaged_helper()` are defined at the top of
+#    this section; do NOT hardcode `mac-arm64` (an Intel Mac produces `mac-x64`).
+open "$(packaged_app)"
+#    …and keep a debug log if you want the anchor lines:
+PILOT_LOG_LEVEL=debug open "$(packaged_app)"
+
+#    ## (a) THE REVOCATION, ON A RUNNING SESSION
+#
+#    Grant everything, select a window, ask one question and get an answer that
+#    NAMES the control (the envelope line will read `pointer target: AXButton —
+#    …`). Then, WITHOUT quitting Pilot:
+#      System Settings → Privacy & Security → Accessibility → turn Pilot OFF.
+#    macOS may offer to quit and reopen Pilot. DECLINE IT — the whole point is
+#    what happens to a session that keeps running. If macOS force-quits Pilot
+#    anyway, SAY SO: that would make the degraded mode unreachable in practice on
+#    this OS version, which is a finding, not a failure of the fix.
+#
+#    Expect, and record each one as YES/NO:
+#      · Pilot KEEPS WATCHING. The observation indicator still reads "Watching
+#        this window", the selected window is unchanged, and no "Pilot stopped
+#        watching, choose another window" prompt appears.
+#      · The banner says what changed rather than announcing a stop:
+#        "Accessibility is no longer allowed. Pilot is still watching and will
+#        still answer, but it now works out what you are pointing at from the
+#        picture alone."
+#      · The permission row for Accessibility turns red, still offers "Open
+#        System Settings", and the reduced-grounding disclosure appears under it.
+#      · The observation surface adds "Accessibility is not allowed, so it is
+#        working from the picture alone."
+#
+#    ## (b) WHAT THE MODEL IS TOLD — the half a screenshot cannot show
+#
+#    Ask the SAME question again over the SAME control. In the debug log (or the
+#    diagnostics panel) find the rendered envelope and confirm it contains, on
+#    its own lines:
+#
+#      pointer: 0.NNN, 0.NNN (window-relative, inside the selected window)
+#      pointer target: unavailable — Accessibility is not permitted, so the name
+#        and role of the control under the pointer cannot be read.
+#      reduced grounding: work out what is at the pointer position from the
+#        captured window alone, and say in your answer that you could not
+#        confirm the control by name.
+#
+#    And confirm what must NOT be there: no `pointer target: AXButton`, no
+#    control label, and no `none reported` (that phrase means "the hit test found
+#    nothing", which is what an empty region looks like). A label leaking here
+#    would be Pilot reading the screen under a permission the user has withdrawn.
+#
+#    ## (c) THE ANSWER — the only question a model can settle
+#
+#    THIS IS THE POINT OF THE STEP. Ask five questions in the degraded mode over
+#    five different kinds of target (a button, a checkbox, a text field, a menu
+#    item, an icon with no label). For each one record:
+#      1. did the answer describe the RIGHT control, from the picture alone?
+#      2. did the answer SAY that it could not confirm the control by name?
+#    (2) is the disclosure §16 asks for actually reaching the user, and nothing
+#    in this repository has ever observed it: every reply in `pnpm acceptance` is
+#    a scripted string. If the model ignores the `reduced grounding:` line, the
+#    fix is prompt wording in `renderAnchoredQuestionEnvelope` and this step is
+#    where that is discovered. Paste the five answers back verbatim.
+#
+#    ## (d) THE UPGRADE, WITHOUT A RELAUNCH
+#
+#    Turn Accessibility back ON in System Settings and come straight back to the
+#    same running Pilot. Without quitting, re-selecting the window or pressing
+#    anything, ask the same question once more.
+#      · The next answer must name the control again, and the envelope must go
+#        back to `pointer target: AXButton — …`.
+#      · The permission row goes green and the disclosure disappears.
+#      · Note HOW LONG it takes. Pilot re-reads permissions on a poll and on
+#        every panel open; if the upgrade needs a panel open to happen, say so —
+#        it is defensible, but it is not what the Linux tests assert.
+#
+#    ## (e) THE ONE THING THAT WOULD BE A REGRESSION
+#
+#    Repeat (a) with SCREEN RECORDING instead. That one MUST still stop
+#    everything: capture stops, the buffers clear under the `permission-loss`
+#    retention occasion, and the panel says Pilot stopped watching (step 18 (a)
+#    is the same read). If Screen Recording revocation now degrades instead of
+#    stopping, PR-044 narrowed too far and that is the most important sentence
+#    you could send back.
 # 25. THE MODEL ROW — READ THE FIRST THING THE PANEL SAYS, ON A REAL FIRST
 #    LAUNCH (runbook follow-ups 46 and 33, hazard 28). Two minutes, no
 #    microphone, no money, and it is the only step in this section that checks
@@ -1829,13 +1919,15 @@ Four things, in decreasing order of what they would cost if wrong:
    described as if it were the screen is the worst outcome in the whole matrix,
    because it is the one the user cannot detect.
 
-One thing this step does **not** check, and it is deliberate: system-design §16
-asks for Accessibility loss to be a *degraded* mode ("continue with visual
-pointer coordinates and disclose reduced grounding"), and the shipped machine
-stops instead, because `REQUIRED_PERMISSIONS` lists all four permissions. That
-is a safe, visible, explained ending — but it is not §16's row, and PR-040 did
-not change it because the required-permission set is an interaction contract
-several PRs rest on. It is recorded as runbook follow-up 32.
+One thing this step does **not** check, and it has moved rather than gone away:
+system-design §16 asks for Accessibility loss to be a *degraded* mode ("continue
+with visual pointer coordinates and disclose reduced grounding"). PR-040 left the
+machine stopping instead, because `REQUIRED_PERMISSIONS` listed all four
+permissions and the required set is an interaction contract several PRs rest on.
+**PR-044 closed that** (runbook follow-up 35): Accessibility loss now keeps Pilot
+watching, and step 24 is the whole of the Mac-and-model read of the degraded
+mode. Step 18 (a) remains the *Screen Recording* revocation, which must still
+stop everything.
 
 ### What to look for in step 20 (PR-038)
 
@@ -2169,8 +2261,8 @@ Recorded so they are not discovered at release time.
 | The packaged app cannot be pointed at a real provider from its own UI | Provider selection is by environment variable, and Finder supplies none. PR-042 added a launch environment file (`~/Library/Application Support/Pilot/pilot.env`) so a double-clicked Pilot can be configured without a terminal, but there is still no model picker in the panel and nothing on screen says which provider is in use. Runbook follow-ups 33, 39, 40 and 46. | PR-044 |
 | No CI | User decision. The five local commands in `docs/runbook.md` §6 are the only gate, run before every merge. | — |
 | Grounding metric is a manual checklist | User decision — real apps rather than a purpose-built test app. ~30 cases, ≥90% required. **PR-043 built the checklist and executed all thirty, but only the input side.** `pnpm acceptance` §3 pins, per case, the anchor's normalised point, the accessibility target retained or refused, the crop rectangle and whether the thing under the pointer is inside it, and the rendered envelope. The 90% is about *answers* and no answer has ever been scored: 23 of the 30 cases report their verdict as pending a model. §1 step 23 (a) is the procedure, and the fraction it produces is the number this row is about. | §1 step 23 |
-| A-09 does not hold: losing Accessibility stops Pilot instead of degrading it | system-design §16 asks for "continue with visual pointer coordinates and disclose reduced grounding"; `REQUIRED_PERMISSIONS` lists all four permissions, so losing any one resolves to `needs-permission`. Recorded as runbook follow-up 35 since PR-040 and **demonstrated against the assembled application by PR-043**, which reports A-09 as `failed` rather than blocked so it cannot be filed with the missing machines. | PR-044 |
-| No acceptance criterion is fully verified | 0 of 15 `verified`, 12 `verified-in-part`, 1 `failed`, 2 `blocked`; 45 pass-condition checks, 30 executed on Linux and 15 waiting on a Mac (10), a real model (4) or both (1). This is the honest state of §19's gate and it is re-derivable at any time with `pnpm acceptance`. | §1 step 23 |
+| A-09's degraded mode has never met a real TCC or a real model | **The defect is fixed** (PR-044, runbook follow-up 35 closed): `REQUIRED_PERMISSIONS` is Screen Recording alone, the envelope reads `pointer target: unavailable` with the reason, and A-09 reads `verified-in-part`. What is left is the two pass conditions that cannot run here — a real System Settings revocation under a running session, and whether a model given a picture, a point and a `reduced grounding:` instruction answers about the right control **and repeats the uncertainty to the user**. Every reply in `pnpm acceptance` is a scripted string. | §1 step 24 |
+| No acceptance criterion is fully verified | 0 of 15 `verified`, 13 `verified-in-part`, 0 `failed`, 2 `blocked`; 51 pass-condition checks, 35 executed on Linux and 16 waiting on a Mac (10), a real model (5) or both (1). It read 1 `failed` until PR-044 closed A-09. This is the honest state of §19's gate and it is re-derivable at any time with `pnpm acceptance`. | §1 step 23, §1 step 24 |
 
 ---
 
@@ -2183,7 +2275,7 @@ reversible; raise any that look wrong.
 | --- | --- |
 | **The acceptance evidence is an executable harness, not two checked-in markdown files** (PR-043) | `docs/runbook.md` §6 promised `docs/acceptance.md` (an A-01…A-15 run log) and `docs/grounding-checklist.md` (~30 cases). Both were written instead as `pnpm acceptance` over `apps/desktop/src/acceptance/`. A checked-in run log is stale the day after it is written, cannot be re-derived, and — the reason that matters here — is exactly the artefact that lets a criterion nobody checked read as passing. The harness derives every verdict from checks that ran and refuses to construct a claim with no evidence beside it. The run log *is* its output; the checklist *is* `grounding-cases.ts`. Reversible in an afternoon if a static file is wanted for the release tag. |
 | **The plan's "≥90% grounding accuracy" is reported as not computed rather than computed against a fake** (PR-043) | `docs/implementation.md`'s PR-043 line asks for it and §19 makes it a release gate. Every provider in this repository is a recorded fake or Pi's faux provider, so the answer a case would be scored on is the answer this repository scripted; a percentage over that measures the script and would be the single most misleading number the project could publish. The thirty cases were built and executed anyway, against the half that *is* real — Pilot's input to the model — and 23 of the 30 report their verdict as pending. §1 step 23 (a) is where the real fraction comes from. |
-| **A-09 is reported `failed` rather than `blocked-on-mac`** (PR-043) | Accessibility denied takes Pilot to `needs-permission` instead of system-design §16's degraded visual mode, and that is decidable here — the permission states, the resting state and the observation conditions are all readable without a Mac. Filing it with the blocked rows would have hidden a known release-blocking defect (runbook follow-up 35) among the rows that are merely waiting for a machine. The consequence is that `pnpm acceptance` exits non-zero, on purpose. |
+| **A-09 is reported `failed` rather than `blocked-on-mac`** (PR-043; **the defect it named is fixed by PR-044**) | Accessibility denied took Pilot to `needs-permission` instead of system-design §16's degraded visual mode, and that was decidable here — the permission states, the resting state and the observation conditions are all readable without a Mac. Filing it with the blocked rows would have hidden a known release-blocking defect (runbook follow-up 35) among the rows that are merely waiting for a machine, and `pnpm acceptance` exited non-zero on purpose. It now exits 0. **PR-044 did not weaken the check to get there** — it widened it, because §16's row has two halves and PR-043's version read only the first: A-09 now drives the revocation into a watching Pilot, reads the rendered envelope the model was given and the two view models the user is shown, then grants the permission back and reads the next envelope. Six pass conditions execute where one did; two are still pending. |
 | **Follow-ups 48 and 49 were recorded, not fixed** (PR-043) | The 1×/2× pairing showed the pointer crop covers a different amount of window at each scale, and that a pointer outside the selected window still yields a crop of the nearest corner. Both are §10 *policy* questions rather than defects, both need a real model to settle, and changing the shipped crop behaviour inside an acceptance PR would have moved every earlier walkthrough's recorded byte counts for a reason unrelated to acceptance. |
 | **PR-022 split into 022a/022b** | The PR-005 spike found compaction far larger than planned: Pi has no orchestrator, `AgentHarness.compact` is a stub, and the primitives operate on session `Entry[]` rather than the `AgentMessage[]` the agent holds. Pruning (022a) is nearly done; compaction (022b) is close to a full PR on its own. |
 | **PR-007 sequenced after PR-002** | Both own root config and `apps/desktop`. Running them in parallel worktrees guaranteed a conflict in exactly the files PR-007 restructures. Cost: nothing on the critical path. |
@@ -2198,7 +2290,7 @@ reversible; raise any that look wrong.
 | **Compaction summaries are extractive, not model-generated** (PR-022b) | §11 requires a summary to preserve goals, decisions, named UI elements, unresolved questions and safety-relevant facts, and to never claim an old screen description is current. Pi's `compact()` would ask the model to do that — a live provider call, a token cost per compaction, and a requirement a generative summariser can violate silently. Pilot's summariser instead quotes and derives every line from the transcript, so it cannot invent a screen it never saw, it is free, and the truthfulness bar is asserted by test rather than hoped for. The trade is richness: an extractive summary of a very long conversation is a list, not prose. `buildCompactionSummary` is a pure function of a typed input, so swapping in a model-backed one later is contained — **say if you would rather pay for generated summaries.** |
 | **A failure of the watching never aborts an answer** (PR-040) | The interaction table's `failure` row runs `teardown()`, which aborts the run in flight. A capture stream that dies, a window that turns out to block capture, or a helper that crashes while the model is still writing would therefore have cost the user the reply as well as the screen. `main/lifecycle-runtime.ts` reports those to the §16 notice at once and queues the banner and the observation switch-off until the turn ends. The trade: for a few seconds the panel shows an answer arriving while the picker says Pilot has stopped watching. That is true, and the alternative was losing the answer. |
 | **Retry says no by default** (PR-040) | Pilot retries a failed observation exactly once, and only while the scene lineage and revision are the ones the request was made against. Everything else — a changed screen, a second failure, a failure the taxonomy calls final — becomes "ask again" with a sentence saying why. A retry that succeeds against a screen the user has moved past is a confident wrong answer, which is worse than the failure it replaced. **Say if you would rather Pilot retried harder**; the budget is one argument. |
-| **Accessibility loss stops Pilot rather than degrading it** (PR-040, unchanged) | system-design §16 asks for a degraded mode; `REQUIRED_PERMISSIONS` in `@pilot/interaction` makes every one of the four permissions required, so losing Accessibility reaches `needs-permission` exactly as losing Screen Recording does. Safe and explained, but not what §16 says. Left alone deliberately — the required set is an interaction contract that PR-006, PR-008, PR-009 and PR-028 all read — and recorded as runbook follow-up 32. |
+| ~~**Accessibility loss stops Pilot rather than degrading it**~~ (PR-040; **reversed by PR-044**) | PR-040 left it alone deliberately: `REQUIRED_PERMISSIONS` made all four permissions required, so losing Accessibility reached `needs-permission` exactly as losing Screen Recording did — safe and explained, but not §16's row — and the required set is an interaction contract PR-006, PR-008, PR-009 and PR-028 all read. PR-044 narrowed it to `screen-recording` alone and re-checked those callers: `permissionsAllowObservation` had always treated Accessibility as `degrades`, so the panel, the window gate and the observation surface needed no change; the machine was the one disagreeing with them. A test now asserts the catalogue's `blocks` set and `REQUIRED_PERMISSIONS` are the same set, so they cannot drift again. |
 | **Compaction is on by default** (PR-022b) | §11 makes it a requirement, and a compactor nobody switches on is dead code. It is a no-op until a conversation is longer than the retained tail, so short sessions behave exactly as before; `compaction: { enabled: false }` turns it off entirely. |
 | **The retained tail wins over the triggers** (PR-022b) | §11 asks for compaction "when any condition is met" *and* for the "last 6–10 text turns" in active context. Four observations can land inside six turns, so early in a conversation the two disagree. The tail wins and the outcome is reported as `nothing-to-compact` — compaction that discarded a turn the user is still talking about would be the worse failure. |
 | **A compaction summary is a plain `user` message** (PR-022b) | Pi has a `compactionSummary` message type, but `Agent`'s default `convertToLlm` filters it out, so using it would have meant the model silently losing the history (`docs/pi-notes.md` §8). Pilot's summary is a `user` message whose first line says "Pilot's own record … not something the user said", so the framing does the work the message type would have. |
@@ -2340,6 +2432,7 @@ reversible; raise any that look wrong.
 | Phase 5 — hardening and release (040…044) | Not started. |
 | Phase 5 — hardening and release (040…044) | In progress. **PR-042 is merged: the macOS application is packaged, and the honest half of that sentence is that none of the macOS part has ever run.** What is verified on Linux: `pnpm package` produces a bundle whose asar is opened and checked eleven ways (entry points, `main` resolution, no `node_modules`, no external imports, no executable inside the archive, the CSP byte for byte, no `crossorigin`, a size budget against hazard 24, the helper as a real file that matches its manifest); the helper resolves in all three layouts, `pnpm dev` included, which it did not before; the signing hook runs on every build and declines by name; and **the packaged app starts from an empty, `launchd`-like environment** (`pnpm smoke:launch`), keeps its menu bar item, reads a launch environment file and refuses a credential written into it without printing it. What is configured and unverified: the entitlements (app and helper), the hardened runtime, the ad-hoc `codesign` invocation, the TCC usage strings, `LSMinimumSystemVersion`, `NSSupportsSuddenTermination`, the helper's embedded `Info.plist` and the `zip` target. **No `.app` has ever been produced, signed, installed or launched, and the Swift helper has still never been compiled** (§1 step 22, §1a). The finding that mattered: a Finder launch reaches the **faux** provider, because every provider selector is an environment variable — the launch file is the fix, and nothing on screen still says which model is in use (follow-up 46). |
 | Phase 5 — hardening and release (040…044) | In progress. **PR-043 is merged: the acceptance matrix is now a re-runnable harness rather than a paragraph, and it reports that the gate is not met.** `pnpm acceptance` walks A-01…A-15 with a scenario per criterion — a pause, an Accessibility revocation, a Screen Recording revocation, a relaunch over a real SQLite store, a non-vision model, a twelve-turn conversation, an interruption — and derives one verdict per row from the checks that actually ran: **0 verified, 12 verified in part, 1 failed, 2 blocked**, over 45 pass-condition checks of which 30 executed here and 15 wait on a Mac or a model. The rule the PR exists for is that a criterion with no executed pass-condition check *cannot* report as passing — `not-implemented` if nothing checks it, `blocked-on-…` however much supporting evidence is green — and it is pinned by its own unit test. Thirty curated grounding cases run at **both 1× and 2×**, the first time the assembled application has run at anything but 2×, and pin what Pilot SENDS: the anchor's normalised point against the geometry module's arithmetic, the element retained or refused, the crop rectangle, whether the thing under the pointer is inside the picture the model receives, and the envelope verbatim. **The plan's 90% grounding accuracy is not computed and cannot be** — 23 of the 30 report their verdict as pending a model, which is the whole of that metric. It found two things: **A-09 fails** (losing Accessibility stops Pilot instead of degrading it — follow-up 35, now demonstrated rather than merely recorded), and the pointer crop covers ~640 pt of window at 1× but ~533 pt at 2× because `pointerCropPixels` is a constant in captured pixels (follow-up 48). §1 step 23 is the Mac-and-model half, written as a runnable procedure. |
+| Phase 5 — hardening and release (040…044) | In progress. **PR-044's degraded-grounding lane is merged: the one acceptance criterion that was `failed` is fixed, and `pnpm acceptance` exits 0.** Losing Accessibility no longer stops Pilot. `REQUIRED_PERMISSIONS` is Screen Recording alone, so the interaction machine finally agrees with the permission catalogue it had been contradicting since PR-008 — the panel offered the controls, the table refused every command, and nothing said why. The model is told what it does not have rather than being left to infer it: `QuestionAnchor.targetAvailability` gains `'unavailable'` (the one `packages/` contract change) and the envelope reads `pointer target: unavailable — Accessibility is not permitted, …` with an instruction to work from the picture and to say so. Elements sampled before a revocation are dropped, and refused twice more on the way out. The user gets the disclosure that already existed plus a banner that says what got less reliable instead of announcing a stop, and granting the permission back upgrades the same session. A-09 was **widened, not weakened** — six pass conditions execute where one did. **Two of them still cannot run here**: no TCC has ever revoked anything under a running session, and no model has ever been given a picture, a point and a `reduced grounding:` line (§1 step 24). |
 
 Last full regression on `main` (after PR-017 and PR-022a): 997 tests across 66
 files, and **all twelve demos executed green** — observation, scene, policy,

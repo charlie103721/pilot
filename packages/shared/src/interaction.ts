@@ -81,6 +81,28 @@ export const questionAnchorTargetSchema = z.strictObject({
 export type QuestionAnchorTarget = z.infer<typeof questionAnchorTargetSchema>;
 
 /**
+ * Whether the envelope carries an accessibility target, and when it does not,
+ * **why not** (PR-044; system-design §16, "Accessibility denied").
+ *
+ * The distinction is the whole of §16's degraded mode. `none` means the hit
+ * test could have named the control and did not — an empty region, a view with
+ * no accessible element. `unavailable` means no hit test was possible at all
+ * because Accessibility is not permitted, so *nothing anywhere on the screen*
+ * can be named this session. A model told `none` may reasonably conclude the
+ * pointer is over blank space; a model told `unavailable` knows the picture and
+ * the pointer coordinates are the only grounding it has, which is exactly what
+ * §16 means by "continue with visual pointer coordinates and disclose reduced
+ * grounding".
+ *
+ * `unavailable` is never inferred from an absent target: it is set only when
+ * the permission snapshot says `denied` or `restricted`. A permission still
+ * being read, or never asked for, is neither (runbook hazard 22).
+ */
+export const QUESTION_TARGET_AVAILABILITIES = ['reported', 'none', 'unavailable'] as const;
+
+export type QuestionTargetAvailability = (typeof QUESTION_TARGET_AVAILABILITIES)[number];
+
+/**
  * Anchoring metadata (system-design §6), attached to a question envelope.
  *
  * Optional so envelopes built before PR-024 still validate. Text and numbers
@@ -108,7 +130,7 @@ export const questionAnchorSchema = z.strictObject({
   /** Present only when the platform reported an element under the pointer. */
   target: questionAnchorTargetSchema.optional(),
   /** Explicit: an absent `target` is a fact, not an omission. */
-  targetAvailability: z.enum(['reported', 'none']),
+  targetAvailability: z.enum(QUESTION_TARGET_AVAILABILITIES),
   /** Short, human-readable reason the grounding is what it is. */
   note: z.string().optional(),
 });
@@ -168,4 +190,16 @@ export function envelopePointerKnown(envelope: QuestionEnvelope): boolean {
     envelope.anchor.grounding === 'pointer-in-window' ||
     envelope.anchor.grounding === 'pointer-outside-window'
   );
+}
+
+/**
+ * True when this question was asked with §16's reduced grounding: a picture and
+ * a point, and no way to name what is under the point (PR-044).
+ *
+ * Read off `targetAvailability` rather than off a permission snapshot, so every
+ * consumer of an envelope — the renderer, a log line, a test — gets the same
+ * answer as the model did, from the same field.
+ */
+export function envelopeGroundingReduced(envelope: QuestionEnvelope): boolean {
+  return envelope.anchor?.targetAvailability === 'unavailable';
 }

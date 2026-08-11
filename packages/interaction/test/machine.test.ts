@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { InteractionState } from '@pilot/shared';
+import type { InteractionState, PermissionSnapshot } from '@pilot/shared';
 import type {
   InteractionEffectType,
   InteractionInput,
@@ -290,6 +290,52 @@ describe('cancellation and suspension', () => {
 
     const restored = harness.machine.send({ type: 'permissions-changed', permissions: GRANTED });
     expect(accepted(restored).to).toBe('idle');
+  });
+
+  /**
+   * PR-044, system-design §16 (runbook follow-up 35). Losing Accessibility used
+   * to be indistinguishable from losing Screen Recording, because
+   * `REQUIRED_PERMISSIONS` listed all four. It is now the one revocation the
+   * machine does *not* treat as a stop.
+   */
+  it('losing Accessibility mid-answer costs neither the run nor the capture', () => {
+    const harness = driveTo('thinking');
+    const denied: PermissionSnapshot = {
+      ...GRANTED,
+      accessibility: { kind: 'accessibility', state: 'denied', canRequest: false },
+    };
+    const outcome = harness.machine.send({ type: 'permissions-changed', permissions: denied });
+
+    // No teardown, no stop-capture, no clear-buffers — nothing at all.
+    expect(effectTypes(outcome)).toEqual([]);
+    expect(accepted(outcome).to).toBe('thinking');
+    expect(harness.machine.context.observationEnabled).toBe(true);
+    expect(harness.machine.context.selectedWindow).not.toBeNull();
+    // …and the new snapshot is recorded, because the envelope reads it.
+    expect(harness.machine.context.permissions).toEqual(denied);
+  });
+
+  it('accepts Accessibility back mid-session, with nothing to relaunch', () => {
+    const harness = driveTo('observing');
+    const denied: PermissionSnapshot = {
+      ...GRANTED,
+      accessibility: { kind: 'accessibility', state: 'denied', canRequest: false },
+    };
+    const window = harness.machine.context.selectedWindow;
+
+    expect(
+      accepted(harness.machine.send({ type: 'permissions-changed', permissions: denied })).to,
+    ).toBe('observing');
+    const regranted = harness.machine.send({ type: 'permissions-changed', permissions: GRANTED });
+
+    // Back to full grounding without a re-selection, a restart, or a
+    // `start-capture` — the session never stopped, so there is nothing to redo.
+    expect(accepted(regranted).to).toBe('observing');
+    expect(effectTypes(regranted)).toEqual([]);
+    expect(harness.machine.context.selectedWindow).toEqual(window);
+    expect(harness.machine.context.permissions).toEqual(GRANTED);
+    // And a spoken question is still offered: nothing was blocked on the way.
+    expect(harness.machine.send({ type: 'push-to-talk-down' }).kind).toBe('accepted');
   });
 
   it('clearing the conversation starts a new conversation id and empties the transcript', () => {

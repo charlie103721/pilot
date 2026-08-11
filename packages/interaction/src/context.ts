@@ -77,15 +77,83 @@ export interface InteractionContext {
 }
 
 /**
- * Permissions the MVP flow needs before it will leave `needs-permission`
- * (mvp-01 §3). Overridable so a text-only harness can require fewer.
+ * Permissions that must be granted before the machine will leave
+ * `needs-permission`. Overridable so a harness can require more or fewer.
+ *
+ * **Screen Recording only, since PR-044** (runbook follow-up 35). Until then
+ * this listed all four kinds, which made `needs-permission` mean "any of the
+ * four is missing" and put Pilot into a hard stop the moment Accessibility was
+ * refused. `docs/system-design.md` §16 asks for the opposite:
+ *
+ * > | Accessibility denied | Continue with visual pointer coordinates and
+ * >   disclose reduced grounding |
+ *
+ * The three narrower kinds each have their own, already-correct handling and
+ * none of them is a reason to stop:
+ *
+ *  - **Accessibility** — degrades. Pilot keeps the selected window, its frames,
+ *    the pointer coordinates and therefore the crop; what it loses is the name
+ *    of the control under the pointer. {@link accessibilityGroundingOf} turns
+ *    that into the envelope's `targetAvailability: 'unavailable'`, so the model
+ *    is told what it does not have, and the desktop catalogue's `degrades`
+ *    consequence is what puts the disclosure in front of the user.
+ *  - **Microphone / Speech Recognition** — limit. They close the *spoken* path
+ *    only; a typed question is answered exactly as well. The speech adapter
+ *    refuses to open a microphone it has no permission for and raises a typed
+ *    error, which §16's "STT fails → offer text input" row already covers, and
+ *    `hotkeyBlockingPermission` names the missing grant on the push-to-talk
+ *    control.
+ *
+ * This is the single definition of "Pilot cannot work at all", and it now
+ * agrees with the desktop permission catalogue, where `screen-recording` is the
+ * one kind whose consequence is `blocks`.
  */
-export const REQUIRED_PERMISSIONS: readonly PermissionKind[] = [
+export const REQUIRED_PERMISSIONS: readonly PermissionKind[] = ['screen-recording'];
+
+/**
+ * Every permission the full MVP flow uses, in onboarding order (mvp-01 §3).
+ *
+ * Kept as a named list because PR-008/PR-009's onboarding must go on asking for
+ * all four — degraded must not become "we stopped asking" — while only
+ * {@link REQUIRED_PERMISSIONS} decides whether the machine can run.
+ */
+export const ALL_PERMISSIONS: readonly PermissionKind[] = [
   'screen-recording',
   'accessibility',
   'microphone',
   'speech-recognition',
 ];
+
+/**
+ * Whether the pointer's *target* can be named this session (PR-044).
+ *
+ *  - `available`   — Accessibility is granted; a hit test may name the control.
+ *  - `unavailable` — refused or withheld by policy. No element can be named,
+ *    anywhere, until the user changes it. §16's degraded mode.
+ *  - `unknown`     — nothing has been decided: no snapshot yet, or a permission
+ *    nobody has been asked for. **Not** `unavailable`: runbook hazard 22 is the
+ *    record of what happens when a tri-state is read as a boolean here, and
+ *    telling a model "Accessibility is not permitted" while Pilot is still
+ *    asking macOS would be exactly that bug in the envelope.
+ */
+export type PointerTargetGrounding = 'available' | 'unavailable' | 'unknown';
+
+export function accessibilityGroundingOf(
+  permissions: PermissionSnapshot | null,
+): PointerTargetGrounding {
+  if (permissions === null) {
+    return 'unknown';
+  }
+  switch (permissions.accessibility.state) {
+    case 'granted':
+      return 'available';
+    case 'denied':
+    case 'restricted':
+      return 'unavailable';
+    case 'unknown':
+      return 'unknown';
+  }
+}
 
 export function permissionsSatisfied(
   permissions: PermissionSnapshot | null,

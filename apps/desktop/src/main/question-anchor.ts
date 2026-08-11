@@ -390,9 +390,20 @@ export function createQuestionAnchorRuntime(
     // Defence 4. Outside the selected window, whatever is under the pointer
     // belongs to a window Pilot is not observing: no element is looked up, and
     // the log holds none to look up.
-    const target = anchor.insideWindow
-      ? options.targets.at(anchor.at, anchor.scene.windowId)
-      : null;
+    //
+    // Defence 5 (PR-044, system-design §16). Accessibility refused means *no*
+    // element may be named, wherever the pointer is. The log can still hold one
+    // — it was sampled while the permission was granted, and a mid-session
+    // revocation does not reach back into the ring — so a lookup that only
+    // checked `insideWindow` would hand `screenContextAnchor` an element read
+    // under a permission the user has since taken away, and the crop the model
+    // receives would arrive labelled with it. The envelope enforces the same
+    // rule independently; this is the half that keeps it out of the *tool
+    // result*.
+    const target =
+      anchor.insideWindow && request.accessibilityGrounding !== 'unavailable'
+        ? options.targets.at(anchor.at, anchor.scene.windowId)
+        : null;
 
     const screenAnchor = screenContextAnchor(anchor, target ?? undefined);
     options.inputs.setAnchor(screenAnchor);

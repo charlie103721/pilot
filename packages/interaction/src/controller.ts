@@ -22,7 +22,7 @@ import type {
   SpeechOutputAdapter,
   Unsubscribe,
 } from '@pilot/platform';
-import type { InteractionContext } from './context.js';
+import { accessibilityGroundingOf, type InteractionContext } from './context.js';
 import type { InteractionEffect, InteractionEffectType } from './effects.js';
 import type { InteractionInput } from './inputs.js';
 import { InteractionMachine, type Clock, type TransitionOutcome } from './machine.js';
@@ -697,6 +697,13 @@ export class PilotInteractionController implements InteractionController {
             // to whenever the queue drained instead of to the utterance.
             utteranceStartedAt: effect.utteranceStartedAt,
             askedAt: effect.askedAt,
+            // system-design §16. Read here, off the machine's own snapshot,
+            // because this is the one place that knows both the permissions and
+            // the question: the envelope factory reads no permission itself,
+            // exactly as it reads no clock. A snapshot that has not arrived, or
+            // a permission nobody has been asked for, is `'unknown'` — not
+            // `'unavailable'` (runbook hazard 22).
+            accessibilityGrounding: accessibilityGroundingOf(this.#machine.context.permissions),
           });
           if (abort.signal.aborted) {
             return;

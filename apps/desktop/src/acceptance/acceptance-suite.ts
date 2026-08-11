@@ -537,9 +537,13 @@ export async function runAcceptanceSuite(): Promise<AcceptanceResult> {
       'is not a window server, a recogniser or a speaker.',
     ],
     [
-      'A-09 FAILS, AND IT IS A REAL DEFECT RATHER THAN A MISSING MACHINE. Losing',
-      'Accessibility stops Pilot instead of degrading it (runbook follow-up 35). It is',
-      'reported as `failed` above precisely so it cannot be filed with the blockers.',
+      'A-09’S DEGRADED MODE IS A CONTRACT, NOT AN ANSWER. PR-044 closed runbook',
+      'follow-up 35: losing Accessibility now leaves Pilot watching, and the envelope',
+      'says “pointer target: unavailable” with the reason instead of “none reported”.',
+      'What is checked above is what Pilot SENDS and what the panel SHOWS. Whether a',
+      'model, given a picture and a point and told its grounding is reduced, answers',
+      'about the right control and repeats the uncertainty is untested — the same gap',
+      'as every other row here.',
     ],
   ]) {
     say(`   - ${String(head)}`);

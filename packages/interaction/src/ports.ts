@@ -8,6 +8,7 @@ import type {
   UtteranceId,
   WindowId,
 } from '@pilot/shared';
+import type { PointerTargetGrounding } from './context.js';
 
 /**
  * Boundaries PR-006 deliberately does not implement.
@@ -32,6 +33,15 @@ export interface QuestionEnvelopeRequest {
    * grounding point is the pointer location at utterance end").
    */
   readonly askedAt: number;
+  /**
+   * Whether the control under the pointer can be named at all (PR-044).
+   *
+   * Optional, and `'unknown'` when omitted, so a caller written before §16's
+   * degraded mode existed keeps its exact previous behaviour. The controller
+   * fills it in from the machine's own permission snapshot — the envelope never
+   * reads a permission itself, exactly as it never reads a clock.
+   */
+  readonly accessibilityGrounding?: PointerTargetGrounding;
 }
 
 /** PR-024 implements this; `FakeQuestionEnvelopeFactory` stands in for tests. */

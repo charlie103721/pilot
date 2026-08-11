@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   FakeWindowAdapter,
   FIXTURE_PERMISSIONS_GRANTED,
+  FIXTURE_PERMISSIONS_ACCESSIBILITY_DENIED,
   FIXTURE_PERMISSIONS_SCREEN_DENIED,
   FIXTURE_WINDOWS,
   FIXTURE_WINDOW_RETINA,
@@ -250,6 +251,26 @@ describe('permissions gate the main process too, not only the panel', () => {
   it('does not raise a notice when nothing was at stake', async () => {
     test.permissions.adapter.setSnapshot(FIXTURE_PERMISSIONS_SCREEN_DENIED);
 
+    expect(test.gate.snapshot().notice).toBeNull();
+  });
+
+  /**
+   * PR-044, system-design §16. `permissionsAllowObservation` has always
+   * answered `true` for Accessibility denied — `degrades`, not `blocks` — so
+   * this gate needs no change. It is asserted anyway, because the gate is one
+   * of the four callers `REQUIRED_PERMISSIONS`' narrowing had to be checked
+   * against, and "no change was needed" is only worth anything if something
+   * fails when it stops being true.
+   */
+  it('keeps watching when Accessibility alone is withdrawn', async () => {
+    await test.gate.act({ type: 'select', windowId: FIXTURE_WINDOW_RETINA.windowId });
+    await test.gate.act({ type: 'start' });
+
+    test.permissions.adapter.setSnapshot(FIXTURE_PERMISSIONS_ACCESSIBILITY_DENIED);
+
+    expect(test.gate.allowsObservation()).toBe(true);
+    expect(test.controller.snapshot().observationEnabled).toBe(true);
+    // No "Pilot stopped watching, choose another window" prompt: it did not.
     expect(test.gate.snapshot().notice).toBeNull();
   });
 });
