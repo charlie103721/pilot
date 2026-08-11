@@ -1,7 +1,7 @@
 # Pilot MVP 01 — Handoff and open items
 
 Status: Live document
-Last updated: 2026-08-10
+Last updated: 2026-08-11
 
 **This file is updated and merged with every PR** (runbook amendment 12). If a
 PR raises something the user must decide, do or verify, it lands here in the
@@ -728,7 +728,212 @@ PILOT_LOG_LEVEL=debug pnpm dev 2>&1 | grep -a "retention clear"
 #    …and all of it again from inside the packaged `.app`, which is the only
 #    layout where the paths above are the ones a user would actually have:
 open "$(packaged_app)"
+
+# 22. PR-042 — THE PACKAGED APPLICATION, SIGNED, INSTALLED, AND STARTED FROM
+#    FINDER. This is the step the whole macOS lane has been deferring to, and it
+#    is the only one where the answer to "who does macOS think is asking for the
+#    screen" can be obtained. It PROMPTS FOR EVERYTHING, because a freshly
+#    signed bundle is a TCC subject that has never existed before.
+#
+#    NOTHING IN THIS PROJECT HAS EVER BEEN CODE-SIGNED. `codesign` has never
+#    run, no `.app` has ever been produced, no hardened-runtime process has ever
+#    started, and the entitlements files have never been applied to anything.
+#    Every line under `mac:` in `apps/desktop/electron-builder.yml` is reasoning
+#    that survived review, not a measurement.
+#
+#    (a) BUILD IT, WITH THE REAL HELPER. Steps 1 and 3 are the prerequisites.
+pnpm --filter @pilot/desktop run build:helper -- --require-native
+pnpm package
+
+#        `pnpm package` now also runs the configuration check, which prints
+#        under a `CONFIGURED, NOT VERIFIED` heading. On the Mac the bundle check
+#        gains lines it cannot print here — the Info.plist keys, the helper
+#        location inside the .app, and the code signature:
+pnpm --filter @pilot/desktop exec node scripts/verify-bundle.js
+#        EXPECT: `helper: native, … Info.plist embedded`, a `macOS bundle:
+#        works.pilot.desktop, signature: …` line, and NO `NOT CHECKED` notes
+#        about the Info.plist or the signature. BAD: `helper: PLACEHOLDER` (you
+#        skipped `--require-native`), or a signature line reading `NOT SIGNED`.
+#
+#        IF `swift build` FAILS AND THE ERROR MENTIONS THE LINKER OR
+#        `-sectcreate`: that is PR-042's own addition, not the Swift package.
+#        Back it out and say so — those flags are the only thing this repository
+#        adds beyond a bare `swift build`:
+pnpm --filter @pilot/desktop run build:helper -- --require-native --no-embed-info-plist
+
+#    (b) WHAT THE SIGNATURE ACTUALLY SEALED. The entitlements take effect only
+#        if `--options runtime` was honoured and the plist was really applied;
+#        an entitlements file that is accepted and then ignored is this
+#        project's favourite failure shape.
+codesign --display --verbose=4 "$(packaged_app)"
+codesign --display --entitlements - "$(packaged_app)"
+codesign --display --entitlements - "$(packaged_helper)"
+codesign --verify --verbose=2 "$(packaged_app)"
+#        EXPECT: `Signature=adhoc`, `flags=0x10000(runtime)` on both, the app's
+#        three entitlements (`allow-jit`, `allow-unsigned-executable-memory`,
+#        `device.audio-input`) and the helper's ONE (`device.audio-input`).
+#        BAD: the helper carrying `allow-jit` — that means something signed it
+#        with the app's entitlements, most likely a stray `--deep`. Also BAD:
+#        `code object is not signed at all` for the helper, which means the
+#        `afterPack` hook did not run.
+#
+#    (c) THE HELPER'S OWN Info.plist. Only this tells you whether the insurance
+#        described in (a) is really in the binary:
+otool -P "$(packaged_helper)" | head -40
+#        EXPECT: the XML from `apps/desktop/build/PilotHelper-Info.plist`, with
+#        `works.pilot.desktop.helper` and both usage strings. BAD: no output —
+#        then the section is not there, and a TCC misattribution will terminate
+#        the helper rather than deny it.
+#
+#    (d) INSTALL IT. See "1a. Clean-machine installation" below for the whole
+#        sequence; the short version is that a build made on this Mac needs no
+#        quarantine handling and a COPY does:
+ditto -c -k --keepParent "$(packaged_app)" /tmp/Pilot.zip   # what you would send
+xattr -l /tmp/Pilot.zip
+cp -R "$(packaged_app)" /Applications/
+#
+#    (e) START IT FROM FINDER, WITH NO TERMINAL ANYWHERE. This is the step, and
+#        it must be done by double-clicking in Finder — NOT with `open`, and
+#        certainly not from a shell with `PILOT_*` exported. What is being
+#        checked is a launch that inherits nothing.
+#          · a menu bar item appears, titled `Pilot`. There is no Dock icon and
+#            no window: `LSUIElement` is true. If no menu bar item appears, the
+#            app is running and completely invisible — kill it from Activity
+#            Monitor and report it, because that is unshippable.
+#          · clicking it opens the panel.
+#          · asking a typed question answers.
+#        BAD: nothing appears at all; a crash; or a panel that is blank white
+#        (that is the `file:`/CORS trap, and `verify-bundle.js` should have
+#        caught it — say so if it did not).
+#
+#    (f) WHAT MODEL IS IT ACTUALLY TALKING TO? Measured on Linux and expected to
+#        be identical here: a Finder launch reaches the FAUX provider, because
+#        every provider selector is an environment variable and Finder supplies
+#        none. Nothing in the panel says so. Confirm it, then fix it with the
+#        launch file, which is PR-042's answer to exactly this:
+log show --predicate 'process == "Pilot"' --last 5m --info | grep -a "model source"
+#        EXPECT: `profile: development` and a description ending "not a language
+#        model". Now write a launch file (three lines, no terminal needed beyond
+#        this one — TextEdit will do) at
+#        `~/Library/Application Support/Pilot/pilot.env`:
+#
+#            PILOT_LOG_LEVEL=debug
+#            PILOT_LOCAL_BASE_URL=http://127.0.0.1:11434/v1
+#            PILOT_API_KEY=this-must-be-refused
+#
+#        …quit Pilot, double-click it again, and read the log:
+log show --predicate 'process == "Pilot"' --last 5m --info | grep -a "launch environment file"
+#        EXPECT: `applied: ["PILOT_LOG_LEVEL","PILOT_LOCAL_BASE_URL"]` and a
+#        refusal naming `PILOT_API_KEY`, with the VALUE nowhere in the output.
+#        `model source` must then read `profile: local`. BAD: the value
+#        `this-must-be-refused` appearing anywhere — that is a leak; or the file
+#        being ignored entirely, which puts the packaged app back to having no
+#        way at all to reach a real model. **Delete the file afterwards.**
+#
+#    (g) THE ATTRIBUTION QUESTION — CARRIED SINCE PR-011, AND THE MOST VALUABLE
+#        ANSWER IN THIS ENTIRE DOCUMENT. Does macOS credit Screen Recording and
+#        Accessibility to `Pilot.app`, or to the spawned `PilotHelper`?
+#        Everything about the packaging — one identity for both binaries, a
+#        child bundle identifier, the helper inside the app, the app as the
+#        spawning parent — is configured for the first, and NOBODY KNOWS.
+#
+#        From a state where Pilot has been granted nothing (System Settings →
+#        Privacy & Security → Screen Recording, remove every Pilot entry; a
+#        fresh user account is cleaner), start it from Finder and press
+#        "Look now". Then, WITHOUT GRANTING ANYTHING YET:
+#          1. WHAT DOES THE PROMPT NAME? Screenshot it. `Pilot` means the app
+#             bundle is the subject and everything in this repository is right.
+#             `PilotHelper` — or a generic name, or a path — means the helper is
+#             its own subject, and the consequences are large: the user grants
+#             something that does not look like the app they installed, and
+#             every rebuild of the helper re-prompts.
+#          2. WHAT IS IN THE LIST AFTERWARDS? Grant it, then:
+sqlite3 "$HOME/Library/Application Support/com.apple.TCC/TCC.db" \
+  "select service, client, client_type, auth_value from access where client like '%pilot%';" \
+  2>/dev/null || echo "TCC.db needs Full Disk Access — read the list in System Settings instead"
+#             EXPECT (the good case): one row per service with
+#             `client = works.pilot.desktop` and `client_type = 0` (a bundle
+#             id). BAD: a `client` that is a PATH to PilotHelper with
+#             `client_type = 1`. Say which; it decides whether the helper has to
+#             become a proper `.app` inside `Contents/Library/`, which is a
+#             design change, not a setting.
+#          3. WHAT DOES PILOT ITSELF THINK? The startup line already carries the
+#             verdict PR-011 computes, and it has only ever been checked against
+#             a stub:
+log show --predicate 'process == "Pilot"' --last 5m --info | grep -a "permission attribution"
+#             EXPECT: `verdict: matched`. `bundle-mismatch` from inside the
+#             packaged app is a real defect — `Attribution.swift` comparing the
+#             wrong two things — and it would silently refuse every observation.
+#
+#    (h) DOES A REBUILD COST THE GRANTS? Expected: yes, and that is the price of
+#        an ad-hoc signature, whose code-directory hash is a hash of the bytes.
+#        Rebuild, reinstall, relaunch from Finder, and see whether it prompts
+#        again. Record the answer — if macOS instead keeps a STALE grant and the
+#        app silently cannot capture, that is far worse than re-prompting and it
+#        changes what a release build has to do.
+#
+#    (i) THE SECOND PROCESS, which is this PR's demo: "install and run the
+#        packaged app without starting a second Pilot process". With the
+#        packaged app running from Finder, run `pnpm dev` in a terminal.
+#        EXPECT: the dev instance exits immediately and the packaged app's panel
+#        is revealed — one menu bar item, not two. Same
+#        `requestSingleInstanceLock` step 16 (d) checks, in the layout where the
+#        two processes are genuinely different builds.
+ps ax | grep -c "[P]ilot.app"
 ```
+
+## 1a. Clean-machine installation (PR-042)
+
+**None of this has been performed.** It is written from Apple's documented
+behaviour of Gatekeeper, quarantine and TCC, and whoever runs it first should
+expect at least one step to be wrong.
+
+The artefact is the `Pilot-*-mac.zip` electron-builder's `zip` target produces
+under `apps/desktop/release/`, or the `Pilot.app` inside `release/mac-*/`. There
+is **no dmg and no installer**, and there will not be one for MVP 01.
+
+```sh
+# On the machine that built it — nothing special is needed. `codesign` ran
+# locally, and a locally built bundle carries no quarantine attribute.
+cp -R "$(packaged_app)" /Applications/
+
+# On ANY OTHER machine, or after the zip has been through a browser, a mail
+# client, AirDrop or a cloud drive, the copy is quarantined:
+xattr -l /Applications/Pilot.app          # look for com.apple.quarantine
+xattr -dr com.apple.quarantine /Applications/Pilot.app
+```
+
+Why, and what to expect:
+
+- **The build is ad-hoc signed and NOT notarised** (runbook §7; user decision:
+  no Developer ID account). Gatekeeper refuses a quarantined app whose signature
+  carries no Developer ID, usually with *"Pilot is damaged and can't be opened"*
+  — which is Apple's wording for "unnotarised", not a real corruption. Removing
+  the quarantine attribute, or right-click → Open once, is the documented way
+  past it for a build you made yourself.
+- **Do not skip the `xattr` on a machine you do not control.** It is a real
+  security decision — it says "I trust this binary" — and Pilot asks for the
+  screen, the keyboard and the microphone.
+- **Every rebuild is a new TCC subject.** An ad-hoc signature's code-directory
+  hash is a hash of the bytes, so a rebuilt Pilot is, to macOS, a different
+  program wearing the same name. Expect to re-grant Screen Recording,
+  Accessibility, Microphone and Speech Recognition after each install. Step 22
+  (h) is the check for the worse alternative — a stale grant that is kept and
+  does not work.
+- **Configuring it without a terminal**: `~/Library/Application
+  Support/Pilot/pilot.env`, `NAME=value` per line. That is the only way a
+  double-clicked Pilot can be pointed at a real model provider; see README
+  "Configuring a packaged app without a terminal". A real environment variable
+  always wins over the file, and `PILOT_API_KEY` in it is refused rather than
+  honoured.
+- **Uninstalling**: delete `/Applications/Pilot.app`, then
+  `~/Library/Application Support/Pilot/` (the conversation database and any
+  credential), then remove the entries in System Settings → Privacy & Security →
+  Screen Recording / Accessibility / Microphone / Speech Recognition. Nothing
+  else is written anywhere, and PR-041's step 21 (f) is the check for that
+  claim.
+- **Minimum macOS is 13.0** (`LSMinimumSystemVersion`), matching
+  `platforms: [.macOS(.v13)]` in the helper's `Package.swift`.
 
 Notes:
 
@@ -765,6 +970,17 @@ Notes:
 - `--require-native` in step 3 is the flag that matters. Without it the build
   silently stages a placeholder, and a bundle that cannot observe the screen is
   indistinguishable from one that can until someone tries it.
+- **Step 22 is the one that makes every other step's TCC answer meaningful**,
+  and it is the first time anything in this project has been code-signed. Its
+  part (g) is the oldest open question here — whether macOS credits the app
+  bundle or the spawned helper — and every earlier step that says "…and from
+  inside the packaged `.app`" is waiting on it. Do steps 1–3 first; without a
+  helper that compiles there is no bundle to sign.
+- **Step 22 (e) must be a double-click in Finder.** `open`, `open -a` and
+  `open --env` are all different launches with different environments, and the
+  property being checked is precisely that Pilot works when it inherits
+  nothing. Several earlier steps use `open "$(packaged_app)"` for convenience;
+  that is fine for those, and not fine for this one.
 
 ### What to look for in step 5 (PR-011)
 
@@ -1740,8 +1956,10 @@ Recorded so they are not discovered at release time.
 
 | Gap | Why | Owner |
 | --- | --- | --- |
-| No notarization | No Developer ID account (user decision). A packaged app needs `xattr -dr com.apple.quarantine` or right-click → Open on any machine that did not build it, and TCC grants are re-prompted whenever the signature changes. | PR-042 |
-| Development signing only | Same. `mac.identity` is null, hardened runtime off. | PR-042 |
+| No notarization | No Developer ID account (user decision). A packaged app needs `xattr -dr com.apple.quarantine` or right-click → Open on any machine that did not build it. **Unchanged by PR-042 and unchangeable without an account.** | accepted |
+| Ad-hoc signing only | Same cause. PR-042 turned the hardened runtime on and made `scripts/sign-mac.js` sign the helper and then the app with `codesign --sign -`, each with its own entitlements. Consequence: the code-directory hash is a hash of the bytes, so **every rebuild is a new TCC subject** and every permission is granted again. §1 step 22 (h). | accepted |
+| No macOS bundle has ever been built, signed, installed or launched | There is no Mac. Every line under `mac:` in `electron-builder.yml`, both entitlements files, the helper's embedded `Info.plist` and the whole darwin branch of the signing hook are configuration that has never executed. `pnpm verify:package` checks they are *internally consistent*, which is a much weaker claim and the only one available here. | §1 step 22 |
+| The packaged app cannot be pointed at a real provider from its own UI | Provider selection is by environment variable, and Finder supplies none. PR-042 added a launch environment file (`~/Library/Application Support/Pilot/pilot.env`) so a double-clicked Pilot can be configured without a terminal, but there is still no model picker in the panel and nothing on screen says which provider is in use. Runbook follow-ups 33, 39, 40 and 46. | PR-044 |
 | No CI | User decision. The five local commands in `docs/runbook.md` §6 are the only gate, run before every merge. | — |
 | Grounding metric is a manual checklist | User decision — real apps rather than a purpose-built test app. ~30 cases, ≥90% required. | PR-043 |
 
@@ -1907,6 +2125,7 @@ reversible; raise any that look wrong.
 | Phase 4 — providers (037…039) | Not started. PR-037 (Codex) is the one the user's decision selects. |
 | Phase 4 — providers (037…039) | In progress. **PR-038 is merged: Pilot can be configured with an API key, and it will not pretend that a configured key means a working model.** The key is sealed with Electron `safeStorage` (the macOS Keychain) into `~/Library/Application Support/Pilot/model-profile/credentials.json`, mode 600, and if `safeStorage` is unavailable Pilot stores nothing rather than falling back to plaintext. Provider and model selection read Pi's live catalogue. A four-stage capability probe decides which model is used: a text-only model is refused with **zero** provider requests, a model that will not call tools is refused after **one text-only** request, and neither ever sees an image — `CapabilityProbeOutcome.imageBlocksSent` is the literal `0` in the type. Only a probe that passed produces a `ModelSource`, so `main/index.ts` boots on the development source in every other state and logs why. An invalid key is detected both at probe time and mid-conversation, is distinguished from a rate limit and from an unreachable host, and its message is scrubbed — a 401 body that echoes the key back reaches no log, no panel and no crash dump. The panel shows where screen images go before the first question. **No API key exists in this environment, no request has ever left this machine, and `safeStorage` has never run** (§1 step 20): the vendor is `createRecordedApiKeyProvider` and the cipher is AES-256-GCM over a process-local key. No vendor SDK is bundled — measured at 1.66 MB → 5.97 MB of main bundle — so trying a real provider is the one-line change in step 20 (b), and shipping one is PR-042's. |
 | Phase 5 — hardening and release (040…044) | Not started. |
+| Phase 5 — hardening and release (040…044) | In progress. **PR-042 is merged: the macOS application is packaged, and the honest half of that sentence is that none of the macOS part has ever run.** What is verified on Linux: `pnpm package` produces a bundle whose asar is opened and checked eleven ways (entry points, `main` resolution, no `node_modules`, no external imports, no executable inside the archive, the CSP byte for byte, no `crossorigin`, a size budget against hazard 24, the helper as a real file that matches its manifest); the helper resolves in all three layouts, `pnpm dev` included, which it did not before; the signing hook runs on every build and declines by name; and **the packaged app starts from an empty, `launchd`-like environment** (`pnpm smoke:launch`), keeps its menu bar item, reads a launch environment file and refuses a credential written into it without printing it. What is configured and unverified: the entitlements (app and helper), the hardened runtime, the ad-hoc `codesign` invocation, the TCC usage strings, `LSMinimumSystemVersion`, `NSSupportsSuddenTermination`, the helper's embedded `Info.plist` and the `zip` target. **No `.app` has ever been produced, signed, installed or launched, and the Swift helper has still never been compiled** (§1 step 22, §1a). The finding that mattered: a Finder launch reaches the **faux** provider, because every provider selector is an environment variable — the launch file is the fix, and nothing on screen still says which model is in use (follow-up 46). |
 
 Last full regression on `main` (after PR-017 and PR-022a): 997 tests across 66
 files, and **all twelve demos executed green** — observation, scene, policy,

@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Pilot — macOS desktop assistant that observes one selected window and answers spoken questions.",
+  "description": "Pilot \u2014 macOS desktop assistant that observes one selected window and answers spoken questions.",
   "packageManager": "pnpm@10.33.0",
   "engines": {
     "node": ">=24"
@@ -19,6 +19,8 @@
     "start": "pnpm --filter @pilot/desktop run start",
     "package": "pnpm --filter @pilot/desktop run package",
     "smoke": "pnpm --filter @pilot/desktop run smoke",
+    "smoke:launch": "pnpm --filter @pilot/desktop run smoke:launch",
+    "verify:package": "pnpm --filter @pilot/desktop run verify:package",
     "demo:interaction": "pnpm build && pnpm --filter @pilot/interaction run demo",
     "demo:envelope": "pnpm build && pnpm --filter @pilot/interaction run demo:envelope",
     "demo:permissions": "pnpm --filter @pilot/desktop run demo:permissions",

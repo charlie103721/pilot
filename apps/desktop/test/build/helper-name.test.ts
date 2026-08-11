@@ -49,6 +49,14 @@ describe('the helper executable name', () => {
     expect(script).toContain(`helper/${HELPER_EXECUTABLE_NAME}`);
   });
 
+  it('is what the packaging-configuration check cross-checks against', () => {
+    // PR-042. `verify-package.js` asserts that the path electron-builder stages
+    // the helper into is the path `resolveHelperBinary()` looks in — a check
+    // that would be worthless if the two sides disagreed about the filename.
+    const script = read(appRoot, 'scripts', 'verify-package.js');
+    expect(script).toContain(`const HELPER_EXECUTABLE_NAME = '${HELPER_EXECUTABLE_NAME}';`);
+  });
+
   it('is not the name the packaging lane used to use', () => {
     // Named explicitly so a revert reads as a deliberate choice rather than a
     // typo, and so grepping the old name finds this explanation.

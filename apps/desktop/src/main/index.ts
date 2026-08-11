@@ -21,6 +21,8 @@ import { openApiKeyProfileRuntime } from './api-key-runtime.js';
 import { createSafeStorageCipher } from './safe-storage.js';
 import { ConversationGate } from './conversation-gate.js';
 import { createLiveConversationDriver } from './conversation-driver.js';
+// PR-042 (the packaged app's only way to be configured without a terminal).
+import { applyLaunchEnv } from './launch-env.js';
 import {
   createFakeSpeechDisclosureSource,
   createReplayClock,
@@ -153,11 +155,38 @@ import { createFakeWindowDemoDriver } from './window-demo.js';
  *   PILOT_PLATFORM=fakes pnpm dev                 # force the fakes on a Mac
  */
 
+/**
+ * The launch environment file, applied before ANYTHING reads `process.env`
+ * (PR-042).
+ *
+ * It has to be first — ahead of the logger below, which reads
+ * `PILOT_LOG_LEVEL`, and far ahead of the three model-profile selectors in
+ * `boot()`. `app.getPath('userData')` is safe before `ready`, which is the only
+ * reason this can run at module scope.
+ *
+ * The result is logged rather than acted on: a file that set nothing, or whose
+ * `PILOT_API_KEY` was refused, must be visible to whoever wonders why the app
+ * is still on the development model.
+ */
+const launchEnv = applyLaunchEnv({ userDataPath: app.getPath('userData') }, process.env);
+
 const logger = createLogger({
   scope: 'desktop.main',
   level: process.env['PILOT_LOG_LEVEL'] === 'debug' ? 'debug' : 'info',
   sink: createJsonSink((line) => process.stderr.write(`${line}\n`)),
 });
+
+if (launchEnv.present || launchEnv.problems.length > 0) {
+  logger.info('launch environment file', {
+    // NOTE THE FIELD NAMES, as everywhere else in this file: the redactor
+    // matches on key name, and `applied`/`refused` are lists of *names*, never
+    // of values, so nothing here can carry a secret in the first place.
+    file: launchEnv.path,
+    applied: launchEnv.applied,
+    refused: launchEnv.refused.map((entry) => `${entry.name}: ${entry.reason}`),
+    problems: launchEnv.problems,
+  });
+}
 
 let shell: DesktopShell | null = null;
 
@@ -303,6 +332,13 @@ if (!singleInstance.isPrimary) {
     const platform = createPlatformRuntime({
       logger,
       resourcesPath: process.resourcesPath,
+      // PR-042. `resourcesPath` alone covers the packaged `.app`; this covers
+      // `pnpm dev` on a Mac, where the helper is whatever `swift build` last
+      // wrote into `packages/platform-mac/native/.build/`. Until now that
+      // layout was reachable only by naming `PILOT_HELPER_BINARY` by hand,
+      // because the *bundled* main process cannot compute the SwiftPM path
+      // from its own module URL.
+      appPath: app.getAppPath(),
     });
 
     // The observation boundary (PR-028). Built before the controller because the

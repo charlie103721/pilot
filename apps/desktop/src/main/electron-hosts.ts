@@ -136,9 +136,18 @@ export interface ElectronTrayHostOptions {
 export function createElectronTrayHost(options: ElectronTrayHostOptions): TrayHost {
   return {
     create(): TrayHandle {
-      // An empty template image is a legitimate placeholder: PR-042 supplies
-      // the real menu bar asset. Constructing a Tray still fails on platforms
-      // with no status area, which the TrayController reports as unavailable.
+      // An empty template image plus a title is a menu bar item that is
+      // visible, clickable and named — which under `LSUIElement` is the ONLY
+      // affordance a double-clicked Pilot has, so it has to work.
+      //
+      // PR-042 was to supply a real asset here and deliberately did not
+      // (runbook follow-up 45). Shipping an untested image into the one control
+      // the user has, on a platform this repository cannot run, trades a state
+      // that demonstrably works for one that nobody can check: an image macOS
+      // declines to render leaves an item that is present, blank and clickable
+      // only if you know where it is. Constructing a Tray still fails on
+      // platforms with no status area, which the TrayController reports as
+      // unavailable.
       const tray = new Tray(nativeImage.createEmpty());
       tray.setTitle('Pilot');
       return {
