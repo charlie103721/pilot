@@ -1,15 +1,24 @@
-# electron-builder — development configuration.
+# electron-builder — packaging configuration.
 #
-# Scope: this produces a *development* bundle. It is deliberately not a release
-# configuration; PR-042 owns the packaged macOS application.
+# Scope: this produces an UNNOTARISED, AD-HOC SIGNED development bundle. That is
+# a deliberate ceiling, not an oversight:
 #
-#   Signing:      development only. `mac.identity: null` means electron-builder
-#                 does not look for a Developer ID certificate. On Apple silicon
-#                 the resulting bundle still needs an ad-hoc signature to launch
-#                 — see README "Packaging".
+#   Signing:      `mac.identity: null` keeps electron-builder from looking for a
+#                 Developer ID certificate, and `scripts/sign-mac.js` (the
+#                 `afterPack` hook below) applies an *ad-hoc* signature —
+#                 `codesign --sign -` — to the helper and then to the app. That
+#                 is what a machine with no Apple developer account can produce,
+#                 and on Apple silicon it is also the minimum needed to launch
+#                 at all.
 #   Notarization: NOT DONE, and recorded as a known gap against the MVP-01
 #                 definition of done (runbook §7; user decision: no Developer ID
-#                 account). Nothing here silently pretends otherwise.
+#                 account). Nothing here silently pretends otherwise. Gatekeeper
+#                 will quarantine a downloaded copy; `docs/handoff.md` §1 step 22
+#                 has the clean-machine instructions that go with that.
+#
+# NONE OF THE `mac:` BLOCK BELOW HAS EVER RUN. electron-builder `--dir` packages
+# for the host platform, and the host has always been Linux. Every line under
+# `mac:` is configuration, not evidence.
 #
 # Everything the app needs at runtime is bundled into `dist/` by electron-vite,
 # so no node_modules are copied into the asar. That keeps the bundle honest
@@ -31,14 +40,25 @@ files:
   - '!node_modules/**/*'
 
 # The native helper lives beside the asar, not inside it: it has to be a real
-# executable file on disk that the main process can spawn.
+# executable file on disk that the main process can spawn. An asar entry cannot
+# be `execve`d — the archive is one file to the kernel — so this is a
+# correctness requirement, not a size optimisation. `scripts/verify-bundle.js`
+# asserts both halves: that the helper is here, and that nothing that looks like
+# an executable is inside the archive.
 extraResources:
   - from: resources/helper
     to: helper
 
 asar: true
+# Nothing is unpacked. The helper is the only file that must be executable, and
+# `extraResources` already puts it outside the archive; `asarUnpack` would be
+# the mechanism if it ever moved inside `files`.
 npmRebuild: false
 buildDependenciesFromSource: false
+
+# Ad-hoc code signing (PR-042). Runs for every target; it is a no-op with a
+# printed reason on anything that is not a macOS bundle.
+afterPack: scripts/sign-mac.js
 
 # Use the Electron runtime this workspace already downloaded
 # (apps/desktop/scripts/ensure-electron.js) instead of fetching another copy.
@@ -48,21 +68,61 @@ electronDist: node_modules/electron/dist
 mac:
   category: public.app-category.productivity
   target:
+    # `dir` is the bundle every check in this repository reads.
     - target: dir
-  # Development signing only; see the header.
+    # `zip` is the only distributable form that needs no extra tooling and no
+    # certificate. It is what "install on a clean machine" means for an
+    # unsigned build: unzip into /Applications. No DMG — a DMG buys a drag
+    # target and costs a background asset, and neither can be reviewed here.
+    - target: zip
+  # Development signing only; `scripts/sign-mac.js` does it ad hoc afterwards.
+  # `null` here means "do not search the keychain", which is what makes the
+  # build deterministic on a machine with no certificates.
   identity: null
-  hardenedRuntime: false
+  # The hardened runtime is what makes `entitlements` mean anything, and Apple
+  # requires it for notarisation later. It is compatible with an ad-hoc
+  # signature; what an ad-hoc signature costs is documented in handoff step 22
+  # (every rebuild changes the code-directory hash, so every rebuild is a new
+  # TCC subject and the grants have to be given again).
+  hardenedRuntime: true
+  # `codesign --verify --deep --strict` against an ad-hoc signature reports
+  # findings that are not actionable without a certificate, and a failure here
+  # would stop the build for something already known.
   gatekeeperAssess: false
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
     # macOS refuses to show a TCC prompt without these strings, and a missing
-    # prompt looks exactly like a denied permission.
+    # prompt looks exactly like a denied permission. Note which permissions have
+    # NO string and cannot get one: Screen Recording and Accessibility are
+    # granted only in System Settings, which is why `PermissionOnboarding`
+    # offers "Open System Settings" for those two and a live prompt for the
+    # other two.
     NSMicrophoneUsageDescription: Pilot listens while you hold the push-to-talk key.
     NSSpeechRecognitionUsageDescription: Pilot turns what you say into text so it can answer.
+    # KEPT, AND IT IS A GUESS. Nothing in `packages/platform-mac/native/` sends
+    # an Apple Event — window inspection is `AXUIElement`, which is the
+    # Accessibility service and has no usage string. The string stays because
+    # its absence is unrecoverable at runtime (macOS kills the process) while
+    # its presence costs a prompt nobody will see. If a TCC prompt about
+    # "controlling other applications" ever appears, that is evidence AX access
+    # is being routed through Apple Events after all — report it (handoff step
+    # 22).
     NSAppleEventsUsageDescription: Pilot inspects the window you selected.
-    # Menu bar app: no Dock icon, no window on launch.
+    # Menu bar app: no Dock icon, no window on launch. This is also what makes
+    # the "no-terminal launch" question sharp — with no Dock icon the menu bar
+    # item is the ONLY affordance a double-clicked Pilot has.
     LSUIElement: true
+    # Matches `platforms: [.macOS(.v13)]` in the helper's Package.swift. Without
+    # it macOS lets the app start on an older system and the helper fails to
+    # load ScreenCaptureKit with an error nobody can act on.
+    LSMinimumSystemVersion: '13.0'
+    # PR-036's writer lease and PR-041's `shutdown` retention clear both need
+    # the process to actually run its teardown. Sudden termination lets macOS
+    # `SIGKILL` the app at logout, which skips `before-quit`, strands the SQLite
+    # lease for 30 seconds and skips the §13 clear (runbook follow-ups 37, 44).
+    NSSupportsSuddenTermination: false
+    NSSupportsAutomaticTermination: false
 
 linux:
   # Linux is a development host, not a supported target. `dir` is enough to

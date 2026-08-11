@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  `Info.plist` embedded into the helper executable (PR-042).
+
+  NEVER EMBEDDED, NEVER READ BY macOS. This file is linked into the helper's
+  `__TEXT,__info_plist` section by `apps/desktop/scripts/build-helper.js`, which
+  has only ever run on Linux, where it stages a placeholder shell script and
+  never invokes the linker.
+
+  WHY IT EXISTS. A bare Mach-O executable has no bundle and therefore no usage
+  strings. macOS *terminates* a process that asks for the microphone or for
+  speech recognition without one — it is not a denial the process can handle,
+  it is a crash. Whether that applies to `PilotHelper` depends entirely on
+  whether TCC treats the app bundle or the helper as the requesting subject:
+
+    · if the responsible process is `Pilot.app`, the app's own strings in
+      `electron-builder.yml#mac.extendInfo` are used and this section is inert;
+    · if the responsible process is the helper, this section is the only thing
+      standing between a first push-to-talk and an immediate crash.
+
+  It is cheap insurance against the case nobody here can test, which is why it
+  is embedded by default and turned off with `--no-embed-info-plist` rather than
+  the other way round.
+
+  CFBundleIdentifier is a CHILD of the app's (`works.pilot.desktop.helper`),
+  matching how Electron names its own helper processes. A completely unrelated
+  identifier would guarantee a second TCC subject; reusing the app's identifier
+  verbatim would put two differently-signed binaries behind one identity, which
+  `codesign` and TCC both dislike.
+
+  LSBackgroundOnly keeps the helper out of the Dock and out of the app switcher
+  if macOS ever treats it as an application.
+-->
+<plist version="1.0">
+  <dict>
+    <key>CFBundleIdentifier</key>
+    <string>works.pilot.desktop.helper</string>
+    <key>CFBundleName</key>
+    <string>PilotHelper</string>
+    <key>CFBundleDisplayName</key>
+    <string>Pilot Helper</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>LSBackgroundOnly</key>
+    <true/>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Pilot listens while you hold the push-to-talk key.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Pilot turns what you say into text so it can answer.</string>
+  </dict>
+</plist>

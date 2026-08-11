@@ -226,6 +226,7 @@ the two in step.
 | **Memory that survives a quit** — ask, quit, relaunch, ask what you asked first; then kill it and relaunch inside 30 s | `pnpm demo:memory` (passes on Linux against a real SQLite file; **nothing has ever been persisted on macOS**), then `pnpm dev` against the real helper, then the packaged `.app`. Four things only the Mac answers: where `sessions.db` is, that a clean quit relaunches instantly, that a **killed** process locks the store for at most 30 s and then lets go by itself (**do not delete the database**), and that the single-instance lock stops a second launch. | PR-036 | no |
 | **A real local model** — the first inference server this project has ever spoken to. **Needs no Mac and no Swift helper**, so it can be run anywhere a model can be served; it is on this list only because the user owns the machine that can serve one. | `pnpm demo:local` (passes on Linux against a stub HTTP endpoint that contains **no model at all**), then `PILOT_LOCAL_BASE_URL=http://127.0.0.1:11434/v1 pnpm dev` against Ollama, llama.cpp or LM Studio. Seven things only a real server answers, listed in `docs/handoff.md` §1 step 17 — the two that matter most are whether the capability probe's verdict matches reality (it can be wrong in both directions) and **where a real local model's answers actually start degrading**, which is the number the 32 768-token ceiling is a guess at. | PR-039 | no |
 | **The failure matrix** — really revoke a permission mid-session, really lock the screen, really log out, really kill the helper, and point Pilot at a window that blocks capture | `pnpm demo:failure` (passes on Linux; **every failure in it is simulated** — no permission has ever been revoked, no screen locked, no helper crashed and no window ever refused capture), then `PILOT_HELPER_BINARY=… PILOT_LOG_LEVEL=debug pnpm dev` and the six checks in `docs/handoff.md` §1 step 18 | PR-040 | **yes** — (a) revokes and re-grants in System Settings |
+| **The packaged application** — sign it, install it, and start it by **double-clicking in Finder**. The step every other row's "…and from inside the packaged `.app`" has been waiting for, and the first time anything here has been code-signed. Its part (g) is the oldest open question in the project: does macOS credit Screen Recording and Accessibility to `Pilot.app` or to the spawned `PilotHelper`? | `pnpm --filter @pilot/desktop run build:helper -- --require-native && pnpm package`, then the nine parts of `docs/handoff.md` §1 step 22 — `codesign --display --entitlements`, `otool -P` on the helper, a Finder double-click with **no terminal anywhere**, the TCC.db query, and whether a rebuild costs the grants. Installation notes are §1a. **No `.app` has ever been produced, signed, installed or launched.** | PR-042 | **yes — everything** |
 
 A Swift compile failure is a **PR-003 defect** in the transport files, a
 **PR-011 defect** in `PermissionModel.swift`, `Attribution.swift`,
@@ -283,17 +284,32 @@ pnpm test
 pnpm build
 ```
 
+Packaging, added by PR-042 and runnable on Linux (needs `xvfb-run`):
+
+```sh
+pnpm package            # build + electron-builder --dir + both checks below
+pnpm verify:package     # the macOS CONFIGURATION, which has never run on a Mac
+pnpm smoke:launch       # the packaged app, started with NO environment at all
+```
+
 Mac-only verification (batch when a Mac is available):
 
 ```sh
-# Swift helper
+# Swift helper — still never compiled
 swift build --package-path packages/platform-mac/native
 swift test  --package-path packages/platform-mac/native   # where present
 
-# Dev app + packaging (exact scripts defined by PR-007/PR-042)
+# Dev app + packaging. `--require-native` is the difference that matters:
+# without it the build stages a placeholder helper and looks identical.
 pnpm dev
+pnpm --filter @pilot/desktop run build:helper -- --require-native
 pnpm package
 ```
+
+Everything under `mac:` in `apps/desktop/electron-builder.yml`, both entitlement
+files and the darwin branch of `scripts/sign-mac.js` are **configuration that
+has never executed**. `docs/handoff.md` §1 step 22 is the sequence that turns
+any of it into evidence.
 
 Acceptance evidence lives in `docs/acceptance.md` (A-01…A-15 run log) and
 `docs/grounding-checklist.md` (~30 point-and-ask cases, ≥90% required) — both
@@ -514,6 +530,7 @@ construction (see the row below).
 | PR | What landed |
 | --- | --- |
 | 040 | **Lifecycle and failure recovery.** No fake boundary left to replace, so this is the seam PR-033 built for speech, one level up: `main/lifecycle-runtime.ts` is where the composition root decides **which failures are the interaction machine's business**. Its one rule is that a failure of the *watching* costs the watching and never the answer — the table's `failure` row runs `teardown()`, so a capture stream that dies mid-question would otherwise have cost the reply as well as the screen. Fourteen cases through the shipping composition (`pnpm demo:failure`), each ending recovered or in a safe terminal state, each printing what the user sees and what was left behind. Typed guidance is `src/lifecycle/guidance.ts`, total over `PilotErrorCode`; retry is `main/request-retry.ts`, scene-checked and mostly a refusal. **It found two defects**, both user-visible and neither catchable by the suites that existed: a permission being *re-read* was reported as one *withdrawn*, stopping observation on every panel open (cross-lane issue 22), and the seam's own tidying-up put a generic "Pilot cannot do that right now." in front of a user whose answer was arriving (cross-lane issue 21). It also closed two of §13's five retention occasions that had never had a caller. Raised follow-ups 35, 36 and 37. **Every failure in the matrix is simulated**: `docs/handoff.md` §1 step 18. |
+| 042 | **Packaged macOS application.** The PR whose deliverable is mostly unverifiable, and whose value is therefore in being exact about which half is which. **VERIFIED on Linux:** `pnpm package` runs an `afterPack` signing hook that declines by name; `scripts/verify-bundle.js` grew from 8 assertions to 16 and now opens the *archive* rather than `dist/` — entry points, `package.json#main` resolving inside it, no `node_modules`, no external import in either Node-side bundle, no Mach-O/ELF anywhere inside (nothing can be `execve`d from an asar), the CSP byte for byte, no `crossorigin`, a 3.5 MB budget on the main bundle aimed straight at hazard 24, and the helper as a real non-symlink executable whose bytes agree with its manifest; a new `scripts/verify-package.js` (`pnpm verify:package`) reads the macOS *configuration* under a `CONFIGURED, NOT VERIFIED` heading and cross-checks the path electron-builder stages the helper into against the path `resolveHelperBinary()` looks in; the helper now resolves in **all three** layouts, `pnpm dev` included, which it never did (hazard 30); and `pnpm smoke:launch` starts the packaged app with `env -i` and asserts it boots, keeps its menu bar item, reads its launch file and refuses a credential in it without printing it. **CONFIGURED and NEVER RUN:** both entitlements files, `hardenedRuntime`, the ad-hoc `codesign` invocation, `LSMinimumSystemVersion`, `NSSupportsSuddenTermination: false`, the `zip` target, and the `Info.plist` linked into the helper's `__TEXT,__info_plist` section — **no `.app` has ever been produced, signed, installed or launched, and the Swift helper has still never been compiled.** It found one product defect and it is not a packaging one: **a Finder launch reaches the faux provider and nothing on screen says so** (hazard 28), because every provider selector is an environment variable; `main/launch-env.ts` is the terminal-free half of the fix and follow-up 46 is the visible half. Raised follow-ups 45 and 46 and hazards 28–31; added 44 tests in 3 new files. `docs/handoff.md` §1 step 22 and §1a. Demo: `pnpm package && pnpm smoke:launch && pnpm verify:package`. |
 | 041 | **Privacy and retention verification.** The first PR whose job is to disbelieve the rest of the project. `pnpm demo:privacy` runs **twenty-one claims** against the shipping composition and decides each one from an **artefact** rather than from an accessor: the raw bytes of a real SQLite conversation *while it is still open* as well as after it closes, the emitted `LogRecord[]` rather than the fields the calls passed, the base64 in every provider request decoded and its PNG header read for pixel size, both credential stores' real files and modes, and `$HOME` plus the repository listed before and after and diffed. Ten byte scanners, each **proved against a positive and a negative control before any of them is believed** (claim A1) — a scanner that has stopped matching reports a clean disk for ever and looks exactly like one that checked. `EXPECTED_CLAIM_IDS` plus `auditSelfCheck` make a claim that silently stops running a **failure**, not an omission, and the runner exits non-zero. **It found three defects, none catchable by any suite that existed.** A pause from the menu bar item cleared its buffers under whichever §13 occasion happened to be armed last, because the arming lived on one of the app's *two* command routes — the exact defect PR-040 recorded fixing (cross-lane issue 26). And a credential embedded in `PILOT_LOCAL_BASE_URL` reached two log fields, the sentence the panel renders and, through `blockedBy`, **the durable transcript on disk** — including via Node `fetch`'s own error text, which quotes the URL back (`scrubUrlCredentials`, follow-up 42). And **the product's own `retention clear` line had three of its six fields eaten by the redactor** — `clearedFrames` → `[redacted:image]`, `clearedPointerSamples` → `[redacted:audio]`, `imageCacheCleared` → `[redacted:image]`, visible in `pnpm smoke`'s own output — which is cross-lane issue 25's fourth occurrence, in the one line an audit of §13 and `docs/handoff.md` §1 step 21 (g) both read. The log field names are now chosen against the redactor and a regression test asserts `redactedPaths` is empty. Claim L2 is reported **UNPROVABLE** rather than passed: a name-keyed redactor cannot see a secret in a value, and three shapes are shown passing through it on every run. Raised follow-ups 42, 43 and 44 and cross-lane issues 26 and 27; added 21 tests in 4 files; narrowed follow-up 37. **No Mac, no model, no credential, no audio, no pixels** — section 10 of the output is the list of privacy properties that leaves for the user, and `docs/handoff.md` §1 step 21 is its runnable form. Demo: `pnpm demo:privacy`. |
 
 ### Cross-lane issues found while merging — read before adding a lane
@@ -1023,6 +1040,72 @@ construction (see the row below).
    a 3 000 ms constant in view) pointed at age, and the one number nobody had
    printed was the sign of the skew. **Print the sign, not the magnitude.**
 
+28. **A double-clicked app has no environment, and every provider selector in
+   this product is one.** Measured by PR-042 against the real packaged bundle
+   with `env -i`: Pilot starts, creates its menu bar item, opens its database
+   and answers questions — on **Pi's faux provider**, because
+   `PILOT_MODEL_PROFILE` (PR-037, PR-038) and `PILOT_LOCAL_BASE_URL` (PR-039)
+   are read from `process.env` and Finder supplies neither. Nothing in the panel
+   says so: `CodexStatus` returns `null` unless the Codex profile is enabled, so
+   the *only* statement that the model is "not a language model" is a stderr log
+   line, and a Finder launch has no stderr. The app looks right, answers, and is
+   wrong — hazard 19's shape, one level up from the bundler.
+   **The rule this leaves**: a configuration mechanism that only exists on a
+   shell command line does not exist in a packaged app. PR-042's launch
+   environment file (`~/Library/Application Support/Pilot/pilot.env`,
+   `main/launch-env.ts`) is the terminal-free half; the *visible* half — a panel
+   that names the provider in use whichever profile it is — is follow-up 46 and
+   is not done. And note what a fix must not do: the file is an **allowlist**
+   with `PILOT_API_KEY` refused, because a launch file that carried a credential
+   would undo PR-038's sealing in the same directory, and one that carried
+   `PILOT_PLATFORM=fakes` would let a shipped app be flipped onto the fake
+   adapters by anyone who can write a text file.
+
+29. **A verifier that has never been seen to fail is indistinguishable from one
+   that always passes**, and packaging checks are the easiest place to build
+   one. `verify-bundle.js` had eight assertions and had never rejected
+   anything; PR-042 gave it sixteen and then wrote twenty tests that synthesise
+   a *deliberately wrong* bundle for each one — a missing staged file, an
+   externalised dependency, a `crossorigin` attribute, a `main` that names a
+   file which is not in the archive, a Mach-O inside the asar, a bundle over
+   the size budget. Three of the sixteen did not work when first written, and
+   nothing but a broken fixture would have shown it. This is PR-041's claim A1
+   in a different costume: **prove the scanner against a positive control before
+   believing a clean report.**
+   Its corollary is about the checks that cannot run: the macOS `Info.plist`,
+   entitlements and signature checks are unreachable on Linux, and a check that
+   silently skips reads exactly like a check that passed. They print
+   `NOT CHECKED: <reason>` and the reason is part of the output, not a comment.
+
+30. **`import.meta.url` is a lie inside a bundle, and the failure is silent.**
+   `@pilot/platform-mac`'s `nativePackageDirectory()` computed the SwiftPM build
+   path from its own module URL, which is right in vitest, in the demos and in
+   `tsc --build` output, and wrong in the one layout a developer actually uses:
+   under `pnpm dev` electron-vite has inlined the module into
+   `apps/desktop/dist/main/index.js`, so the path becomes
+   `apps/desktop/dist/native/.build/debug/PilotHelper` and never exists. The app
+   does not fail — `describePlatformChoice` falls back to the fake adapters with
+   a reason — so the symptom was "a Mac with a compiled helper runs on fakes",
+   and the workaround (naming `PILOT_HELPER_BINARY` by hand) had been written
+   into `docs/handoff.md` three times without anyone calling it a defect.
+   PR-042's fix is an explicit `appPath` (Electron's `app.getAppPath()`) passed
+   from the composition root. **The rule: a path derived from `import.meta.url`
+   is only valid in the layout it was written in, and a bundler changes that
+   layout without changing the source.** The same trap took PR-036 (hazard 19)
+   from the other side, where the dependency read its own files.
+
+31. **`extraResources` and `asarUnpack` are not interchangeable, and only one of
+   them can hold something you intend to spawn.** To the kernel an asar is a
+   single file, so `execve` on a path inside it fails with `ENOTDIR`/`ENOEXEC`
+   however correct the path looks and however happily `fs.readFile` reads it —
+   Electron's asar shim patches `fs`, not `exec`. Pilot's helper is an
+   `extraResources` entry and always has been, which is why this has never
+   bitten; PR-042 added the assertion that keeps it that way — nothing inside
+   `app.asar` may begin with a Mach-O or ELF magic number. Worth knowing in the
+   other direction too: a **data** file read with `fs` is fine inside the
+   archive, which is why PR-036's `.sql` migration can be staged into `dist/`
+   rather than beside it.
+
 ### Pending cross-lane follow-ups
 
 Open items a later PR must close. Each was raised by the lane that found it.
@@ -1081,6 +1164,10 @@ Open items a later PR must close. Each was raised by the lane that found it.
 | 43 | ~~**`pnpm demo:codex` §5 races the 3 000 ms frame ring**…~~ **CLOSED by PR-042, and the recorded diagnosis was wrong — see hazard 27 for the correction.** The ring's age bound was never reached: §5 pushed its one screenshot *after* the last `samplePointer()`, and that sample **is** the question anchor, so the frame was 0–1 ms too new for `moment: 'question'`'s `at-or-before` selection and was refused `frame-available (no-frame-in-direction)` with the frame still in the ring. The fix is one moved line — the push now sits *between* the second and third pointer samples, which is the order the real pollers produce (capture at 3 FPS, pointer at 30 Hz, so a frame always precedes the sample that grounds the question) and the order `ask-demo.ts` §2 already documents and every other walkthrough that pushes frames already writes. Nothing was lengthened and no assertion was loosened; two were *added* (`observations refused: (none)` and `at or before the anchor: true`). Also wrong in the row above: `flow-demo.ts` does not push after the key is released — it pushes before the key goes *down*, which is on the correct side of the anchor for the same reason. Six full-suite runs after the fix, one of them under eight busy loops: 2187/2187 each time. | ~~PR-042~~ |
 | 44 | **The `shutdown` retention clear is not awaited** (PR-041). `main/index.ts`'s `before-quit` handler starts the teardown chain with `void quitting.then(…)` and returns; `observation.dispose()` — which is where the §13 `shutdown` occasion is cleared, with the scene lineage — sits four links down that chain. Nothing is *retained* if Electron exits first (the buffers are process memory and go with it), so this is not a leak; what is lost is the **retention log entry that says so**, which is exactly the evidence `docs/handoff.md` §1 step 21 (g) asks the user to read, and it is the same shape as follow-up 37. Making `before-quit` await the chain risks a hung quit, which is worse; the honest fix is probably to clear the buffers *synchronously* at the top of the handler and let the rest of the teardown drain as it does now. **Say which you want** — it is a privacy-visible ordering choice. | PR-042, or a focused PR |
 
+
+| 45 | **The menu bar item still has no icon** (PR-042, and PR-042 was the row against it). `createElectronTrayHost` builds its `Tray` from `nativeImage.createEmpty()` plus `setTitle('Pilot')`, which under `LSUIElement` is the *only* affordance a double-clicked Pilot has — there is no Dock icon and no window. PR-042 deliberately did not supply an asset: shipping an untested template image into the one control the user has, on a platform this repository cannot run, trades a state that demonstrably works (the smoke check asserts `trayAvailable: true`, including from an empty environment) for one nobody can check — an image macOS declines to render leaves an item that is present, blank and findable only by someone who knows where it is. Whoever adds it needs a Mac in front of them and both `trayIconTemplate.png` and its `@2x`, staged into `dist/main/` by an `electron.vite.config.ts` plugin in the same shape as `stageSqliteMigrations`, and added to `REQUIRED_APP_FILES` in `scripts/verify-bundle.js` — the staging mechanism and its check both already exist. | PR-044 |
+| 46 | **Nothing on screen says which model Pilot is talking to, and in a packaged launch the answer is "none"** (PR-042; hazard 28). The panel's only provider surface is `CodexStatus`, which returns `null` unless `PILOT_MODEL_PROFILE=codex`, so a user running the API-key profile, a local endpoint, or — the case that matters — the faux development provider sees no Model section at all. `main/index.ts` already computes everything needed (`modelSource.description`, the chosen profile name, `apiKeyProfile.reason`, `local.blockedBy`) and logs it; what is missing is one provider-neutral IPC field and one always-rendered row. This is the same hole follow-ups 33 (`describeEndpoint` renders nowhere), 39 (no model picker) and 40 (`ModelProfileStore` unwired) each see from their own side, and PR-044 should close them together rather than a fourth lane adding a fourth surface. Until then a packaged Pilot that has never been given a `pilot.env` answers questions with a provider that is not a language model, and says so only in a log line a Finder launch discards. | PR-044 |
+| 47 | **`api-key-runtime.test.ts` → "comes back on a second launch with no environment at all" timed out once under full-suite load** (PR-038, observed while merging PR-042). It runs in **1.02 s in isolation** against a 5 000 ms limit, and the one failure was the first full run after a cold `pnpm install`, so the cause is almost certainly cold module resolution plus concurrent workers rather than anything in the code. Three consecutive full-suite runs afterwards were green (2232/2232). **Do not raise the timeout** — that hides the signal and hazard 7 is explicit about it; the fix, if it recurs, is to find what the test is actually waiting on (it opens a real credential store twice and does real AES work). Recorded so the release-candidate lane knows this one has flaked once rather than rediscovering it. | PR-043 or PR-044, only if it recurs |
 
 ## 9. Quick start for a new session
 

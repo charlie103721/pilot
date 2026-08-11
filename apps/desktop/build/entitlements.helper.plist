@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for the embedded Swift helper (PR-042).
+
+  NEVER APPLIED, and the binary it is written for HAS NEVER BEEN COMPILED.
+
+  The helper is a separate executable at
+  `Pilot.app/Contents/Resources/helper/PilotHelper`, spawned by the main
+  process. It is the process that actually calls ScreenCaptureKit,
+  `AXUIElement*`, `CGEventTapCreate`, `AVAudioEngine`, `SFSpeechRecognizer` and
+  `AVSpeechSynthesizer` — so if macOS ever decides to attribute a TCC decision
+  to *it* rather than to the app bundle, this is the file that has to be right.
+  Which of the two happens is the oldest open structural risk in this project
+  (recorded since PR-011); `docs/handoff.md` §1 step 22 settles it.
+
+  It is a SEPARATE file from the app's, and deliberately narrower:
+
+    device.audio-input   the microphone, which the helper opens itself.
+
+  What is NOT here, and why:
+
+    allow-jit / allow-unsigned-executable-memory
+        Those exist for V8. The helper is compiled Swift with no interpreter in
+        it, and granting a Swift process the right to write-then-execute memory
+        would widen its attack surface for nothing. This is the reason the
+        helper does not simply reuse the app's entitlements.
+
+  The helper is signed with the SAME identity as the app (ad hoc today — see
+  `apps/desktop/scripts/sign-mac.js`), because a differently-signed child is the
+  configuration most likely to be treated by TCC as a separate subject.
+-->
+<plist version="1.0">
+  <dict>
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+  </dict>
+</plist>

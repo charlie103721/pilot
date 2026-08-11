@@ -70,7 +70,14 @@ Headless launch check (Linux, needs `xvfb-run`; prints a single OK line):
 ```sh
 pnpm smoke                                      # the built dist/
 pnpm --filter @pilot/desktop run smoke:packaged # the packaged bundle
+pnpm smoke:launch                               # the packaged bundle, with NO environment
 ```
+
+`smoke:launch` is the no-terminal launch check (PR-042). It wipes the
+environment down to what `launchd` gives a double-clicked `.app` — no `PILOT_*`
+of any kind — and asserts the app still boots, still creates its menu bar item
+(the only affordance a `LSUIElement` app has), reads its launch environment file,
+and refuses a credential written into that file without printing the credential.
 
 ### Build layout
 
@@ -79,7 +86,9 @@ pnpm --filter @pilot/desktop run smoke:packaged # the packaged bundle
 | `pnpm build` | `tsc --build` for `packages/*`, then the desktop app |
 | `pnpm --filter @pilot/desktop run build:app` | stages the helper, then electron-vite → `apps/desktop/dist/{main,preload,renderer}` |
 | `pnpm --filter @pilot/desktop run build:helper` | the native helper hook alone → `apps/desktop/resources/helper/` |
-| `pnpm package` | `build:app`, then electron-builder `--dir`, then the bundle check |
+| `pnpm package` | `build:app`, then electron-builder `--dir`, then both checks below |
+| `pnpm --filter @pilot/desktop run verify:bundle` | opens the produced bundle and asserts what is in it |
+| `pnpm verify:package` | reads the macOS packaging *configuration* and reports what it says |
 
 electron-vite bundles all three Electron processes from TypeScript source
 (`apps/desktop/electron.vite.config.ts`). It does not typecheck — `pnpm
@@ -95,22 +104,84 @@ Policy is shipped unchanged; both are asserted by
 pnpm package
 ```
 
-produces an unpacked development bundle under `apps/desktop/release/` and then
-verifies it by opening it (`apps/desktop/scripts/verify-bundle.js`): the app
-entry points must be inside `app.asar`, and the native helper must be a real
-executable beside it.
+produces an unpacked bundle under `apps/desktop/release/` and then checks it two
+ways.
+
+**`scripts/verify-bundle.js` opens the artefact.** It reads the real `app.asar`
+and the real resources directory rather than trusting the configuration, because
+a packaging config can be wrong in ways every build step reports as success.
+PR-036's defect is the reference case: a dependency read its schema off disk,
+the bundler inlined it, and the packaged app started, answered questions and
+persisted nothing while lint, typecheck, 1 874 tests, every demo and `pnpm
+build` were green. What it checks now:
+
+| Check | What it catches |
+| --- | --- |
+| required entries present | a staged data file (`migrations/001_initial.sql`) or the stylesheet that did not get staged |
+| `package.json#main` resolves inside the archive | a bundle that launches Electron's default window and logs nothing |
+| no `node_modules` in the archive | pnpm's symlink store flattened in |
+| no external imports in `main`/`preload` | a dependency left external — resolves in development, fails only packaged |
+| preload is not ESM | a dead bridge and a panel stuck in "bridge unavailable" |
+| CSP in the archived `index.html` | a security posture that drifted between build and package |
+| no `crossorigin`, no absolute asset paths | a blank panel over `file:` with no error anywhere |
+| main bundle under a size budget | cross-lane hazard 24: a lazy import that `inlineDynamicImports` made eager (1.66 MB → 5.97 MB) |
+| no executable inside the archive | a spawned binary that cannot be `execve`d, because an asar is one file to the kernel |
+| helper is a real, executable, non-symlink file, and matches its manifest | a placeholder shipped as if it were native, or the reverse |
+| macOS `Info.plist`, helper location, code signature | only on a Mac; on any other host it prints `NOT CHECKED` rather than passing |
+
+**`scripts/verify-package.js` reads the configuration.** Separate on purpose:
+nothing it checks is evidence that the packaged macOS app works, only that the
+entitlements, usage strings and signing settings say what their own comments
+claim, and that the path electron-builder stages the helper into is the path
+`resolveHelperBinary()` looks in. It prints under a `CONFIGURED, NOT VERIFIED`
+heading.
 
 Known limits of this configuration — all deliberate:
 
-- **Development signing only.** `mac.identity` is null, hardened runtime is off.
+- **Ad-hoc signing only.** `mac.identity` is null and `scripts/sign-mac.js`
+  (an electron-builder `afterPack` hook) signs the helper and then the app with
+  `codesign --sign -`, each with its own entitlements file, under the hardened
+  runtime. That is what a machine with no Apple developer account can produce,
+  and on Apple silicon it is also the minimum needed to launch at all. **The
+  darwin branch of that hook has never run**; on Linux it declines by name.
 - **No notarization.** Recorded as a known gap against the MVP-01 definition of
   done (runbook §7; there is no Developer ID account). A packaged app therefore
   needs `xattr -dr com.apple.quarantine` or a right-click → Open on any machine
-  that did not build it, and TCC grants are re-prompted whenever the signature
-  changes.
-- **`--dir` only.** No dmg, no installer; PR-042 owns the release packaging.
+  that did not build it, and **TCC grants are re-prompted on every rebuild**,
+  because an ad-hoc signature's code-directory hash changes with the bytes.
+- **`dir` and `zip` on macOS, `dir` on Linux.** No dmg: a dmg buys a drag target
+  and costs a background asset that cannot be reviewed here.
 - **Host architecture only**, because the bundle reuses the Electron runtime in
   `node_modules` rather than downloading a second copy.
+
+### Configuring a packaged app without a terminal
+
+A double-clicked `.app` inherits no environment, so `PILOT_MODEL_PROFILE`,
+`PILOT_LOCAL_BASE_URL` and every other provider selector are unreachable from
+Finder and the app falls through to the faux development provider. The launch
+environment file is the way round that:
+
+```sh
+# ~/Library/Application Support/Pilot/pilot.env
+PILOT_MODEL_PROFILE=codex
+PILOT_LOCAL_BASE_URL=http://127.0.0.1:11434/v1
+PILOT_LOG_LEVEL=debug
+```
+
+Rules, all enforced by `apps/desktop/src/main/launch-env.ts`:
+
+- a real environment variable always **wins**, so `pnpm dev`, the demos and the
+  tests are unaffected by a file that happens to exist;
+- only selectors and diagnostics may be set. Fixture switches
+  (`PILOT_PLATFORM`, `PILOT_*_FIXTURE`, `PILOT_HELPER_STUB_PATH`) are not
+  accepted — a shipped app must not be flippable onto the fake adapters;
+- **`PILOT_API_KEY` is refused**, with its reason logged and its value never
+  printed. PR-038 seals the key through `safeStorage` and deletes it from
+  `process.env`; honouring it here would put the same secret in a plaintext file
+  in the same directory.
+
+The startup log line `launch environment file` reports the path, what was
+applied, and what was refused and why.
 
 ### The native macOS helper
 
@@ -143,6 +214,31 @@ open "$(find apps/desktop/release -maxdepth 2 -name 'Pilot.app' | head -1)"   # 
 `--require-native` is the difference that matters: without it the hook falls
 back to the placeholder, and a bundle that cannot observe the screen is
 indistinguishable from one that can until someone tries it.
+
+The build also links `apps/desktop/build/PilotHelper-Info.plist` into the
+helper's `__TEXT,__info_plist` section, so the helper carries its own
+microphone and speech-recognition usage strings. That is insurance for the case
+nobody here can test: if macOS credits TCC to the *helper* rather than to the
+app bundle, a helper with no usage string is **terminated**, not denied. The
+flags are added on the `swift build` command line rather than in
+`Package.swift`, and `--no-embed-info-plist` backs them out if they are what
+breaks a build:
+
+```sh
+pnpm --filter @pilot/desktop run build:helper -- --require-native --no-embed-info-plist
+```
+
+Where the helper is found, in the three layouts the app runs in:
+
+| Layout | Path | Resolved from |
+| --- | --- | --- |
+| `pnpm dev` | `packages/platform-mac/native/.build/{debug,release}/PilotHelper` | `app.getAppPath()` |
+| unpacked build | `<bundle>/resources/helper/PilotHelper` | `process.resourcesPath` |
+| packaged `.app` | `Pilot.app/Contents/Resources/helper/PilotHelper` | `process.resourcesPath` |
+
+`PILOT_HELPER_BINARY` overrides all three. Until PR-042 the first layout was
+unreachable without it, because the bundled main process cannot compute the
+SwiftPM path from its own module URL.
 
 ## Demo (PR-001)
 

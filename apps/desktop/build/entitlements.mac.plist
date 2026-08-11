@@ -1,17 +1,60 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Development entitlements.
+  Entitlements for the Pilot application bundle (PR-042).
 
-  Pilot is not App-Sandboxed: ScreenCaptureKit over an arbitrary user-chosen
-  window, system-wide Accessibility and a global push-to-talk hotkey are all
-  outside what the sandbox grants. Access is gated by TCC prompts instead, which
-  is the same protection the user actually sees.
+  NOTHING IN THIS FILE HAS EVER BEEN APPLIED. No `.app` has been signed, no
+  hardened-runtime process has ever started, and `codesign` has never run in
+  this repository. Every claim below is reasoning from Apple's documentation,
+  not a measurement — `docs/handoff.md` §1 step 22 is the check that turns any
+  of it into a fact.
 
-  The two JIT entitlements are Electron's baseline requirements; the audio-input
-  entitlement is what lets a hardened-runtime build reach the microphone. They
-  only take effect once a build is signed with a real identity, which a
-  development build is not.
+  Pilot is NOT App-Sandboxed. ScreenCaptureKit over an arbitrary user-chosen
+  window, system-wide Accessibility and a global push-to-talk event tap are all
+  outside what the sandbox grants, and there is no entitlement that buys them
+  back. Access is gated by TCC prompts instead, which is the protection the user
+  actually sees and can revoke.
+
+  Consequence, recorded because it is easy to miss: with no sandbox there is no
+  `com.apple.security.inherit`, so the spawned helper's access to the microphone
+  and the screen depends on macOS attributing it to this bundle through the
+  *responsible process* relationship rather than on an entitlement.
+  `build/entitlements.helper.plist` is the hedge for the case where it does not.
+
+  Each key, and why it is here:
+
+    allow-jit                        Chromium's JavaScript engine. Electron does
+                                     not start under the hardened runtime
+                                     without it.
+    allow-unsigned-executable-memory Same engine, same requirement; V8 writes
+                                     and then executes generated code.
+    device.audio-input               The microphone. Push-to-talk records audio
+                                     in the helper, and a hardened-runtime
+                                     process is denied the device without this
+                                     even after the user has said yes.
+
+  Each key that is deliberately ABSENT, which matters as much:
+
+    disable-library-validation       Not needed: electron-builder signs every
+                                     embedded framework with the same identity
+                                     that signs the app, and the helper is
+                                     spawned as a process, not loaded as a
+                                     library. Adding it would let any
+                                     differently-signed dylib into Pilot's
+                                     address space for no benefit.
+    automation.apple-events          Pilot sends no Apple Events. Accessibility
+                                     is `AXUIElement`, which is a different TCC
+                                     service with no entitlement and no usage
+                                     string. See the note beside
+                                     `NSAppleEventsUsageDescription` in
+                                     electron-builder.yml.
+    files.user-selected.read-write   No file is ever opened or written on the
+                                     user's behalf. The conversation database
+                                     lives in the app's own container.
+    network.client                   Not a hardened-runtime entitlement (it is
+                                     an App Sandbox one) and so has no effect
+                                     here; the provider requests are ordinary
+                                     outbound sockets.
 -->
 <plist version="1.0">
   <dict>

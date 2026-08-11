@@ -54,9 +54,50 @@ const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = resolve(appRoot, '..', '..');
 const nativePackageDir = resolve(repoRoot, 'packages', 'platform-mac', 'native');
 
-function parseArgs(argv) {
+/**
+ * The `Info.plist` linked into the helper's `__TEXT,__info_plist` section
+ * (PR-042).
+ *
+ * A bare Mach-O executable has no bundle and so no usage strings, and macOS
+ * *terminates* a process that asks for the microphone or for speech recognition
+ * without one. Whether that ever applies to `PilotHelper` depends on whether
+ * TCC treats the app bundle or the helper as the requesting subject — the
+ * oldest open structural risk in this project. Embedding the section is cheap
+ * insurance for the case where it is the helper, and inert in the case where it
+ * is the app.
+ *
+ * It is done with linker flags on the `swift build` COMMAND LINE rather than
+ * with `linkerSettings` in `native/Package.swift`, on purpose:
+ * `Package.swift` has never been compiled, and putting `unsafeFlags` into the
+ * one file the user's very first Mac step depends on would risk turning "the
+ * helper does not build" into the answer to a question nobody asked. Step 1 of
+ * `docs/handoff.md` §1 builds the package plainly; this only affects step 3,
+ * and `--no-embed-info-plist` backs it out.
+ */
+const INFO_PLIST = resolve(appRoot, 'build', 'PilotHelper-Info.plist');
+
+/**
+ * `swift build` arguments, including the `-sectcreate` flags when the helper's
+ * `Info.plist` is being embedded.
+ *
+ * Exported and pure so the flags can be read on a machine with no Swift.
+ */
+export function swiftBuildArgs({ packagePath, infoPlist }) {
+  const args = ['build', '-c', 'release', '--package-path', packagePath, '--product', HELPER_NAME];
+  if (infoPlist !== null) {
+    // Each `-Xlinker` forwards exactly one token to `ld`, hence four of them
+    // for `-sectcreate __TEXT __info_plist <file>`.
+    for (const token of ['-sectcreate', '__TEXT', '__info_plist', infoPlist]) {
+      args.push('-Xlinker', token);
+    }
+  }
+  return args;
+}
+
+export function parseArgs(argv) {
   let out = resolve(appRoot, 'resources', 'helper');
   let requireNative = false;
+  let embedInfoPlist = true;
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === '--') {
@@ -66,6 +107,10 @@ function parseArgs(argv) {
       continue;
     } else if (arg === '--require-native') {
       requireNative = true;
+    } else if (arg === '--no-embed-info-plist') {
+      // The escape hatch for the one thing here that can break a `swift build`
+      // that already worked: the extra linker flags. See INFO_PLIST below.
+      embedInfoPlist = false;
     } else if (arg === '--out') {
       const value = argv[index + 1];
       if (value === undefined) {
@@ -77,7 +122,7 @@ function parseArgs(argv) {
       throw new Error(`unknown argument ${arg}`);
     }
   }
-  return { out, requireNative };
+  return { out, requireNative, embedInfoPlist };
 }
 
 function say(message) {
@@ -125,18 +170,26 @@ function swiftVersion() {
   return probe.status === 0 ? `${probe.stdout}${probe.stderr}`.trim().split('\n')[0] : null;
 }
 
-function buildNative(outDir) {
+function buildNative(outDir, embedInfoPlist) {
+  const infoPlist = embedInfoPlist && existsSync(INFO_PLIST) ? INFO_PLIST : null;
   say(`building the Swift helper from ${nativePackageDir}`);
-  const build = spawnSync(
-    'swift',
-    ['build', '-c', 'release', '--package-path', nativePackageDir, '--product', HELPER_NAME],
-    { stdio: 'inherit' },
-  );
+  if (infoPlist === null) {
+    say('NOT embedding an Info.plist section; the helper will carry no usage strings');
+  } else {
+    say(`embedding ${infoPlist} into __TEXT,__info_plist`);
+  }
+  const args = swiftBuildArgs({ packagePath: nativePackageDir, infoPlist });
+  const build = spawnSync('swift', args, { stdio: 'inherit' });
   if (build.status !== 0) {
     fail(
       `\`swift build\` failed with status ${String(build.status)}. ` +
         'Fix the native package before packaging; the bundle would otherwise ship a helper ' +
-        'that cannot start.',
+        'that cannot start.' +
+        (infoPlist === null
+          ? ''
+          : '\nIf the failure names the linker or `-sectcreate`, re-run with ' +
+            '`--no-embed-info-plist`: that backs out the only flags this script adds ' +
+            'beyond a plain `swift build`, and tells you the package itself is fine.'),
     );
   }
 
@@ -159,7 +212,13 @@ function buildNative(outDir) {
   const staged = join(outDir, HELPER_NAME);
   copyFileSync(built, staged);
   chmodSync(staged, 0o755);
-  return { kind: 'native', reason: null, source: built, swift: swiftVersion() };
+  return {
+    kind: 'native',
+    reason: null,
+    source: built,
+    swift: swiftVersion(),
+    infoPlist,
+  };
 }
 
 function stagePlaceholder(outDir, blocker) {
@@ -179,7 +238,13 @@ function stagePlaceholder(outDir, blocker) {
     { mode: 0o755 },
   );
   chmodSync(staged, 0o755);
-  return { kind: 'placeholder', reason: blocker, source: null, swift: swiftVersion() };
+  return {
+    kind: 'placeholder',
+    reason: blocker,
+    source: null,
+    swift: swiftVersion(),
+    infoPlist: null,
+  };
 }
 
 function main() {
@@ -206,7 +271,10 @@ function main() {
     return;
   }
 
-  const result = blocker === null ? buildNative(args.out) : stagePlaceholder(args.out, blocker);
+  const result =
+    blocker === null
+      ? buildNative(args.out, args.embedInfoPlist)
+      : stagePlaceholder(args.out, blocker);
 
   const manifest = {
     name: HELPER_NAME,
@@ -217,6 +285,10 @@ function main() {
     host: `${process.platform}-${process.arch}`,
     swift: result.swift,
     source: result.source,
+    // PR-042. Read back by `scripts/verify-bundle.js` and by handoff step 22:
+    // whether the helper carries its own usage strings decides what happens if
+    // TCC ever attributes the microphone to the helper instead of to the app.
+    infoPlist: result.infoPlist,
   };
   writeFileSync(join(args.out, MANIFEST_NAME), `${JSON.stringify(manifest, null, 2)}\n`);
 
@@ -231,4 +303,6 @@ function main() {
   }
 }
 
-main();
+if (process.argv[1] !== undefined && import.meta.url === `file://${process.argv[1]}`) {
+  main();
+}

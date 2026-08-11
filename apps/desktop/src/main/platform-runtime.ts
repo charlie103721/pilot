@@ -166,6 +166,13 @@ export interface PlatformRuntimeOptions {
   readonly platform?: NodeJS.Platform;
   /** `process.resourcesPath` in a packaged app; absent in development. */
   readonly resourcesPath?: string | undefined;
+  /**
+   * `app.getAppPath()` (PR-042). Lets a `pnpm dev` run find a helper the user
+   * built with `swift build`, which the bundled main process cannot locate from
+   * its own module URL — see `workspaceNativeDirectory` in
+   * `@pilot/platform-mac`.
+   */
+  readonly appPath?: string | undefined;
   readonly logger?: Logger;
   /** Injected by tests and by the demo, which own the helper's lifetime. */
   readonly transport?: NativeHelperTransport;
@@ -284,6 +291,7 @@ export function describePlatformChoice(options: PlatformRuntimeOptions = {}): {
     const binary = resolveHelperBinary({
       env,
       ...(options.resourcesPath === undefined ? {} : { resourcesPath: options.resourcesPath }),
+      ...(options.appPath === undefined ? {} : { appPath: options.appPath }),
     });
     return { kind: 'macos', reason: `helper binary (${binary.source})` };
   } catch (cause) {
@@ -330,6 +338,7 @@ function chooseHelper(options: PlatformRuntimeOptions, logger: Logger): HelperCh
   const binary = resolveHelperBinary({
     env,
     ...(options.resourcesPath === undefined ? {} : { resourcesPath: options.resourcesPath }),
+    ...(options.appPath === undefined ? {} : { appPath: options.appPath }),
   });
   return {
     kind: 'macos',
