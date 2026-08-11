@@ -6,7 +6,8 @@
   "description": "Pilot \u2014 macOS desktop assistant that observes one selected window and answers spoken questions.",
   "packageManager": "pnpm@10.33.0",
   "engines": {
-    "node": ">=24"
+    "node": ">=24 <25",
+    "pnpm": ">=10.33 <11"
   },
   "scripts": {
     "lint": "eslint . && prettier --check .",
@@ -19,7 +20,9 @@
     "start": "pnpm --filter @pilot/desktop run start",
     "package": "pnpm --filter @pilot/desktop run package",
     "smoke": "pnpm --filter @pilot/desktop run smoke",
+    "smoke:packaged": "pnpm --filter @pilot/desktop run smoke:packaged",
     "smoke:launch": "pnpm --filter @pilot/desktop run smoke:launch",
+    "verify:bundle": "pnpm --filter @pilot/desktop run verify:bundle",
     "verify:package": "pnpm --filter @pilot/desktop run verify:package",
     "demo:interaction": "pnpm build && pnpm --filter @pilot/interaction run demo",
     "demo:envelope": "pnpm build && pnpm --filter @pilot/interaction run demo:envelope",
@@ -47,14 +50,14 @@
     "clean": "tsc --build tsconfig.json --clean && rm -rf apps/desktop/dist apps/desktop/release apps/desktop/resources"
   },
   "devDependencies": {
-    "@eslint/js": "^10.0.1",
-    "@types/node": "^24.13.3",
-    "eslint": "^10.8.1",
-    "eslint-config-prettier": "^10.1.8",
-    "globals": "^17.9.0",
-    "prettier": "^3.9.6",
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.13.3",
+    "eslint": "10.8.1",
+    "eslint-config-prettier": "10.1.8",
+    "globals": "17.9.0",
+    "prettier": "3.9.6",
     "typescript": "5.9.3",
-    "typescript-eslint": "^8.66.0",
-    "vitest": "^4.1.10"
+    "typescript-eslint": "8.66.0",
+    "vitest": "4.1.10"
   }
 }
