@@ -63,6 +63,11 @@ On this tree that is **2 309 tests across 157 files**, all passing. The wider
 list a release runs — packaging, the three smoke checks, `pnpm acceptance` and
 all eight walkthroughs — is `docs/runbook.md` §6, "The release checklist".
 
+While working on a change, `pnpm test:watch` is the same vitest suite in watch
+mode: it stays running and re-runs the affected files on every save. It is a
+development aid rather than part of the gate, which is the single `pnpm test`
+run above.
+
 ## Running the app
 
 From a clean checkout:
@@ -477,6 +482,57 @@ The transition table itself is checked in as
 `packages/interaction/test/transition-table.expected.ts`: one line per
 (state × input) pair, asserted against the machine by
 `packages/interaction/test/table.test.ts`.
+
+## Demo (PR-024 — question envelopes from recorded pointer timelines)
+
+```sh
+pnpm demo:envelope
+```
+
+Builds the workspace, then runs `demo:envelope` in `@pilot/interaction`. It
+builds one question envelope per recorded pointer timeline in
+`packages/interaction/src/recordings.ts` and prints it: the transcript, the
+scene and window, the pointer position and whether it was inside the window,
+the accessibility target, the utterance interval and its pointer sample count,
+the staleness and border-crossing flags, the serialized size, and the text the
+model actually reads.
+
+The nine recordings are the cases an anchor has to survive: a clean
+point-and-ask, a pointer outside the window, no accessibility target, a scene
+revised mid-utterance, a last observation the model has not caught up with, no
+pointer samples at all, samples too old to trust, no selected window, and a
+secure field. No envelope carries image bytes — images reach the model only
+through `observe_screen` (PR-021), after the screen policy has approved them.
+
+Deterministic by construction: the recordings are data and the factory has no
+clock, no randomness and no I/O, so the output is the same on every machine.
+`packages/interaction/test/demo-envelope.test.ts` pins it.
+
+## Demo (PR-025 — push-to-talk and speech-to-text)
+
+```sh
+pnpm demo:voice
+```
+
+Builds the workspace, then runs `demo:voice` in `@pilot/interaction`. Five
+scenes drive the real speech-input adapter contract through fakes and print,
+for each, the inputs step by step, the state path, how often the adapter was
+started, stopped and cancelled, the envelopes that reached the agent, what was
+spoken, the states where typing was available instead, and everything the
+binding and the machine discarded:
+
+1. a complete spoken question becoming one agent submission;
+2. a transcript that arrives after its utterance was cancelled;
+3. two push-to-talk presses overlapping — a key repeat is refused, while a
+   genuine second press supersedes the first, whose result is dropped;
+4. speech-to-text failing mid-utterance and the user typing instead
+   (system-design §16), which produces an equivalent envelope;
+5. the same accepted transcript delivered twice, of which only the first is
+   asked.
+
+Deterministic: injected clock, counter identifiers, recorded pointer timeline,
+scripted recogniser and scripted agent. The output is pinned by
+`packages/interaction/test/demo-voice.test.ts`.
 
 ## Demo (PR-026 — response and TTS buffer)
 
