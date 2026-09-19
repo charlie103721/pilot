@@ -1,7 +1,7 @@
 # Pilot MVP 01 Implementation Plan
 
-Status: Draft 0.1  
-Last updated: 2026-08-10  
+Status: Draft 0.1<br>
+Last updated: 2026-08-10<br>
 Scope: macOS MVP, with platform boundaries preserved for future Windows support
 
 ## Purpose
